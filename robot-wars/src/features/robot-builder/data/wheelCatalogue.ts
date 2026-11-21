@@ -1,0 +1,54 @@
+import type { WheelDefinition } from "../types/robot.types";
+
+const compatibleMotorIds = [
+  "small-dc",
+  "standard-dc",
+  "high-torque-dc",
+] as const;
+
+export const wheelCatalogue: WheelDefinition[] = [
+  {
+    id: "standard-rubber",
+    name: "Standard Rubber Wheel",
+    description: "Versatile rubber tire for everyday robot builds.",
+    diameter: 0.22,
+    width: 0.07,
+    weight: 0.16,
+    category: "Rubber",
+    color: "#20242b",
+    compatibleMotorIds: [...compatibleMotorIds],
+  },
+  {
+    id: "heavy-duty",
+    name: "Heavy-Duty Wheel",
+    description: "Wider, reinforced tire for heavier assemblies.",
+    diameter: 0.28,
+    width: 0.1,
+    weight: 0.32,
+    category: "Heavy-duty",
+    color: "#171a20",
+    compatibleMotorIds: ["standard-dc", "high-torque-dc"],
+  },
+  {
+    id: "grip",
+    name: "Grip Wheel",
+    description: "Soft high-grip tread for improved traction.",
+    diameter: 0.24,
+    width: 0.09,
+    weight: 0.24,
+    category: "Grip",
+    color: "#30343b",
+    compatibleMotorIds: [...compatibleMotorIds],
+  },
+  {
+    id: "small-omni",
+    name: "Small Omni Wheel",
+    description: "Compact omni-directional wheel with side rollers.",
+    diameter: 0.16,
+    width: 0.055,
+    weight: 0.12,
+    category: "Omni",
+    color: "#272b32",
+    compatibleMotorIds: ["small-dc", "standard-dc"],
+  },
+];

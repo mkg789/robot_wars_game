@@ -1,0 +1,37 @@
+import type { MotorDefinition } from "../types/robot.types";
+
+export const motorCatalogue: MotorDefinition[] = [
+  {
+    id: "small-dc",
+    name: "Small DC Gear Motor",
+    description: "Compact drive motor for lightweight robots.",
+    dimensions: [0.28, 0.26, 0.34],
+    weight: 0.22,
+    rpm: 180,
+    torque: 0.35,
+    mountingFootprint: [0.42, 0.34],
+    color: "#ef4444",
+  },
+  {
+    id: "standard-dc",
+    name: "Standard DC Gear Motor",
+    description: "Balanced motor for general-purpose mobile bases.",
+    dimensions: [0.38, 0.34, 0.42],
+    weight: 0.48,
+    rpm: 150,
+    torque: 0.8,
+    mountingFootprint: [0.54, 0.42],
+    color: "#f97316",
+  },
+  {
+    id: "high-torque-dc",
+    name: "High-Torque DC Gear Motor",
+    description: "Heavy-duty motor for larger or demanding builds.",
+    dimensions: [0.46, 0.42, 0.5],
+    weight: 0.82,
+    rpm: 90,
+    torque: 1.6,
+    mountingFootprint: [0.66, 0.52],
+    color: "#dc2626",
+  },
+];
