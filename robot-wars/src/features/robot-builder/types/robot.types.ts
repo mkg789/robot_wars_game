@@ -14,6 +14,7 @@ export type RobotPart = {
   wheelDiameter?: number;
   wheelWidth?: number;
   batteryCatalogueId?: BatteryCatalogueId;
+  controllerCatalogueId?: ControllerCatalogueId;
 };
 
 export type Vector3Data = [number, number, number];
@@ -48,7 +49,8 @@ export type ComponentType =
   | "Front Bumper"
   | "Wheel"
   | "Motor"
-  | "Battery";
+  | "Battery"
+  | "Controller";
 
 export type FoundationModelId =
   | "compact-square"
@@ -68,6 +70,7 @@ export type FoundationConfig = {
 export type BuildStage =
   | "foundation"
   | "battery"
+  | "controller"
   | "motors"
   | "wheels"
   | "drivetrain"
@@ -111,6 +114,30 @@ export type BatteryDefinition = {
   };
   weight: number;
   color: string;
+};
+
+export type ControllerCatalogueId =
+  | "arduino-uno"
+  | "esp32-devkit"
+  | "stm32-nucleo";
+
+export type ControllerDefinition = {
+  id: ControllerCatalogueId;
+  name: string;
+  controllerType:
+    | "Microcontroller board"
+    | "Wireless development board"
+    | "Development board";
+  dimensions: {
+    length: number;
+    width: number;
+    height: number;
+  };
+  weight: number;
+  color: string;
+  processor: string;
+  clockMHz: number;
+  operatingVoltage: string;
 };
 
 export type MotorDefinition = {

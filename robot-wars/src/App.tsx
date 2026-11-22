@@ -8,6 +8,7 @@ import { foundationModels } from "./features/robot-builder/data/foundationModels
 import { motorCatalogue } from "./features/robot-builder/data/motorCatalogue";
 import { wheelCatalogue } from "./features/robot-builder/data/wheelCatalogue";
 import { batteryCatalogue } from "./features/robot-builder/data/batteryCatalogue";
+import { controllerCatalogue } from "./features/robot-builder/data/controllerCatalogue";
 import { generateMotorMountZones } from "./features/robot-builder/logic/mountingZones";
 import {
   getDrivetrainAssignmentKey,
@@ -156,6 +157,16 @@ function App() {
   );
   const installBattery = useRobotStore((state) => state.installBattery);
   const removeBattery = useRobotStore((state) => state.removeBattery);
+  const selectedControllerCatalogueId = useRobotStore(
+    (state) => state.selectedControllerCatalogueId
+  );
+  const selectControllerCatalogueItem = useRobotStore(
+    (state) => state.selectControllerCatalogueItem
+  );
+  const installController = useRobotStore(
+    (state) => state.installController
+  );
+  const removeController = useRobotStore((state) => state.removeController);
   const stage = useRobotStore((state) => state.stage);
   const setStage = useRobotStore((state) => state.setStage);
   const drivetrain = useRobotStore((state) => state.drivetrain);
@@ -326,6 +337,13 @@ function App() {
   const installedBatteryDefinition = batteryCatalogue.find(
     (battery) => battery.id === installedBattery?.batteryCatalogueId
   );
+  const selectedControllerDefinition = controllerCatalogue.find(
+    (controller) => controller.id === selectedControllerCatalogueId
+  );
+  const installedController = parts.find((part) => part.type === "Controller");
+  const installedControllerDefinition = controllerCatalogue.find(
+    (controller) => controller.id === installedController?.controllerCatalogueId
+  );
   const mountedWheels = parts.filter((part) => part.type === "Wheel");
   const wheelByMotorId = new Map<
     string,
@@ -485,7 +503,8 @@ function App() {
               <div className={`builder-step ${
                 stage === "battery"
                   ? "active"
-                  : stage === "motors" ||
+                  : stage === "controller" ||
+                      stage === "motors" ||
                       stage === "wheels" ||
                       stage === "drivetrain" ||
                       stage === "completed"
@@ -496,6 +515,19 @@ function App() {
                 Battery
               </div>
               <div className={`builder-step ${
+                stage === "controller"
+                  ? "active"
+                  : stage === "motors" ||
+                      stage === "wheels" ||
+                      stage === "drivetrain" ||
+                      stage === "completed"
+                    ? "complete"
+                    : ""
+              }`}>
+                <span>3</span>
+                Controller
+              </div>
+              <div className={`builder-step ${
                 stage === "motors"
                   ? "active"
                   : stage === "wheels" ||
@@ -504,7 +536,7 @@ function App() {
                     ? "complete"
                     : ""
               }`}>
-                <span>3</span>
+                <span>4</span>
                 Motors
               </div>
               <div className={`builder-step ${
@@ -514,7 +546,7 @@ function App() {
                     ? "complete"
                     : ""
               }`}>
-                <span>4</span>
+                <span>5</span>
                 Wheels
               </div>
               <div className={`builder-step ${
@@ -524,7 +556,7 @@ function App() {
                     ? "complete"
                     : ""
               }`}>
-                <span>5</span>
+                <span>6</span>
                 Drivetrain
               </div>
             </div>
@@ -591,9 +623,59 @@ function App() {
                 </div>
                 <button
                   className="stage-back-button"
+                  onClick={() => setStage("controller")}
+                >
+                  Continue to Controller
+                </button>
+                <button
+                  className="stage-back-button"
                   onClick={() => setStage("foundation")}
                 >
                   ← Back to Foundation
+                </button>
+              </>
+            ) : stage === "controller" ? (
+              <>
+                <div className="section-label">CONTROLLER CATALOGUE</div>
+                <p className="builder-intro">
+                  Choose an optional controller board for the robot.
+                </p>
+                <div className="motor-list">
+                  {controllerCatalogue.map((controller) => (
+                    <button
+                      key={controller.id}
+                      className={`motor-card ${
+                        selectedControllerCatalogueId === controller.id
+                          ? "selected"
+                          : ""
+                      }`}
+                      onClick={() =>
+                        selectControllerCatalogueItem(controller.id)
+                      }
+                    >
+                      <span
+                        className="motor-card-icon"
+                        style={{ borderColor: controller.color }}
+                      >
+                        ▤
+                      </span>
+                      <span>
+                        <strong>{controller.name}</strong>
+                        <small>{controller.controllerType}</small>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <div className="controller-install-status" role="status">
+                  {installedControllerDefinition
+                    ? `${installedControllerDefinition.name} installed`
+                    : "No controller installed"}
+                </div>
+                <button
+                  className="stage-back-button"
+                  onClick={() => setStage("battery")}
+                >
+                  ← Back to Battery
                 </button>
               </>
             ) : stage === "motors" ? (
@@ -625,9 +707,9 @@ function App() {
                 </div>
                 <button
                   className="stage-back-button"
-                  onClick={() => setStage("foundation")}
+                  onClick={() => setStage("controller")}
                 >
-                  ← Back to Foundation
+                  ← Back to Controller
                 </button>
               </>
             ) : stage === "wheels" ? (
@@ -720,6 +802,12 @@ function App() {
                   onClick={() => setStage("battery")}
                 >
                   ← Edit Battery
+                </button>
+                <button
+                  className="stage-back-button"
+                  onClick={() => setStage("controller")}
+                >
+                  ← Edit Controller
                 </button>
               </>
             ) : (
@@ -1231,15 +1319,105 @@ function App() {
                 </button>
                 <button
                   className="primary-button foundation-confirm"
-                  onClick={() => setStage("motors")}
+                  onClick={() => setStage("controller")}
                 >
-                  Continue to Motors
+                  Continue to Controller
                 </button>
                 <button
                   className="stage-back-button"
                   onClick={() => setStage("foundation")}
                 >
                   ← Back to Foundation
+                </button>
+              </>
+            ) : stage === "controller" && foundation ? (
+              <>
+                <div className="section-label">CONTROLLER SPECIFICATIONS</div>
+                {selectedControllerDefinition ? (
+                  <div className="motor-spec-card">
+                    <div className="motor-spec-title">
+                      <span
+                        className="motor-card-icon"
+                        style={{
+                          borderColor: selectedControllerDefinition.color,
+                        }}
+                      >
+                        ▤
+                      </span>
+                      <div>
+                        <strong>{selectedControllerDefinition.name}</strong>
+                        <small>{selectedControllerDefinition.controllerType}</small>
+                      </div>
+                    </div>
+                    <div className="property-row">
+                      <span>Processor</span>
+                      <span>{selectedControllerDefinition.processor}</span>
+                    </div>
+                    <div className="property-row">
+                      <span>Clock speed</span>
+                      <span>{selectedControllerDefinition.clockMHz} MHz</span>
+                    </div>
+                    <div className="property-row">
+                      <span>Operating voltage</span>
+                      <span>{selectedControllerDefinition.operatingVoltage}</span>
+                    </div>
+                    <div className="property-row">
+                      <span>Dimensions (L × W × H)</span>
+                      <span>
+                        {(selectedControllerDefinition.dimensions.length * 1000).toFixed(1)} ×{" "}
+                        {(selectedControllerDefinition.dimensions.width * 1000).toFixed(1)} ×{" "}
+                        {(selectedControllerDefinition.dimensions.height * 1000).toFixed(1)} mm
+                      </span>
+                    </div>
+                    <div className="property-row">
+                      <span>Weight</span>
+                      <span>
+                        {(selectedControllerDefinition.weight * 1000).toFixed(0)} g
+                      </span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="builder-intro">
+                    Select a controller from the catalogue.
+                  </p>
+                )}
+
+                <div className="controller-install-status" role="status">
+                  {installedControllerDefinition
+                    ? `Installed: ${installedControllerDefinition.name}`
+                    : "No controller installed. Installation is optional."}
+                </div>
+                <button
+                  className="primary-button foundation-confirm"
+                  disabled={!selectedControllerDefinition}
+                  onClick={() => {
+                    if (selectedControllerCatalogueId) {
+                      installController(selectedControllerCatalogueId);
+                    }
+                  }}
+                >
+                  {installedController
+                    ? "Install / Replace Controller"
+                    : "Install Controller"}
+                </button>
+                <button
+                  className="danger-button controller-remove-button"
+                  disabled={!installedController}
+                  onClick={removeController}
+                >
+                  Remove Controller
+                </button>
+                <button
+                  className="primary-button foundation-confirm"
+                  onClick={() => setStage("motors")}
+                >
+                  Continue to Motors
+                </button>
+                <button
+                  className="stage-back-button"
+                  onClick={() => setStage("battery")}
+                >
+                  ← Back to Battery
                 </button>
               </>
             ) : stage === "motors" ? (
@@ -1653,6 +1831,12 @@ function App() {
                     </span>
                   </div>
                   <div className="property-row">
+                    <span>Controller</span>
+                    <span>
+                      {installedControllerDefinition?.name ?? "None installed"}
+                    </span>
+                  </div>
+                  <div className="property-row">
                     <span>Installed motors</span>
                     <span>{mountedMotors.length}</span>
                   </div>
@@ -1723,6 +1907,12 @@ function App() {
                   onClick={() => setStage("battery")}
                 >
                   Edit Battery
+                </button>
+                <button
+                  className="stage-back-button"
+                  onClick={() => setStage("controller")}
+                >
+                  Edit Controller
                 </button>
                 <button
                   className="stage-back-button"

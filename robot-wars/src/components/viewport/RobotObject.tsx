@@ -3,10 +3,14 @@ import { TransformControls, RoundedBox } from "@react-three/drei";
 import type { Group } from "three";
 
 import BatteryModel from "./BatteryModel";
+import ControllerModel, {
+  type ControllerVariant,
+} from "./ControllerModel";
 import MotorModel from "./MotorModel";
 import { ChassisModel, TopPlateModel } from "./ChassisModel";
 import WheelModel from "./WheelModel";
 import { batteryCatalogue } from "../../features/robot-builder/data/batteryCatalogue";
+import { controllerCatalogue } from "../../features/robot-builder/data/controllerCatalogue";
 import { wheelCatalogue } from "../../features/robot-builder/data/wheelCatalogue";
 import type {
   RobotPart,
@@ -59,6 +63,16 @@ export default function RobotObject({
   const batteryDefinition = batteryCatalogue.find(
     (battery) => battery.id === part.batteryCatalogueId
   );
+  const controllerDefinition = controllerCatalogue.find(
+    (controller) => controller.id === part.controllerCatalogueId
+  );
+  const controllerLookup = `${part.controllerCatalogueId ?? ""} ${controllerDefinition?.name ?? ""}`.toLowerCase();
+  const controllerVariant: ControllerVariant = controllerLookup.includes("esp")
+    ? "esp32"
+    : controllerLookup.includes("stm") || controllerLookup.includes("nucleo")
+      ? "stm32-nucleo"
+      : "arduino-uno";
+
   const batteryDesign =
     part.batteryCatalogueId === "standard-lipo"
       ? "hardcase-3s"
@@ -130,6 +144,13 @@ export default function RobotObject({
           typeLabel={batteryTypeLabel}
           voltage={batteryDefinition?.voltage}
           capacityMah={batteryDefinition?.capacityMah}
+        />
+      ) : part.type === "Controller" ? (
+        <ControllerModel
+          size={part.size}
+          color={controllerDefinition?.color ?? part.color}
+          selected={selected || highlighted}
+          variant={controllerVariant}
         />
       ) : part.type === "Wheel" ? (
         <WheelModel

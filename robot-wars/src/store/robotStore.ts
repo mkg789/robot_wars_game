@@ -15,6 +15,8 @@ import type {
   WheelDimensionDraft,
   BatteryCatalogueId,
   BatteryDefinition,
+  ControllerCatalogueId,
+  ControllerDefinition,
   DrivetrainAssignment,
   DrivetrainConfiguration,
   DrivetrainSide,
@@ -29,9 +31,11 @@ import { foundationModels } from "../features/robot-builder/data/foundationModel
 import { motorCatalogue } from "../features/robot-builder/data/motorCatalogue";
 import { wheelCatalogue } from "../features/robot-builder/data/wheelCatalogue";
 import { batteryCatalogue } from "../features/robot-builder/data/batteryCatalogue";
+import { controllerCatalogue } from "../features/robot-builder/data/controllerCatalogue";
 import { generateMotorMountZones } from "../features/robot-builder/logic/mountingZones";
 import { getWheelWorldMountTransform } from "../features/robot-builder/logic/wheelMounting";
 import { getBatteryMountingTransform } from "../features/robot-builder/logic/batteryMounting";
+import { getControllerMountingTransform } from "../features/robot-builder/logic/controllerMounting";
 import {
   clampWheelDimension,
   getWheelDimensionsInMeters,
@@ -117,10 +121,16 @@ type RobotStore = {
   selectedWheelDiameterCm: number;
   selectedWheelWidthCm: number;
   selectedBatteryCatalogueId: BatteryCatalogueId | null;
+  selectedControllerCatalogueId: ControllerCatalogueId | null;
   setStage: (stage: BuildStage) => void;
   selectBatteryCatalogueItem: (batteryId: BatteryCatalogueId) => void;
   installBattery: (batteryId: BatteryCatalogueId) => void;
   removeBattery: () => void;
+  selectControllerCatalogueItem: (
+    controllerId: ControllerCatalogueId
+  ) => void;
+  installController: (controllerId: ControllerCatalogueId) => void;
+  removeController: () => void;
   selectMotorCatalogueItem: (motorId: MotorCatalogueId) => void;
   selectMountZone: (zoneId: string) => void;
   placeMotor: () => void;
@@ -338,7 +348,32 @@ function createBatteryPart(
   };
 }
 
-function preserveMountedMotors(
+function createControllerPart(
+  definition: ControllerDefinition,
+  id: string,
+  foundation: FoundationConfig,
+  connectionId: string
+): RobotPart {
+  const mount = getControllerMountingTransform(definition, foundation);
+  return {
+    id,
+    name: definition.name,
+    type: "Controller",
+    controllerCatalogueId: definition.id,
+    position: mount.position,
+    rotation: [0, 0, 0],
+    size: [
+      definition.dimensions.length,
+      definition.dimensions.height,
+      definition.dimensions.width,
+    ],
+    color: definition.color,
+    mass: definition.weight,
+    parentAttachmentId: connectionId,
+  };
+}
+
+function preserveMountedComponents(
   foundationParts: RobotPart[],
   existingParts: RobotPart[],
   foundation: FoundationConfig,
@@ -394,34 +429,68 @@ function preserveMountedMotors(
         battery.connection.id
       )
     : null;
+  const existingControllers = existingParts.filter(
+    (part) => part.type === "Controller"
+  );
+  const controller = existingControllers
+    .map((part) => ({
+      part,
+      definition: controllerCatalogue.find(
+        (item) => item.id === part.controllerCatalogueId
+      ),
+      connection: connections.find(
+        (connection) =>
+          connection.type === "Mechanical" &&
+          connection.parentId === "foundation-chassis" &&
+          connection.childId === part.id
+      ),
+    }))
+    .find((item) => item.definition && item.connection);
+  const positionedController =
+    controller?.definition && controller.connection
+      ? createControllerPart(
+          controller.definition,
+          controller.part.id,
+          foundation,
+          controller.connection.id
+        )
+      : null;
   const rebuiltParts = [
     ...foundationParts,
     ...positionedMotors,
     ...wheels,
     ...(positionedBattery ? [positionedBattery] : []),
+    ...(positionedController ? [positionedController] : []),
   ];
   const existingBatteryIds = new Set(existingBatteries.map((part) => part.id));
-  const connectionsWithoutRemovedBatteries = connections.filter(
+  const existingControllerIds = new Set(
+    existingControllers.map((part) => part.id)
+  );
+  const connectionsWithoutRemovedComponents = connections.filter(
     (connection) => {
-      const touchesBattery =
+      const touchesBatteryOrController =
         existingBatteryIds.has(connection.parentId) ||
-        existingBatteryIds.has(connection.childId);
+        existingBatteryIds.has(connection.childId) ||
+        existingControllerIds.has(connection.parentId) ||
+        existingControllerIds.has(connection.childId);
       return (
-        !touchesBattery ||
+        !touchesBatteryOrController ||
         (positionedBattery !== null &&
-          connection.id === battery?.connection?.id)
+          connection.id === battery?.connection?.id) ||
+        (positionedController !== null &&
+          connection.id === controller?.connection?.id)
       );
     }
   );
-  const rebuiltConnections = remapMotorConnections(
-    connectionsWithoutRemovedBatteries,
+  const rebuiltConnections = remapFoundationConnections(
+    connectionsWithoutRemovedComponents,
     rebuiltParts,
     foundation
   );
   return syncAssemblyTransforms(rebuiltParts, rebuiltConnections);
 }
 
-function remapMotorConnections(
+function remapFoundationConnections(
   connections: RobotConnection[],
   parts: RobotPart[],
   foundation: FoundationConfig
@@ -445,6 +514,22 @@ function remapMotorConnections(
         relativePosition: mount.relativePosition,
         relativeRotation: [0, 0, 0],
         childMountPointId: `battery-mount:${childId}`,
+      };
+    }
+    if (childPart?.type === "Controller") {
+      const definition = controllerCatalogue.find(
+        (controller) =>
+          controller.id === childPart.controllerCatalogueId
+      );
+      if (!definition || connection.parentId !== "foundation-chassis") {
+        return connection;
+      }
+      const mount = getControllerMountingTransform(definition, foundation);
+      return {
+        ...connection,
+        relativePosition: mount.relativePosition,
+        relativeRotation: [0, 0, 0],
+        childMountPointId: `controller-mount:${childId}`,
       };
     }
     if (childPart?.type !== "Motor") return connection;
@@ -482,6 +567,7 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
   selectedWheelDiameterCm: 22,
   selectedWheelWidthCm: 7,
   selectedBatteryCatalogueId: "standard-lipo",
+  selectedControllerCatalogueId: "arduino-uno",
 
   setSelectedId: (id) => set({ selectedId: id }),
 
@@ -741,6 +827,106 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         connections,
         hiddenPartIds: retainVisibilityForParts(state.hiddenPartIds, parts),
         selectedId: batteryIds.has(state.selectedId ?? "")
+          ? state.foundationId
+          : state.selectedId,
+      };
+    }),
+
+  selectControllerCatalogueItem: (controllerId) => {
+    if (!controllerCatalogue.some((item) => item.id === controllerId)) return;
+    set({ selectedControllerCatalogueId: controllerId });
+  },
+
+  installController: (controllerId) => {
+    const definition = controllerCatalogue.find(
+      (controller) => controller.id === controllerId
+    );
+    if (!definition) return;
+
+    set((state) => {
+      if (!state.foundation || !state.foundation.confirmed) return state;
+
+      const currentControllers = state.parts.filter(
+        (part) => part.type === "Controller"
+      );
+      const existingController = currentControllers[0];
+      const existingConnection = existingController
+        ? state.connections.find(
+            (connection) =>
+              connection.type === "Mechanical" &&
+              connection.parentId === "foundation-chassis" &&
+              connection.childId === existingController.id
+          )
+        : undefined;
+      const controllerPartId = existingController?.id ?? crypto.randomUUID();
+      const connectionId = existingConnection?.id ?? crypto.randomUUID();
+      const mount = getControllerMountingTransform(definition, state.foundation);
+      const part = createControllerPart(
+        definition,
+        controllerPartId,
+        state.foundation,
+        connectionId
+      );
+      const connection: RobotConnection = {
+        id: connectionId,
+        sourceId: "foundation-chassis",
+        targetId: controllerPartId,
+        type: "Mechanical",
+        parentId: "foundation-chassis",
+        childId: controllerPartId,
+        parentMountPointId: "foundation-chassis",
+        childMountPointId: `controller-mount:${controllerPartId}`,
+        relativePosition: mount.relativePosition,
+        relativeRotation: [0, 0, 0],
+      };
+      const currentControllerIds = new Set(
+        currentControllers.map((controller) => controller.id)
+      );
+      const parts = [
+        ...state.parts.filter(
+          (existingPart) => existingPart.type !== "Controller"
+        ),
+        part,
+      ];
+      const connections = [
+        ...state.connections.filter(
+          (existingConnection) =>
+            !currentControllerIds.has(existingConnection.parentId) &&
+            !currentControllerIds.has(existingConnection.childId)
+        ),
+        connection,
+      ];
+
+      return {
+        parts: syncAssemblyTransforms(parts, connections),
+        connections,
+        hiddenPartIds: retainVisibilityForParts(state.hiddenPartIds, parts),
+        selectedId: controllerPartId,
+        selectedControllerCatalogueId: controllerId,
+      };
+    });
+  },
+
+  removeController: () =>
+    set((state) => {
+      const controllerIds = new Set(
+        state.parts
+          .filter((part) => part.type === "Controller")
+          .map((part) => part.id)
+      );
+      if (controllerIds.size === 0) return state;
+
+      const parts = state.parts.filter((part) => !controllerIds.has(part.id));
+      const connections = state.connections.filter(
+        (connection) =>
+          !controllerIds.has(connection.parentId) &&
+          !controllerIds.has(connection.childId)
+      );
+      return {
+        parts,
+        connections,
+        hiddenPartIds: retainVisibilityForParts(state.hiddenPartIds, parts),
+        selectedId: controllerIds.has(state.selectedId ?? "")
           ? state.foundationId
           : state.selectedId,
       };
@@ -1137,6 +1323,7 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
       selectedWheelDiameterCm: 22,
       selectedWheelWidthCm: 7,
       selectedBatteryCatalogueId: "standard-lipo",
+      selectedControllerCatalogueId: "arduino-uno",
     });
   },
 
@@ -1154,13 +1341,13 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         includeFrontCover: state.foundation?.includeFrontCover ?? false,
         confirmed: false,
       };
-      const parts = preserveMountedMotors(
+      const parts = preserveMountedComponents(
         createFoundationParts(foundation),
         state.parts,
         foundation,
         state.connections
       );
-      const connections = remapMotorConnections(
+      const connections = remapFoundationConnections(
         state.connections,
         state.parts,
         foundation
@@ -1203,13 +1390,13 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         ),
         confirmed: false,
       };
-      const parts = preserveMountedMotors(
+      const parts = preserveMountedComponents(
         createFoundationParts(foundation),
         state.parts,
         foundation,
         state.connections
       );
-      const connections = remapMotorConnections(
+      const connections = remapFoundationConnections(
         state.connections,
         state.parts,
         foundation
@@ -1240,13 +1427,13 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         ...options,
         confirmed: false,
       };
-      const parts = preserveMountedMotors(
+      const parts = preserveMountedComponents(
         createFoundationParts(foundation),
         state.parts,
         foundation,
         state.connections
       );
-      const connections = remapMotorConnections(
+      const connections = remapFoundationConnections(
         state.connections,
         state.parts,
         foundation
@@ -1384,6 +1571,7 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
               selectedWheelDiameterCm: 22,
               selectedWheelWidthCm: 7,
               selectedBatteryCatalogueId: "standard-lipo",
+              selectedControllerCatalogueId: "arduino-uno",
             }
           : selectedId === "foundation-top-plate" && state.foundation
             ? {
@@ -1459,7 +1647,7 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
     }),
 
   addPart: (type) => {
-    if (type === "Battery") return;
+    if (type === "Battery" || type === "Controller") return;
     const matchingCount = get().parts.filter(
       (part) => part.type === type
     ).length;

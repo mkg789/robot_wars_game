@@ -807,7 +807,8 @@
   margin-right: 6px;
 }
 
-.battery-install-status {
+.battery-install-status,
+.controller-install-status {
   margin-top: 12px;
   padding: 9px;
   border: 1px solid #344155;
@@ -817,11 +818,13 @@
   font-size: 10px;
 }
 
-.battery-remove-button {
+.battery-remove-button,
+.controller-remove-button {
   margin-top: 8px;
 }
 
-.battery-remove-button:disabled {
+.battery-remove-button:disabled,
+.controller-remove-button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
 }

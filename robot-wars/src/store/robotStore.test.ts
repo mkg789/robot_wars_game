@@ -8,6 +8,7 @@ import {
 } from "../features/robot-builder/logic/mountingZones";
 import { wheelCatalogue } from "../features/robot-builder/data/wheelCatalogue";
 import { batteryCatalogue } from "../features/robot-builder/data/batteryCatalogue";
+import { controllerCatalogue } from "../features/robot-builder/data/controllerCatalogue";
 import { getWheelWorldMountTransform } from "../features/robot-builder/logic/wheelMounting";
 import {
   clampWheelDimension,
@@ -43,6 +44,7 @@ function resetStore() {
     selectedWheelDiameterCm: 22,
     selectedWheelWidthCm: 7,
     selectedBatteryCatalogueId: "standard-lipo",
+    selectedControllerCatalogueId: "arduino-uno",
   });
 }
 
@@ -212,6 +214,139 @@ describe("robot assembly store", () => {
       )
     ).toBe(true);
     expect(state.parts.filter((part) => part.type === "Battery")).toHaveLength(1);
+  });
+
+  it("installs and replaces one controller as a visible foundation attachment", () => {
+    const store = useRobotStore.getState();
+    store.startNewBuild();
+    store.installController("arduino-uno");
+    expect(
+      useRobotStore.getState().parts.some((part) => part.type === "Controller")
+    ).toBe(false);
+
+    store.confirmFoundation();
+    store.installController("arduino-uno");
+    let state = useRobotStore.getState();
+    const controller = state.parts.find((part) => part.type === "Controller");
+    const definition = controllerCatalogue.find(
+      (item) => item.id === "arduino-uno"
+    );
+    expect(controller).toBeDefined();
+    expect(definition).toBeDefined();
+    if (!controller || !definition) return;
+
+    expect(controller.controllerCatalogueId).toBe(definition.id);
+    expect(controller.size).toEqual([
+      definition.dimensions.length,
+      definition.dimensions.height,
+      definition.dimensions.width,
+    ]);
+    expect(controller.color).toBe(definition.color);
+    expect(controller.mass).toBe(definition.weight);
+    expect(
+      state.connections.some(
+        (connection) =>
+          connection.type === "Mechanical" &&
+          connection.parentId === "foundation-chassis" &&
+          connection.childId === controller.id &&
+          connection.id === controller.parentAttachmentId
+      )
+    ).toBe(true);
+
+    store.togglePartVisibility(controller.id);
+    store.selectControllerCatalogueItem("esp32-devkit");
+    store.installController("esp32-devkit");
+    state = useRobotStore.getState();
+    const replacement = state.parts.find(
+      (part) => part.type === "Controller"
+    );
+    expect(replacement?.id).toBe(controller.id);
+    expect(replacement?.controllerCatalogueId).toBe("esp32-devkit");
+    expect(state.parts.filter((part) => part.type === "Controller")).toHaveLength(1);
+    expect(state.hiddenPartIds).toContain(controller.id);
+    expect(state.selectedId).toBe(controller.id);
+    expect(
+      state.connections.filter((connection) => connection.childId === controller.id)
+    ).toHaveLength(1);
+  });
+
+  it("cleans controller connections and visibility on removal and foundation deletion", () => {
+    const store = useRobotStore.getState();
+    store.startNewBuild();
+    store.confirmFoundation();
+    store.installController("stm32-nucleo");
+    const controller = useRobotStore
+      .getState()
+      .parts.find((part) => part.type === "Controller");
+    expect(controller).toBeDefined();
+    if (!controller) return;
+
+    store.togglePartVisibility(controller.id);
+    store.removeController();
+    let state = useRobotStore.getState();
+    expect(state.parts.some((part) => part.id === controller.id)).toBe(false);
+    expect(
+      state.connections.some(
+        (connection) =>
+          connection.parentId === controller.id ||
+          connection.childId === controller.id
+      )
+    ).toBe(false);
+    expect(state.hiddenPartIds).not.toContain(controller.id);
+    expect(state.selectedId).toBe("foundation-chassis");
+
+    store.installController("stm32-nucleo");
+    const installedController = useRobotStore
+      .getState()
+      .parts.find((part) => part.type === "Controller");
+    expect(installedController).toBeDefined();
+    if (!installedController) return;
+    store.togglePartVisibility(installedController.id);
+    store.setSelectedId("foundation-chassis");
+    store.deleteSelected();
+
+    state = useRobotStore.getState();
+    expect(state.foundation).toBeNull();
+    expect(state.parts).toHaveLength(0);
+    expect(state.connections).toHaveLength(0);
+    expect(state.hiddenPartIds).toHaveLength(0);
+    expect(state.selectedId).toBeNull();
+  });
+
+  it("preserves and repositions an installed controller during foundation rebuilds", () => {
+    const store = useRobotStore.getState();
+    store.startNewBuild();
+    store.confirmFoundation();
+    store.installController("esp32-devkit");
+    const original = useRobotStore
+      .getState()
+      .parts.find((part) => part.type === "Controller");
+    expect(original).toBeDefined();
+    if (!original) return;
+
+    store.togglePartVisibility(original.id);
+    store.updateFoundationDimensions({ height: 0.6 });
+    store.setFoundationOptions({ includeTopPlate: false });
+
+    const state = useRobotStore.getState();
+    const controller = state.parts.find((part) => part.type === "Controller");
+    const definition = controllerCatalogue.find(
+      (item) => item.id === "esp32-devkit"
+    );
+    expect(controller?.id).toBe(original.id);
+    expect(controller?.position[1]).toBeCloseTo(
+      0.6 + (definition?.dimensions.height ?? 0) * 0.5
+    );
+    expect(state.hiddenPartIds).toContain(original.id);
+    expect(
+      state.connections.some(
+        (connection) =>
+          connection.type === "Mechanical" &&
+          connection.parentId === "foundation-chassis" &&
+          connection.childId === original.id
+      )
+    ).toBe(true);
+    expect(state.parts.filter((part) => part.type === "Controller")).toHaveLength(1);
   });
 
   it("defaults components to visible and toggles visibility independently of selection and connections", () => {
