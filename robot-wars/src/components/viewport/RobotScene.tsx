@@ -5,8 +5,15 @@ import {
   OrbitControls,
   Environment,
 } from "@react-three/drei";
-import { useEffect, useState } from "react";
-import { useThree } from "@react-three/fiber";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ComponentRef,
+  type RefObject,
+} from "react";
+import { useFrame, useThree } from "@react-three/fiber";
+import { PerspectiveCamera, Vector3 } from "three";
 
 import RobotObject from "./RobotObject";
 
@@ -24,8 +31,14 @@ import { generateMotorMountZones } from "../../features/robot-builder/logic/moun
 import { motorCatalogue } from "../../features/robot-builder/data/motorCatalogue";
 import { wheelCatalogue } from "../../features/robot-builder/data/wheelCatalogue";
 import { getWheelWorldMountTransform } from "../../features/robot-builder/logic/wheelMounting";
+import {
+  getCameraFocusDistance,
+  type CameraFocusRequest,
+} from "../../features/robot-builder/logic/viewportFocus";
 import WheelModel from "./WheelModel";
 import MotorModel from "./MotorModel";
+
+type OrbitControlsHandle = ComponentRef<typeof OrbitControls>;
 
 type RobotSceneProps = {
   parts: RobotPart[];
@@ -34,38 +47,87 @@ type RobotSceneProps = {
   transformMode: TransformMode;
   mountCandidate: MountCandidate | null;
   onMountCandidateChange: (candidate: MountCandidate | null) => void;
-  cameraFocusRequest: {
-    key: number;
-    length: number;
-    width: number;
-    height: number;
-  };
+  cameraFocusRequest: CameraFocusRequest;
+};
+
+type CameraTransition = {
+  startPosition: Vector3;
+  endPosition: Vector3;
+  startTarget: Vector3;
+  endTarget: Vector3;
+  elapsed: number;
 };
 
 function CameraFocus({
   request,
+  controlsRef,
 }: {
-  request: {
-    key: number;
-    length: number;
-    width: number;
-    height: number;
-  };
+  request: CameraFocusRequest;
+  controlsRef: RefObject<OrbitControlsHandle | null>;
 }) {
   const { camera } = useThree();
+  const transitionRef = useRef<CameraTransition | null>(null);
 
   useEffect(() => {
     if (request.key === 0) return;
-    const distance = Math.max(5, Math.max(request.length, request.width) * 2 + 1.5);
-    const targetY = request.height * 0.5;
-    camera.position.set(
-      distance * 0.68,
-      targetY + distance * 0.66,
-      distance * 0.92
+    const controls = controlsRef.current;
+    if (!controls) return;
+
+    const startPosition = camera.position.clone();
+    const startTarget = controls.target.clone();
+    const direction = startPosition.clone().sub(startTarget);
+    if (direction.lengthSq() < 0.000001) {
+      direction.set(1, 0.8, 1.2);
+    }
+    direction.normalize();
+
+    const perspectiveCamera =
+      camera instanceof PerspectiveCamera ? camera : null;
+    const distance = getCameraFocusDistance(
+      request.radius,
+      perspectiveCamera?.fov ?? 44,
+      perspectiveCamera?.aspect ?? 1
     );
-    camera.lookAt(0, targetY, 0);
-    camera.updateProjectionMatrix();
-  }, [camera, request]);
+    const endTarget = new Vector3(...request.target);
+    const endPosition = endTarget.clone().addScaledVector(direction, distance);
+
+    transitionRef.current = {
+      startPosition,
+      endPosition,
+      startTarget,
+      endTarget,
+      elapsed: 0,
+    };
+  }, [camera, controlsRef, request]);
+
+  useFrame((_, delta) => {
+    const transition = transitionRef.current;
+    const controls = controlsRef.current;
+    if (!transition || !controls) return;
+
+    transition.elapsed += delta;
+    const progress = Math.min(1, transition.elapsed / 0.45);
+    const easedProgress = progress * progress * (3 - 2 * progress);
+
+    camera.position.lerpVectors(
+      transition.startPosition,
+      transition.endPosition,
+      easedProgress
+    );
+    controls.target.lerpVectors(
+      transition.startTarget,
+      transition.endTarget,
+      easedProgress
+    );
+    controls.update();
+
+    if (progress === 1) {
+      camera.position.copy(transition.endPosition);
+      controls.target.copy(transition.endTarget);
+      controls.update();
+      transitionRef.current = null;
+    }
+  });
 
   return null;
 }
@@ -80,10 +142,12 @@ export default function RobotScene({
   cameraFocusRequest,
 }: RobotSceneProps) {
   const [orbitEnabled, setOrbitEnabled] = useState(true);
+  const controlsRef = useRef<OrbitControlsHandle>(null);
   const updatePartTransform = useRobotStore(
     (state) => state.updatePartTransform
   );
   const connections = useRobotStore((state) => state.connections);
+  const hiddenPartIds = useRobotStore((state) => state.hiddenPartIds);
   const foundation = useRobotStore((state) => state.foundation);
   const stage = useRobotStore((state) => state.stage);
   const selectedMotorCatalogueId = useRobotStore(
@@ -99,8 +163,15 @@ export default function RobotScene({
   const selectedWheelMotorId = useRobotStore(
     (state) => state.selectedWheelMotorId
   );
+  const selectedWheelDiameterCm = useRobotStore(
+    (state) => state.selectedWheelDiameterCm
+  );
+  const selectedWheelWidthCm = useRobotStore(
+    (state) => state.selectedWheelWidthCm
+  );
   const selectWheelMotor = useRobotStore((state) => state.selectWheelMotor);
 
+  const hiddenPartIdSet = new Set(hiddenPartIds);
   const motorZones =
     stage === "motors" && foundation
       ? generateMotorMountZones(foundation)
@@ -116,12 +187,22 @@ export default function RobotScene({
   const previewWheel = wheelCatalogue.find(
     (wheel) => wheel.id === selectedWheelCatalogueId
   );
+  const previewWheelDefinition = previewWheel
+    ? {
+        ...previewWheel,
+        diameter: selectedWheelDiameterCm / 100,
+        width: selectedWheelWidthCm / 100,
+      }
+    : undefined;
   const previewMotorPart = parts.find(
     (part) => part.id === selectedWheelMotorId && part.type === "Motor"
   );
+  const previewMotorIsVisible = Boolean(
+    previewMotorPart && !hiddenPartIdSet.has(previewMotorPart.id)
+  );
   const previewWheelTransform =
-    previewWheel && previewMotorPart
-      ? getWheelWorldMountTransform(previewMotorPart, previewWheel)
+    previewWheelDefinition && previewMotorPart
+      ? getWheelWorldMountTransform(previewMotorPart, previewWheelDefinition)
       : null;
   const assignedPreviewMotorWheel = previewMotorPart
     ? parts.find(
@@ -135,10 +216,32 @@ export default function RobotScene({
           )
       )
     : undefined;
+  const assignedWheelMatchesDraft = Boolean(
+    assignedPreviewMotorWheel &&
+    previewWheelDefinition &&
+    assignedPreviewMotorWheel.wheelCatalogueId === previewWheelDefinition.id &&
+    Math.abs(
+      (assignedPreviewMotorWheel.wheelDiameter ??
+        assignedPreviewMotorWheel.size[0] * 2) -
+        previewWheelDefinition.diameter
+    ) < 0.000001 &&
+    Math.abs(
+      (assignedPreviewMotorWheel.wheelWidth ??
+        assignedPreviewMotorWheel.size[1]) -
+        previewWheelDefinition.width
+    ) < 0.000001
+  );
+  const hiddenWheelId =
+    stage === "wheels" &&
+    previewWheelDefinition &&
+    assignedPreviewMotorWheel &&
+    !assignedWheelMatchesDraft
+      ? assignedPreviewMotorWheel.id
+      : null;
   const previewWheelIsCompatible = Boolean(
-    previewWheel &&
+    previewWheelDefinition &&
     previewMotorPart?.motorCatalogueId &&
-    previewWheel.compatibleMotorIds.includes(
+    previewWheelDefinition.compatibleMotorIds.includes(
       previewMotorPart.motorCatalogueId
     )
   );
@@ -213,37 +316,42 @@ export default function RobotScene({
       <directionalLight position={[-5, 4, -4]} intensity={0.48} />
 
       {/* Robot Components */}
-      {parts.map((part) => (
-        <RobotObject
-          key={part.id}
-          part={part}
-          selected={selectedId === part.id}
-          highlighted={
-            mountCandidate?.motorId === part.id ||
-            mountCandidate?.wheelId === part.id ||
-            (stage === "wheels" && selectedWheelMotorId === part.id)
-          }
-          attached={
-            Boolean(
-              part.parentAttachmentId ||
-                connections.some(
-                  (connection) =>
-                    (connection.childId ?? connection.targetId) === part.id
-                )
-            )
-          }
-          transformMode={transformMode}
-          onSelect={() => setSelectedId(part.id)}
-          onTransformUpdate={(position, rotation, size) =>
-            updatePartTransform(part.id, position, rotation, size)
-          }
-          onTransformStart={() => setOrbitEnabled(false)}
-          onTransformEnd={() => setOrbitEnabled(true)}
-          onWheelTransformEnd={(position) =>
-            handleWheelTransformEnd(part.id, position)
-          }
-        />
-      ))}
+      {parts
+        .filter(
+          (part) =>
+            part.id !== hiddenWheelId && !hiddenPartIdSet.has(part.id)
+        )
+        .map((part) => (
+          <RobotObject
+            key={part.id}
+            part={part}
+            selected={selectedId === part.id}
+            highlighted={
+              mountCandidate?.motorId === part.id ||
+              mountCandidate?.wheelId === part.id ||
+              (stage === "wheels" && selectedWheelMotorId === part.id)
+            }
+            attached={
+              Boolean(
+                part.parentAttachmentId ||
+                  connections.some(
+                    (connection) =>
+                      (connection.childId ?? connection.targetId) === part.id
+                  )
+              )
+            }
+            transformMode={transformMode}
+            onSelect={() => setSelectedId(part.id)}
+            onTransformUpdate={(position, rotation, size) =>
+              updatePartTransform(part.id, position, rotation, size)
+            }
+            onTransformStart={() => setOrbitEnabled(false)}
+            onTransformEnd={() => setOrbitEnabled(true)}
+            onWheelTransformEnd={(position) =>
+              handleWheelTransformEnd(part.id, position)
+            }
+          />
+        ))}
 
       {motorZones.map((zone) => {
         const occupied = occupiedZoneIds.has(zone.id);
@@ -313,7 +421,10 @@ export default function RobotScene({
 
       {stage === "wheels" &&
         parts
-          .filter((part) => part.type === "Motor")
+          .filter(
+            (part) =>
+              part.type === "Motor" && !hiddenPartIdSet.has(part.id)
+          )
           .map((motor) => (
             <mesh
               key={`wheel-mount:${motor.id}`}
@@ -345,22 +456,24 @@ export default function RobotScene({
           ))}
 
       {stage === "wheels" &&
-        previewWheel &&
+        previewWheelDefinition &&
         previewWheelTransform && (
+          !assignedWheelMatchesDraft &&
+          previewWheelIsCompatible &&
+          previewMotorIsVisible &&
           (!assignedPreviewMotorWheel ||
-            assignedPreviewMotorWheel.wheelCatalogueId !== previewWheel.id) &&
-          previewWheelIsCompatible
+            !hiddenPartIdSet.has(assignedPreviewMotorWheel.id))
         ) && (
           <group
             position={previewWheelTransform.position}
             rotation={previewWheelTransform.rotation}
           >
             <WheelModel
-              radius={previewWheel.diameter / 2}
-              width={previewWheel.width}
-              color={previewWheel.color}
+              radius={previewWheelDefinition.diameter / 2}
+              width={previewWheelDefinition.width}
+              color={previewWheelDefinition.color}
               preview
-              category={previewWheel.category}
+              category={previewWheelDefinition.category}
             />
           </group>
         )}
@@ -400,16 +513,20 @@ export default function RobotScene({
         infiniteGrid
       />
 
-      <CameraFocus request={cameraFocusRequest} />
+      <CameraFocus
+        request={cameraFocusRequest}
+        controlsRef={controlsRef}
+      />
 
       <OrbitControls
+        ref={controlsRef}
         makeDefault
         target={[0, targetY, 0]}
         enabled={orbitEnabled}
         enableDamping
         dampingFactor={0.075}
-        minDistance={2.5}
-        maxDistance={20}
+        minDistance={0.35}
+        maxDistance={Math.max(20, cameraFocusRequest.radius * 10)}
         minPolarAngle={0.12}
         maxPolarAngle={Math.PI * 0.48}
         zoomSpeed={0.85}

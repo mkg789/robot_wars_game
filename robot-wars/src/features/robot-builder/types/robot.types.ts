@@ -11,6 +11,9 @@ export type RobotPart = {
   motorCatalogueId?: MotorCatalogueId;
   mountingZoneId?: string;
   wheelCatalogueId?: WheelCatalogueId;
+  wheelDiameter?: number;
+  wheelWidth?: number;
+  batteryCatalogueId?: BatteryCatalogueId;
 };
 
 export type Vector3Data = [number, number, number];
@@ -44,7 +47,8 @@ export type ComponentType =
   | "Structural Block"
   | "Front Bumper"
   | "Wheel"
-  | "Motor";
+  | "Motor"
+  | "Battery";
 
 export type FoundationModelId =
   | "compact-square"
@@ -61,12 +65,53 @@ export type FoundationConfig = {
   confirmed: boolean;
 };
 
-export type BuildStage = "foundation" | "motors" | "wheels" | "completed";
+export type BuildStage =
+  | "foundation"
+  | "battery"
+  | "motors"
+  | "wheels"
+  | "drivetrain"
+  | "completed";
+
+export type DrivetrainType = "differential-2" | "differential-4";
+export type DrivetrainSide = "left" | "right";
+
+export type DrivetrainAssignment = {
+  motorId: string;
+  wheelId: string;
+};
+
+export type DrivetrainConfiguration = {
+  type: DrivetrainType;
+  left: Array<DrivetrainAssignment | null>;
+  right: Array<DrivetrainAssignment | null>;
+  mappingCustomized: boolean;
+};
 
 export type MotorCatalogueId =
   | "small-dc"
   | "standard-dc"
   | "high-torque-dc";
+
+export type BatteryCatalogueId =
+  | "compact-lipo"
+  | "standard-lipo"
+  | "heavy-duty-lipo";
+
+export type BatteryDefinition = {
+  id: BatteryCatalogueId;
+  name: string;
+  chemistry: "LiPo";
+  voltage: number;
+  capacityMah: number;
+  dimensions: {
+    length: number;
+    width: number;
+    height: number;
+  };
+  weight: number;
+  color: string;
+};
 
 export type MotorDefinition = {
   id: MotorCatalogueId;
@@ -104,4 +149,9 @@ export type WheelDefinition = {
   category: "Rubber" | "Heavy-duty" | "Grip" | "Omni";
   color: string;
   compatibleMotorIds: MotorCatalogueId[];
+};
+
+export type WheelDimensionDraft = {
+  diameterCm: number;
+  widthCm: number;
 };

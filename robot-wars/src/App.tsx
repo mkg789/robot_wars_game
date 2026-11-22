@@ -7,7 +7,25 @@ import type { MountCandidate } from "./features/robot-builder/logic/mounting";
 import { foundationModels } from "./features/robot-builder/data/foundationModels";
 import { motorCatalogue } from "./features/robot-builder/data/motorCatalogue";
 import { wheelCatalogue } from "./features/robot-builder/data/wheelCatalogue";
+import { batteryCatalogue } from "./features/robot-builder/data/batteryCatalogue";
 import { generateMotorMountZones } from "./features/robot-builder/logic/mountingZones";
+import {
+  getDrivetrainAssignmentKey,
+  getDrivetrainSlotCount,
+  getPoweredWheelAssemblies,
+  validateDrivetrain,
+} from "./features/robot-builder/logic/drivetrain";
+import type {
+  DrivetrainSide,
+  DrivetrainType,
+} from "./features/robot-builder/types/robot.types";
+import {
+  getAssemblyFocusFrame,
+  getComponentFocusFrame,
+  getVisibleSelectedPart,
+  type CameraFocusFrame,
+  type CameraFocusRequest,
+} from "./features/robot-builder/logic/viewportFocus";
 
 import "./App.css";
 
@@ -56,6 +74,34 @@ function NumericInput({
   );
 }
 
+function VisibilityIcon({ visible }: { visible: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 16 16"
+      width="15"
+      height="15"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.4"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      {visible ? (
+        <>
+          <path d="M1.5 8s2.2-4.5 6.5-4.5S14.5 8 14.5 8 12.3 12.5 8 12.5 1.5 8 1.5 8Z" />
+          <circle cx="8" cy="8" r="1.8" />
+        </>
+      ) : (
+        <>
+          <path d="M2 5.2C1.7 5.6 1.5 6 1.5 6s2.2 4.5 6.5 4.5c1 0 1.9-.3 2.7-.7M5.2 3.8A6.2 6.2 0 0 1 8 3.2c4.3 0 6.5 4.5 6.5 4.5s-.5 1-1.6 2" />
+          <path d="m2 2 12 12" />
+        </>
+      )}
+    </svg>
+  );
+}
+
 // --------------------------------------------------
 // APPLICATION
 // --------------------------------------------------
@@ -63,17 +109,27 @@ function NumericInput({
 function App() {
   const [mountCandidate, setMountCandidate] =
     useState<MountCandidate | null>(null);
-  const [cameraFocusRequest, setCameraFocusRequest] = useState({
-    key: 0,
-    length: 2,
-    width: 1.5,
-    height: 0.35,
-  });
+  const [collapsedPartIds, setCollapsedPartIds] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [cameraFocusRequest, setCameraFocusRequest] =
+    useState<CameraFocusRequest>({
+      key: 0,
+      target: [0, 0.175, 0],
+      radius: 1,
+    });
+  const [confirmAutoMap, setConfirmAutoMap] = useState(false);
+  const [pendingDrivetrainType, setPendingDrivetrainType] =
+    useState<DrivetrainType | null>(null);
   const parts = useRobotStore((state) => state.parts);
+  const hiddenPartIds = useRobotStore((state) => state.hiddenPartIds);
   const selectedId = useRobotStore((state) => state.selectedId);
   const transformMode = useRobotStore((state) => state.transformMode);
 
   const setSelectedId = useRobotStore((state) => state.setSelectedId);
+  const togglePartVisibility = useRobotStore(
+    (state) => state.togglePartVisibility
+  );
   const mountWheelToMotor = useRobotStore(
     (state) => state.mountWheelToMotor
   );
@@ -92,8 +148,26 @@ function App() {
   const confirmFoundation = useRobotStore(
     (state) => state.confirmFoundation
   );
+  const selectedBatteryCatalogueId = useRobotStore(
+    (state) => state.selectedBatteryCatalogueId
+  );
+  const selectBatteryCatalogueItem = useRobotStore(
+    (state) => state.selectBatteryCatalogueItem
+  );
+  const installBattery = useRobotStore((state) => state.installBattery);
+  const removeBattery = useRobotStore((state) => state.removeBattery);
   const stage = useRobotStore((state) => state.stage);
   const setStage = useRobotStore((state) => state.setStage);
+  const drivetrain = useRobotStore((state) => state.drivetrain);
+  const setDrivetrainType = useRobotStore(
+    (state) => state.setDrivetrainType
+  );
+  const setDrivetrainAssignment = useRobotStore(
+    (state) => state.setDrivetrainAssignment
+  );
+  const applySuggestedDrivetrainMapping = useRobotStore(
+    (state) => state.applySuggestedDrivetrainMapping
+  );
   const selectedMotorCatalogueId = useRobotStore(
     (state) => state.selectedMotorCatalogueId
   );
@@ -116,29 +190,60 @@ function App() {
   const selectedWheelMotorId = useRobotStore(
     (state) => state.selectedWheelMotorId
   );
+  const selectedWheelDiameterCm = useRobotStore(
+    (state) => state.selectedWheelDiameterCm
+  );
+  const selectedWheelWidthCm = useRobotStore(
+    (state) => state.selectedWheelWidthCm
+  );
   const selectWheelCatalogueItem = useRobotStore(
     (state) => state.selectWheelCatalogueItem
+  );
+  const updateSelectedWheelDimensions = useRobotStore(
+    (state) => state.updateSelectedWheelDimensions
   );
   const selectWheelMotor = useRobotStore((state) => state.selectWheelMotor);
   const assignWheel = useRobotStore((state) => state.assignWheel);
   const removeWheel = useRobotStore((state) => state.removeWheel);
   const finishBuild = useRobotStore((state) => state.finishBuild);
 
+  const hiddenPartIdSet = new Set(hiddenPartIds);
+  const visibleParts = parts.filter((part) => !hiddenPartIdSet.has(part.id));
+  const selectedPart = parts.find((part) => part.id === selectedId) ?? null;
+  const focusableSelectedPart = getVisibleSelectedPart(
+    parts,
+    selectedId,
+    hiddenPartIds
+  );
+  const selectedPartIsHidden = Boolean(
+    selectedPart && !focusableSelectedPart
+  );
+  const requestCameraFocus = (frame: CameraFocusFrame | null) => {
+    if (!frame) return;
+    setCameraFocusRequest((request) => ({
+      ...frame,
+      key: request.key + 1,
+    }));
+  };
   const childrenByParent = new Map<string, typeof parts>();
   for (const connection of connections) {
     const parentId = connection.parentId ?? connection.sourceId;
     const childId = connection.childId ?? connection.targetId;
+    const child = parts.find((part) => part.id === childId);
+    if (!child || !parts.some((part) => part.id === parentId)) continue;
+
     childrenByParent.set(parentId, [
       ...(childrenByParent.get(parentId) ?? []),
-      ...(parts.find((part) => part.id === childId)
-        ? [parts.find((part) => part.id === childId)!]
-        : []),
+      child,
     ]);
   }
-
   const renderHierarchy = (partId: string, depth = 0): ReactNode => {
     const part = parts.find((item) => item.id === partId);
     if (!part) return null;
+    const children = childrenByParent.get(part.id) ?? [];
+    const hasChildren = children.length > 0;
+    const expanded = hasChildren && !collapsedPartIds.has(part.id);
+    const visible = !hiddenPartIdSet.has(part.id);
 
     return (
       <div key={part.id}>
@@ -147,25 +252,58 @@ function App() {
             selectedId === part.id ? "selected" : ""
           }`}
           style={{ paddingLeft: `${10 + depth * 14}px` }}
-          onClick={() => setSelectedId(part.id)}
         >
-          <span className="tree-icon">
-            {childrenByParent.has(part.id) ? "▸" : "▣"}
-          </span>
-          {part.name}
+          {hasChildren ? (
+            <button
+              type="button"
+              className="tree-expand"
+              aria-label={`${expanded ? "Collapse" : "Expand"} ${part.name}`}
+              aria-expanded={expanded}
+              onClick={() =>
+                setCollapsedPartIds((current) => {
+                  const next = new Set(current);
+                  if (next.has(part.id)) next.delete(part.id);
+                  else next.add(part.id);
+                  return next;
+                })
+              }
+            >
+              {expanded ? "▾" : "▸"}
+            </button>
+          ) : (
+            <span className="tree-expand-spacer" aria-hidden="true" />
+          )}
+          <button
+            type="button"
+            className="tree-select"
+            aria-label={`Select ${part.name}`}
+            aria-pressed={selectedId === part.id}
+            onClick={() => setSelectedId(part.id)}
+          >
+            <span className="tree-icon" aria-hidden="true">▣</span>
+            <span className="tree-label">{part.name}</span>
+          </button>
+          <button
+            type="button"
+            className={`tree-visibility ${visible ? "visible" : "hidden"}`}
+            aria-label={`${visible ? "Hide" : "Show"} ${part.name}`}
+            aria-pressed={!visible}
+            title={`${visible ? "Hide" : "Show"} ${part.name}`}
+            onClick={() => togglePartVisibility(part.id)}
+          >
+            <VisibilityIcon visible={visible} />
+          </button>
         </div>
-        {(childrenByParent.get(part.id) ?? []).map((child) =>
-          renderHierarchy(child.id, depth + 1)
-        )}
+        {expanded &&
+          children.map((child) => renderHierarchy(child.id, depth + 1))}
       </div>
     );
   };
 
-  const attachedChildIds = new Set(
-    connections.map(
-      (connection) => connection.childId ?? connection.targetId
-    )
-  );
+  const attachedChildIds = new Set<string>();
+  for (const children of childrenByParent.values()) {
+    children.forEach((child) => attachedChildIds.add(child.id));
+  }
   const independentParts = parts.filter(
     (part) => !attachedChildIds.has(part.id)
   );
@@ -180,6 +318,13 @@ function App() {
   );
   const selectedWheelDefinition = wheelCatalogue.find(
     (wheel) => wheel.id === selectedWheelCatalogueId
+  );
+  const selectedBatteryDefinition = batteryCatalogue.find(
+    (battery) => battery.id === selectedBatteryCatalogueId
+  );
+  const installedBattery = parts.find((part) => part.type === "Battery");
+  const installedBatteryDefinition = batteryCatalogue.find(
+    (battery) => battery.id === installedBattery?.batteryCatalogueId
   );
   const mountedWheels = parts.filter((part) => part.type === "Wheel");
   const wheelByMotorId = new Map<
@@ -206,6 +351,95 @@ function App() {
   const occupiedZoneIds = new Set(
     mountedMotors.map((motor) => motor.mountingZoneId)
   );
+  const poweredWheelAssemblies = getPoweredWheelAssemblies(
+    parts,
+    connections,
+    foundation
+  );
+  const drivetrainValidation = validateDrivetrain(
+    drivetrain,
+    parts,
+    connections,
+    foundation
+  );
+  const drivetrainSlotCount = getDrivetrainSlotCount(drivetrain.type);
+
+  const renderDrivetrainGroup = (side: DrivetrainSide) => {
+    const sideLabel = side === "left" ? "Left" : "Right";
+    return (
+      <div className="drivetrain-group" key={side}>
+        <div className="drivetrain-group-title">{sideLabel} drive group</div>
+        {Array.from({ length: drivetrainSlotCount }, (_, index) => {
+          const currentAssignment = drivetrain[side][index] ?? null;
+          const currentKey = currentAssignment
+            ? getDrivetrainAssignmentKey(currentAssignment)
+            : "";
+          const hasDuplicateAssignment = (): boolean =>
+            (["left", "right"] as const).some((otherSide) =>
+              drivetrain[otherSide].some((assignment, otherIndex) => {
+                if (!assignment) return false;
+                if (otherSide === side && otherIndex === index) return false;
+                return (
+                  assignment.motorId === currentAssignment?.motorId ||
+                  assignment.wheelId === currentAssignment?.wheelId
+                );
+              })
+            );
+
+          return (
+            <label
+              className="drivetrain-slot"
+              key={`${side}-${index}`}
+            >
+              <span>
+                {sideLabel} wheel {index + 1}
+              </span>
+              <select
+                aria-label={`${sideLabel} drive wheel ${index + 1}`}
+                value={currentKey}
+                disabled={pendingDrivetrainType !== null}
+                onChange={(event) => {
+                  const selectedAssembly = poweredWheelAssemblies.find(
+                    (assembly) =>
+                      getDrivetrainAssignmentKey(assembly) ===
+                      event.target.value
+                  );
+                  setDrivetrainAssignment(
+                    side,
+                    index,
+                    selectedAssembly
+                      ? {
+                          motorId: selectedAssembly.motorId,
+                          wheelId: selectedAssembly.wheelId,
+                        }
+                      : null
+                  );
+                }}
+              >
+                <option value="">Select powered wheel assembly</option>
+                {poweredWheelAssemblies.map((assembly) => {
+                  return (
+                    <option
+                      key={getDrivetrainAssignmentKey(assembly)}
+                      value={getDrivetrainAssignmentKey(assembly)}
+                    >
+                      {assembly.mountingLocation}: {assembly.motor.name} +{" "}
+                      {assembly.wheel.name}
+                    </option>
+                  );
+                })}
+              </select>
+              {currentAssignment && hasDuplicateAssignment() && (
+                <small className="drivetrain-warning">
+                  This assembly is already assigned to another drive slot.
+                </small>
+              )}
+            </label>
+          );
+        })}
+      </div>
+    );
+  };
 
   return (
     <div className="workshop">
@@ -242,29 +476,56 @@ function App() {
         <aside className="left-panel">
           <div className="panel-content">
             <div className="builder-steps">
-              <div className={`builder-step ${stage === "foundation" ? "active" : "complete"}`}>
+              <div className={`builder-step ${
+                stage === "foundation" ? "active" : "complete"
+              }`}>
                 <span>1</span>
                 Foundation
               </div>
               <div className={`builder-step ${
-                stage === "motors"
+                stage === "battery"
                   ? "active"
-                  : stage === "wheels" || stage === "completed"
+                  : stage === "motors" ||
+                      stage === "wheels" ||
+                      stage === "drivetrain" ||
+                      stage === "completed"
                     ? "complete"
                     : ""
               }`}>
                 <span>2</span>
+                Battery
+              </div>
+              <div className={`builder-step ${
+                stage === "motors"
+                  ? "active"
+                  : stage === "wheels" ||
+                      stage === "drivetrain" ||
+                      stage === "completed"
+                    ? "complete"
+                    : ""
+              }`}>
+                <span>3</span>
                 Motors
               </div>
               <div className={`builder-step ${
                 stage === "wheels"
                   ? "active"
+                  : stage === "drivetrain" || stage === "completed"
+                    ? "complete"
+                    : ""
+              }`}>
+                <span>4</span>
+                Wheels
+              </div>
+              <div className={`builder-step ${
+                stage === "drivetrain"
+                  ? "active"
                   : stage === "completed"
                     ? "complete"
                     : ""
               }`}>
-                <span>3</span>
-                Wheels
+                <span>5</span>
+                Drivetrain
               </div>
             </div>
 
@@ -290,6 +551,50 @@ function App() {
                     </button>
                   ))}
                 </div>
+              </>
+            ) : stage === "battery" ? (
+              <>
+                <div className="section-label">BATTERY CATALOGUE</div>
+                <p className="builder-intro">
+                  Choose an optional battery to install on the foundation.
+                </p>
+                <div className="motor-list">
+                  {batteryCatalogue.map((battery) => (
+                    <button
+                      key={battery.id}
+                      className={`motor-card ${
+                        selectedBatteryCatalogueId === battery.id
+                          ? "selected"
+                          : ""
+                      }`}
+                      onClick={() => selectBatteryCatalogueItem(battery.id)}
+                    >
+                      <span
+                        className="motor-card-icon"
+                        style={{ borderColor: battery.color }}
+                      >
+                        ▰
+                      </span>
+                      <span>
+                        <strong>{battery.name}</strong>
+                        <small>
+                          {battery.voltage}V · {battery.capacityMah}mAh
+                        </small>
+                      </span>
+                    </button>
+                  ))}
+                </div>
+                <div className="battery-install-status" role="status">
+                  {installedBatteryDefinition
+                    ? `${installedBatteryDefinition.name} installed`
+                    : "No battery installed"}
+                </div>
+                <button
+                  className="stage-back-button"
+                  onClick={() => setStage("foundation")}
+                >
+                  ← Back to Foundation
+                </button>
               </>
             ) : stage === "motors" ? (
               <>
@@ -356,6 +661,30 @@ function App() {
                   ← Back to Motors
                 </button>
               </>
+            ) : stage === "drivetrain" ? (
+              <>
+                <div className="section-label">DRIVETRAIN CONFIGURATION</div>
+                <p className="builder-intro">
+                  Map mounted motor and wheel assemblies to the left and right
+                  drive groups.
+                </p>
+                <div
+                  className={`drivetrain-status ${
+                    drivetrainValidation.isValid ? "valid" : "invalid"
+                  }`}
+                  role="status"
+                >
+                  {drivetrainValidation.isValid
+                    ? "Configuration ready"
+                    : "Configuration needs attention"}
+                </div>
+                <button
+                  className="stage-back-button"
+                  onClick={() => setStage("wheels")}
+                >
+                  ← Back to Wheels
+                </button>
+              </>
             ) : stage === "completed" ? (
               <>
                 <div className="section-label">BUILD COMPLETE</div>
@@ -376,9 +705,21 @@ function App() {
                 </button>
                 <button
                   className="stage-back-button"
+                  onClick={() => setStage("drivetrain")}
+                >
+                  ← Edit Drivetrain
+                </button>
+                <button
+                  className="stage-back-button"
                   onClick={() => setStage("foundation")}
                 >
                   ← Edit Foundation
+                </button>
+                <button
+                  className="stage-back-button"
+                  onClick={() => setStage("battery")}
+                >
+                  ← Edit Battery
                 </button>
               </>
             ) : (
@@ -458,21 +799,50 @@ function App() {
           </div>
 
           <div className="viewport-focus">
-            <button
-              type="button"
-              onClick={() =>
-                setCameraFocusRequest((request) => ({
-                  key: request.key + 1,
-                  length: foundation?.length ?? 2,
-                  width: foundation?.width ?? 1.5,
-                  height: foundation?.height ?? 0.35,
-                }))
-              }
-              disabled={!foundation}
-              title="Center and frame the robot"
-            >
-              Focus Robot
-            </button>
+            <div className="viewport-focus-actions">
+              <button
+                type="button"
+                onClick={() =>
+                  requestCameraFocus(getAssemblyFocusFrame(visibleParts))
+                }
+                disabled={!foundation || visibleParts.length === 0}
+                title="Center and frame the visible robot"
+              >
+                Focus Robot
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (focusableSelectedPart) {
+                    requestCameraFocus(
+                      getComponentFocusFrame(focusableSelectedPart)
+                    );
+                  }
+                }}
+                disabled={!focusableSelectedPart}
+                title={
+                  selectedPartIsHidden
+                    ? "Show this component in the Assembly tree before focusing"
+                    : selectedPart
+                      ? "Center and frame the selected component"
+                      : "Select a component before focusing"
+                }
+              >
+                Focus Component
+              </button>
+            </div>
+            {selectedPartIsHidden && selectedPart && (
+              <div className="viewport-focus-note" role="status">
+                {selectedPart.name} is hidden. Show it in the Assembly tree before focusing.
+              </div>
+            )}
+            {foundation &&
+              visibleParts.length === 0 &&
+              !selectedPartIsHidden && (
+                <div className="viewport-focus-note" role="status">
+                  Show a component to focus the robot.
+                </div>
+              )}
           </div>
 
           {!foundation && (
@@ -517,7 +887,182 @@ function App() {
           </div>
 
           <div className="panel-content">
-            {stage === "foundation" && foundation ? (
+            {stage === "drivetrain" && foundation ? (
+              <>
+                <div className="section-label">DRIVETRAIN TYPE</div>
+                <label className="drivetrain-type-control">
+                  <span>Drive configuration</span>
+                  <select
+                    aria-label="Drivetrain type"
+                    value={pendingDrivetrainType ?? drivetrain.type}
+                    onChange={(event) => {
+                      setConfirmAutoMap(false);
+                      const nextType = event.target.value as DrivetrainType;
+                      const nextSlotCount =
+                        getDrivetrainSlotCount(nextType);
+                      const removesCustomAssignments =
+                        drivetrain.mappingCustomized &&
+                        (["left", "right"] as const).some((side) =>
+                          drivetrain[side]
+                            .slice(nextSlotCount)
+                            .some((assignment) => assignment !== null)
+                        );
+                      if (removesCustomAssignments) {
+                        setPendingDrivetrainType(nextType);
+                      } else {
+                        setPendingDrivetrainType(null);
+                        setDrivetrainType(nextType);
+                      }
+                    }}
+                  >
+                    <option value="differential-2">
+                      Differential Drive · 2 wheel
+                    </option>
+                    <option value="differential-4">
+                      4-Wheel Differential Drive
+                    </option>
+                  </select>
+                </label>
+                {pendingDrivetrainType && (
+                  <div className="drivetrain-confirm" role="group">
+                    <p>
+                      Switching to 2-wheel differential drive removes the
+                      additional custom assignments. Continue?
+                    </p>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() => {
+                        setDrivetrainType(pendingDrivetrainType, true);
+                        setPendingDrivetrainType(null);
+                      }}
+                    >
+                      Switch and Remove Extra Assignments
+                    </button>
+                    <button
+                      type="button"
+                      className="stage-back-button"
+                      onClick={() => setPendingDrivetrainType(null)}
+                    >
+                      Keep Current Type
+                    </button>
+                  </div>
+                )}
+                <p className="builder-intro">
+                  {drivetrain.type === "differential-2"
+                    ? "Assign one powered wheel assembly to each side."
+                    : "Assign two powered wheel assemblies to each side."}
+                </p>
+
+                <button
+                  type="button"
+                  className="secondary-button drivetrain-suggest-button"
+                  disabled={pendingDrivetrainType !== null}
+                  onClick={() => {
+                    if (drivetrain.mappingCustomized) {
+                      setConfirmAutoMap(true);
+                    } else {
+                      applySuggestedDrivetrainMapping();
+                    }
+                  }}
+                >
+                  Suggest Mapping
+                </button>
+                {confirmAutoMap && (
+                  <div className="drivetrain-confirm" role="group">
+                    <p>
+                      Replace the custom mapping with the mounting-position
+                      suggestion?
+                    </p>
+                    <button
+                      type="button"
+                      className="primary-button"
+                      onClick={() => {
+                        applySuggestedDrivetrainMapping(true);
+                        setConfirmAutoMap(false);
+                      }}
+                    >
+                      Apply Suggestion
+                    </button>
+                    <button
+                      type="button"
+                      className="stage-back-button"
+                      onClick={() => setConfirmAutoMap(false)}
+                    >
+                      Keep Current Mapping
+                    </button>
+                  </div>
+                )}
+
+                {renderDrivetrainGroup("left")}
+                {renderDrivetrainGroup("right")}
+
+                <div
+                  className={`drivetrain-status ${
+                    drivetrainValidation.isValid ? "valid" : "invalid"
+                  }`}
+                  role="status"
+                >
+                  {drivetrainValidation.isValid
+                    ? "Drivetrain configuration valid"
+                    : "Drivetrain configuration incomplete"}
+                </div>
+                {!drivetrainValidation.isValid && (
+                  <ul className="drivetrain-errors" role="alert">
+                    {drivetrainValidation.errors.map((error) => (
+                      <li key={error}>{error}</li>
+                    ))}
+                  </ul>
+                )}
+
+                <div className="section-label">CONFIGURATION SUMMARY</div>
+                {(["left", "right"] as const).map((side) => (
+                  <div className="drivetrain-summary-side" key={side}>
+                    <strong>
+                      {side === "left" ? "Left" : "Right"} drive group
+                    </strong>
+                    {drivetrain[side].every(
+                      (assignment) => assignment === null
+                    ) ? (
+                      <small>Unassigned</small>
+                    ) : (
+                      drivetrain[side].map((assignment, index) => {
+                        if (!assignment) return null;
+                        const assembly = poweredWheelAssemblies.find(
+                          (item) =>
+                            item.motorId === assignment.motorId &&
+                            item.wheelId === assignment.wheelId
+                        );
+                        return (
+                          <small key={`${side}-summary-${index}`}>
+                            {assembly
+                              ? `${assembly.mountingLocation}: ${assembly.motor.name} · ${assembly.wheel.name}`
+                              : "Assignment is no longer available"}
+                          </small>
+                        );
+                      })
+                    )}
+                  </div>
+                ))}
+
+                <button
+                  className="primary-button foundation-confirm"
+                  disabled={
+                    !drivetrainValidation.isValid ||
+                    pendingDrivetrainType !== null
+                  }
+                  onClick={finishBuild}
+                >
+                  Complete Build
+                </button>
+                <button
+                  className="stage-back-button"
+                  onClick={() => setStage("wheels")}
+                >
+                  ← Back to Wheels
+                </button>
+              </>
+            ) : stage === "foundation" && foundation ? (
               <>
                 <div className="section-label">FOUNDATION CONFIGURATION</div>
 
@@ -606,6 +1151,96 @@ function App() {
                     Confirm Foundation
                   </button>
                 )}
+              </>
+            ) : stage === "battery" && foundation ? (
+              <>
+                <div className="section-label">BATTERY SPECIFICATIONS</div>
+                {selectedBatteryDefinition ? (
+                  <div className="motor-spec-card">
+                    <div className="motor-spec-title">
+                      <span
+                        className="motor-card-icon"
+                        style={{
+                          borderColor: selectedBatteryDefinition.color,
+                        }}
+                      >
+                        ▰
+                      </span>
+                      <div>
+                        <strong>{selectedBatteryDefinition.name}</strong>
+                        <small>Sample game-catalogue values</small>
+                      </div>
+                    </div>
+                    <div className="property-row">
+                      <span>Chemistry</span>
+                      <span>{selectedBatteryDefinition.chemistry}</span>
+                    </div>
+                    <div className="property-row">
+                      <span>Voltage</span>
+                      <span>{selectedBatteryDefinition.voltage}V</span>
+                    </div>
+                    <div className="property-row">
+                      <span>Capacity</span>
+                      <span>
+                        {selectedBatteryDefinition.capacityMah.toLocaleString()}{" "}
+                        mAh
+                      </span>
+                    </div>
+                    <div className="property-row">
+                      <span>Dimensions (L × W × H)</span>
+                      <span>
+                        {selectedBatteryDefinition.dimensions.length.toFixed(2)}{" "}
+                        × {selectedBatteryDefinition.dimensions.width.toFixed(2)}{" "}
+                        × {selectedBatteryDefinition.dimensions.height.toFixed(3)}{" "}
+                        m
+                      </span>
+                    </div>
+                    <div className="property-row">
+                      <span>Weight</span>
+                      <span>{selectedBatteryDefinition.weight.toFixed(2)} kg</span>
+                    </div>
+                  </div>
+                ) : (
+                  <p className="builder-intro">
+                    Select a battery from the catalogue.
+                  </p>
+                )}
+
+                <div className="battery-install-status" role="status">
+                  {installedBatteryDefinition
+                    ? `Installed: ${installedBatteryDefinition.name}`
+                    : "No battery installed. Battery installation is optional."}
+                </div>
+                <button
+                  className="primary-button foundation-confirm"
+                  disabled={!selectedBatteryDefinition}
+                  onClick={() => {
+                    if (selectedBatteryCatalogueId) {
+                      installBattery(selectedBatteryCatalogueId);
+                    }
+                  }}
+                >
+                  {installedBattery ? "Install / Replace Battery" : "Install Battery"}
+                </button>
+                <button
+                  className="danger-button battery-remove-button"
+                  disabled={!installedBattery}
+                  onClick={removeBattery}
+                >
+                  Remove Battery
+                </button>
+                <button
+                  className="primary-button foundation-confirm"
+                  onClick={() => setStage("motors")}
+                >
+                  Continue to Motors
+                </button>
+                <button
+                  className="stage-back-button"
+                  onClick={() => setStage("foundation")}
+                >
+                  ← Back to Foundation
+                </button>
               </>
             ) : stage === "motors" ? (
               <>
@@ -777,6 +1412,103 @@ function App() {
                   </p>
                 )}
 
+                {selectedWheelDefinition && (
+                  <>
+                    <div className="section-label">WHEEL CUSTOMIZATION</div>
+                    <div className="wheel-dimension-control">
+                      <div className="wheel-dimension-heading">
+                        <label htmlFor="wheel-diameter">Diameter</label>
+                        <span>{selectedWheelDiameterCm.toFixed(1)} cm</span>
+                      </div>
+                      <div className="wheel-dimension-inputs">
+                        <input
+                          id="wheel-diameter"
+                          aria-label="Wheel diameter in centimeters"
+                          type="number"
+                          min={8}
+                          max={60}
+                          step={0.1}
+                          value={selectedWheelDiameterCm}
+                          onChange={(event) => {
+                            if (event.target.value === "") return;
+                            const value = Number(event.target.value);
+                            if (Number.isFinite(value)) {
+                              updateSelectedWheelDimensions({
+                                diameterCm: value,
+                              });
+                            }
+                          }}
+                        />
+                        <span>cm</span>
+                      </div>
+                      <input
+                        className="wheel-dimension-slider"
+                        aria-label="Wheel diameter slider"
+                        type="range"
+                        min={8}
+                        max={60}
+                        step={0.5}
+                        value={selectedWheelDiameterCm}
+                        onChange={(event) =>
+                          updateSelectedWheelDimensions({
+                            diameterCm: Number(event.target.value),
+                          })
+                        }
+                      />
+                      <div className="wheel-dimension-limits">
+                        <span>8 cm</span>
+                        <span>60 cm</span>
+                      </div>
+                    </div>
+
+                    <div className="wheel-dimension-control">
+                      <div className="wheel-dimension-heading">
+                        <label htmlFor="wheel-width">Width</label>
+                        <span>{selectedWheelWidthCm.toFixed(1)} cm</span>
+                      </div>
+                      <div className="wheel-dimension-inputs">
+                        <input
+                          id="wheel-width"
+                          aria-label="Wheel width in centimeters"
+                          type="number"
+                          min={3}
+                          max={20}
+                          step={0.1}
+                          value={selectedWheelWidthCm}
+                          onChange={(event) => {
+                            if (event.target.value === "") return;
+                            const value = Number(event.target.value);
+                            if (Number.isFinite(value)) {
+                              updateSelectedWheelDimensions({
+                                widthCm: value,
+                              });
+                            }
+                          }}
+                        />
+                        <span>cm</span>
+                      </div>
+                      <input
+                        className="wheel-dimension-slider"
+                        aria-label="Wheel width slider"
+                        type="range"
+                        min={3}
+                        max={20}
+                        step={0.1}
+                        value={selectedWheelWidthCm}
+                        onChange={(event) =>
+                          updateSelectedWheelDimensions({
+                            widthCm: Number(event.target.value),
+                          })
+                        }
+                      />
+                      <div className="wheel-dimension-limits">
+                        <span>3 cm</span>
+                        <span>20 cm</span>
+                      </div>
+                    </div>
+                  </>
+                )}
+
                 <div className="section-label">
                   ASSIGN TO MOTOR ({mountedMotors.length} INSTALLED)
                 </div>
@@ -887,9 +1619,9 @@ function App() {
 
                 <button
                   className="primary-button foundation-confirm"
-                  onClick={finishBuild}
+                  onClick={() => setStage("drivetrain")}
                 >
-                  Finish Build
+                  Continue to Drivetrain
                 </button>
                 <button
                   className="stage-back-button"
@@ -915,6 +1647,12 @@ function App() {
                     </span>
                   </div>
                   <div className="property-row">
+                    <span>Battery</span>
+                    <span>
+                      {installedBatteryDefinition?.name ?? "None installed"}
+                    </span>
+                  </div>
+                  <div className="property-row">
                     <span>Installed motors</span>
                     <span>{mountedMotors.length}</span>
                   </div>
@@ -936,11 +1674,55 @@ function App() {
                     </small>
                   </div>
                 ))}
+                <div className="section-label">DRIVETRAIN</div>
+                <div className="drivetrain-summary-card">
+                  <strong>
+                    {drivetrain.type === "differential-2"
+                      ? "Differential Drive · 2 wheel"
+                      : "4-Wheel Differential Drive"}
+                  </strong>
+                  <span className="drivetrain-status valid">
+                    Configuration valid
+                  </span>
+                  {(["left", "right"] as const).map((side) => (
+                    <div className="drivetrain-summary-side" key={side}>
+                      <strong>
+                        {side === "left" ? "Left" : "Right"} drive group
+                      </strong>
+                      {drivetrain[side].map((assignment, index) => {
+                        if (!assignment) return null;
+                        const assembly = poweredWheelAssemblies.find(
+                          (item) =>
+                            item.motorId === assignment.motorId &&
+                            item.wheelId === assignment.wheelId
+                        );
+                        return assembly ? (
+                          <small key={`${side}-complete-${index}`}>
+                            {assembly.mountingLocation}: {assembly.motor.name} ·{" "}
+                            {assembly.wheel.name}
+                          </small>
+                        ) : null;
+                      })}
+                    </div>
+                  ))}
+                </div>
+                <button
+                  className="stage-back-button"
+                  onClick={() => setStage("drivetrain")}
+                >
+                  Edit Drivetrain
+                </button>
                 <button
                   className="stage-back-button"
                   onClick={() => setStage("foundation")}
                 >
                   Edit Foundation
+                </button>
+                <button
+                  className="stage-back-button"
+                  onClick={() => setStage("battery")}
+                >
+                  Edit Battery
                 </button>
                 <button
                   className="stage-back-button"

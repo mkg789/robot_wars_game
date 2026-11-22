@@ -2,9 +2,11 @@ import { useLayoutEffect, useRef } from "react";
 import { TransformControls, RoundedBox } from "@react-three/drei";
 import type { Group } from "three";
 
+import BatteryModel from "./BatteryModel";
 import MotorModel from "./MotorModel";
 import { ChassisModel, TopPlateModel } from "./ChassisModel";
 import WheelModel from "./WheelModel";
+import { batteryCatalogue } from "../../features/robot-builder/data/batteryCatalogue";
 import { wheelCatalogue } from "../../features/robot-builder/data/wheelCatalogue";
 import type {
   RobotPart,
@@ -54,6 +56,21 @@ export default function RobotObject({
 
   const materialColor =
     selected || highlighted ? "#fbbf24" : part.color;
+  const batteryDefinition = batteryCatalogue.find(
+    (battery) => battery.id === part.batteryCatalogueId
+  );
+  const batteryDesign =
+    part.batteryCatalogueId === "standard-lipo"
+      ? "hardcase-3s"
+      : part.batteryCatalogueId === "heavy-duty-lipo"
+        ? "drone-6s"
+        : "soft-2s";
+  const batteryTypeLabel =
+    batteryDesign === "soft-2s"
+      ? "SOFT POUCH"
+      : batteryDesign === "hardcase-3s"
+        ? "HARDCASE"
+        : "DRONE PACK";
 
   const geometry = (() => {
     switch (part.type) {
@@ -102,6 +119,17 @@ export default function RobotObject({
           size={part.size}
           housingColor={part.color}
           selected={selected || highlighted}
+        />
+      ) : part.type === "Battery" ? (
+        <BatteryModel
+          size={part.size}
+          color={part.color}
+          selected={selected || highlighted}
+          design={batteryDesign}
+          label="RW POWER"
+          typeLabel={batteryTypeLabel}
+          voltage={batteryDefinition?.voltage}
+          capacityMah={batteryDefinition?.capacityMah}
         />
       ) : part.type === "Wheel" ? (
         <WheelModel

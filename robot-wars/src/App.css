@@ -184,15 +184,16 @@
 }
 
 .tree-item {
-  padding: 11px 10px;
-  margin-bottom: 4px;
+  min-height: 36px;
+  box-sizing: border-box;
+  padding: 3px 4px;
+  margin-bottom: 3px;
   border-radius: 6px;
   font-size: 12px;
   color: #94a3b8;
   display: flex;
   align-items: center;
-  gap: 10px;
-  cursor: pointer;
+  gap: 3px;
 }
 
 .tree-item:hover {
@@ -205,10 +206,92 @@
   border: 1px solid #344155;
 }
 
+.tree-expand,
+.tree-expand-spacer {
+  width: 20px;
+  height: 26px;
+  flex: 0 0 20px;
+}
+
+.tree-expand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #94a3b8;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tree-expand:hover {
+  background: #344155;
+  color: #f8fafc;
+}
+
+.tree-select {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tree-select:hover {
+  color: #f8fafc;
+}
+
 .tree-icon {
   color: #f59e0b;
-  width: 18px;
+  flex: 0 0 18px;
   text-align: center;
+}
+
+.tree-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tree-visibility {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #94a3b8;
+  cursor: pointer;
+}
+
+.tree-visibility:hover,
+.tree-visibility:focus-visible {
+  background: #344155;
+  color: #f8fafc;
+}
+
+.tree-visibility.hidden {
+  color: #f59e0b;
+}
+
+.tree-visibility.hidden:hover,
+.tree-visibility.hidden:focus-visible {
+  color: #fbbf24;
 }
 
 .placeholder-content {
@@ -294,6 +377,16 @@
   top: 16px;
   right: 16px;
   z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  max-width: calc(100% - 32px);
+}
+
+.viewport-focus-actions {
+  display: flex;
+  gap: 7px;
 }
 
 .viewport-focus button {
@@ -315,6 +408,25 @@
 .viewport-focus button:disabled {
   cursor: not-allowed;
   opacity: 0.5;
+}
+
+.viewport-focus-note {
+  max-width: 260px;
+  padding: 6px 9px;
+  border: 1px solid #715321;
+  border-radius: 6px;
+  background: rgb(39 31 19 / 94%);
+  color: #fcd98a;
+  font-size: 10px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+@media (max-width: 520px) {
+  .viewport-focus-actions {
+    flex-direction: column;
+    align-items: flex-end;
+  }
 }
 
 .view-controls {
@@ -497,9 +609,6 @@
   cursor: pointer;
 }
 
-.tree-item {
-  cursor: pointer;
-}
 .property-row input {
   width: 90px;
   padding: 5px 8px;
@@ -698,6 +807,25 @@
   margin-right: 6px;
 }
 
+.battery-install-status {
+  margin-top: 12px;
+  padding: 9px;
+  border: 1px solid #344155;
+  border-radius: 6px;
+  background: #151c26;
+  color: #cbd5e1;
+  font-size: 10px;
+}
+
+.battery-remove-button {
+  margin-top: 8px;
+}
+
+.battery-remove-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .motor-list,
 .mount-zone-list,
 .wheel-list {
@@ -832,6 +960,69 @@
 
 .wheel-assignment-actions {
   margin-top: 12px;
+}
+
+.wheel-dimension-control {
+  margin-bottom: 12px;
+  padding: 10px;
+  border: 1px solid #273344;
+  border-radius: 7px;
+  background: #151c26;
+}
+
+.wheel-dimension-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  color: #cbd5e1;
+  font-size: 11px;
+}
+
+.wheel-dimension-heading span {
+  color: #fbbf24;
+  font-variant-numeric: tabular-nums;
+}
+
+.wheel-dimension-inputs {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 7px;
+  margin-top: 8px;
+  color: #94a3b8;
+  font-size: 10px;
+}
+
+.wheel-dimension-inputs input {
+  width: 84px;
+  padding: 5px 7px;
+  border: 1px solid #344155;
+  border-radius: 5px;
+  background: #10151d;
+  color: #e2e8f0;
+  text-align: right;
+  font: inherit;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.wheel-dimension-inputs input:focus {
+  border-color: #f59e0b;
+  outline: none;
+}
+
+.wheel-dimension-slider {
+  width: 100%;
+  margin: 8px 0 0;
+  accent-color: #f59e0b;
+  cursor: pointer;
+}
+
+.wheel-dimension-limits {
+  display: flex;
+  justify-content: space-between;
+  color: #64748b;
+  font-size: 9px;
 }
 
 .assignment-target {
@@ -1034,4 +1225,128 @@
   border: 1px solid #344155;
   background: #202a38;
   color: #cbd5e1;
+}
+
+.drivetrain-type-control,
+.drivetrain-slot {
+  display: grid;
+  gap: 7px;
+  color: #cbd5e1;
+  font-size: 11px;
+}
+
+.drivetrain-type-control select,
+.drivetrain-slot select {
+  width: 100%;
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid #344155;
+  border-radius: 6px;
+  background: #10151d;
+  color: #e2e8f0;
+  font: inherit;
+}
+
+.drivetrain-group,
+.drivetrain-summary-card {
+  margin-top: 12px;
+  padding: 10px;
+  border: 1px solid #273344;
+  border-radius: 7px;
+  background: #151c26;
+}
+
+.drivetrain-group-title {
+  margin-bottom: 10px;
+  color: #fbbf24;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: capitalize;
+}
+
+.drivetrain-slot + .drivetrain-slot {
+  margin-top: 10px;
+}
+
+.drivetrain-status {
+  margin-top: 12px;
+  padding: 9px;
+  border: 1px solid #344155;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.drivetrain-status.valid {
+  border-color: #166534;
+  background: rgba(22, 101, 52, 0.18);
+  color: #86efac;
+}
+
+.drivetrain-status.invalid {
+  border-color: #854d0e;
+  background: rgba(133, 77, 14, 0.16);
+  color: #fcd34d;
+}
+
+.drivetrain-errors {
+  display: grid;
+  gap: 6px;
+  margin: 10px 0;
+  padding-left: 20px;
+  color: #fca5a5;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.drivetrain-suggest-button {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.drivetrain-confirm {
+  margin-top: 8px;
+  padding: 10px;
+  border: 1px solid #854d0e;
+  border-radius: 6px;
+  background: rgba(133, 77, 14, 0.12);
+}
+
+.drivetrain-confirm p {
+  margin: 0 0 9px;
+  color: #fcd34d;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.drivetrain-confirm .stage-back-button {
+  margin-top: 7px;
+}
+
+.drivetrain-summary-side {
+  display: grid;
+  gap: 4px;
+  margin-top: 9px;
+  color: #cbd5e1;
+  font-size: 10px;
+}
+
+.drivetrain-summary-side > strong,
+.drivetrain-summary-card > strong {
+  color: #e2e8f0;
+  font-size: 11px;
+}
+
+.drivetrain-summary-side small {
+  color: #94a3b8;
+  line-height: 1.4;
+}
+
+.drivetrain-summary-card > .drivetrain-status {
+  display: block;
+}
+
+.drivetrain-warning {
+  color: #fca5a5;
+  font-size: 10px;
 }

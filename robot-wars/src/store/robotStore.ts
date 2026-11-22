@@ -12,6 +12,13 @@ import type {
   BuildStage,
   MotorCatalogueId,
   WheelCatalogueId,
+  WheelDimensionDraft,
+  BatteryCatalogueId,
+  BatteryDefinition,
+  DrivetrainAssignment,
+  DrivetrainConfiguration,
+  DrivetrainSide,
+  DrivetrainType,
 } from "../features/robot-builder/types/robot.types";
 
 import {
@@ -21,16 +28,32 @@ import {
 import { foundationModels } from "../features/robot-builder/data/foundationModels";
 import { motorCatalogue } from "../features/robot-builder/data/motorCatalogue";
 import { wheelCatalogue } from "../features/robot-builder/data/wheelCatalogue";
+import { batteryCatalogue } from "../features/robot-builder/data/batteryCatalogue";
 import { generateMotorMountZones } from "../features/robot-builder/logic/mountingZones";
 import { getWheelWorldMountTransform } from "../features/robot-builder/logic/wheelMounting";
+import { getBatteryMountingTransform } from "../features/robot-builder/logic/batteryMounting";
+import {
+  clampWheelDimension,
+  getWheelDimensionsInMeters,
+  wheelDimensionBounds,
+} from "../features/robot-builder/logic/wheelDimensions";
+import {
+  getDrivetrainSlotCount,
+  getPoweredWheelAssemblies,
+  retainValidDrivetrainAssignments,
+  suggestDrivetrainMapping,
+  validateDrivetrain,
+} from "../features/robot-builder/logic/drivetrain";
 
 type RobotStore = {
   parts: RobotPart[];
   connections: RobotConnection[];
+  hiddenPartIds: string[];
   selectedId: string | null;
   transformMode: TransformMode;
 
   setSelectedId: (id: string | null) => void;
+  togglePartVisibility: (id: string) => void;
   setTransformMode: (mode: TransformMode) => void;
   deleteSelected: () => void;
 
@@ -76,11 +99,28 @@ type RobotStore = {
   ) => void;
   confirmFoundation: () => void;
   stage: BuildStage;
+  drivetrain: DrivetrainConfiguration;
+  setDrivetrainType: (
+    type: DrivetrainType,
+    confirmDiscard?: boolean
+  ) => boolean;
+  setDrivetrainAssignment: (
+    side: DrivetrainSide,
+    index: number,
+    assignment: DrivetrainAssignment | null
+  ) => void;
+  applySuggestedDrivetrainMapping: (confirmCustomized?: boolean) => boolean;
   selectedMotorCatalogueId: MotorCatalogueId | null;
   selectedMountZoneId: string | null;
   selectedWheelCatalogueId: WheelCatalogueId | null;
   selectedWheelMotorId: string | null;
+  selectedWheelDiameterCm: number;
+  selectedWheelWidthCm: number;
+  selectedBatteryCatalogueId: BatteryCatalogueId | null;
   setStage: (stage: BuildStage) => void;
+  selectBatteryCatalogueItem: (batteryId: BatteryCatalogueId) => void;
+  installBattery: (batteryId: BatteryCatalogueId) => void;
+  removeBattery: () => void;
   selectMotorCatalogueItem: (motorId: MotorCatalogueId) => void;
   selectMountZone: (zoneId: string) => void;
   placeMotor: () => void;
@@ -88,11 +128,45 @@ type RobotStore = {
   removeMotor: (zoneId: string) => void;
   rotateMotor: (zoneId: string, rotationY: number) => void;
   selectWheelCatalogueItem: (wheelId: WheelCatalogueId) => void;
+  updateSelectedWheelDimensions: (
+    dimensions: Partial<WheelDimensionDraft>
+  ) => void;
   selectWheelMotor: (motorId: string) => void;
   assignWheel: (motorId: string) => void;
   removeWheel: (motorId: string) => void;
   finishBuild: () => void;
 };
+
+function createEmptyDrivetrain(
+  type: DrivetrainType = "differential-2"
+): DrivetrainConfiguration {
+  const slotCount = getDrivetrainSlotCount(type);
+  return {
+    type,
+    left: Array(slotCount).fill(null),
+    right: Array(slotCount).fill(null),
+    mappingCustomized: false,
+  };
+}
+
+function resizeDrivetrainAssignments(
+  configuration: DrivetrainConfiguration,
+  type: DrivetrainType
+): DrivetrainConfiguration {
+  const slotCount = getDrivetrainSlotCount(type);
+  return {
+    ...configuration,
+    type,
+    left: Array.from(
+      { length: slotCount },
+      (_, index) => configuration.left[index] ?? null
+    ),
+    right: Array.from(
+      { length: slotCount },
+      (_, index) => configuration.right[index] ?? null
+    ),
+  };
+}
 
 function hasCircularAttachment(
   connections: RobotConnection[],
@@ -231,6 +305,39 @@ function createFoundationParts(config: FoundationConfig): RobotPart[] {
   return parts;
 }
 
+function retainVisibilityForParts(
+  hiddenPartIds: string[],
+  parts: RobotPart[]
+): string[] {
+  const existingPartIds = new Set(parts.map((part) => part.id));
+  return hiddenPartIds.filter((id) => existingPartIds.has(id));
+}
+
+function createBatteryPart(
+  definition: BatteryDefinition,
+  id: string,
+  foundation: FoundationConfig,
+  connectionId: string
+): RobotPart {
+  const mount = getBatteryMountingTransform(definition, foundation);
+  return {
+    id,
+    name: definition.name,
+    type: "Battery",
+    batteryCatalogueId: definition.id,
+    position: mount.position,
+    rotation: [0, 0, 0],
+    size: [
+      definition.dimensions.length,
+      definition.dimensions.height,
+      definition.dimensions.width,
+    ],
+    color: definition.color,
+    mass: definition.weight,
+    parentAttachmentId: connectionId,
+  };
+}
+
 function preserveMountedMotors(
   foundationParts: RobotPart[],
   existingParts: RobotPart[],
@@ -262,9 +369,52 @@ function preserveMountedMotors(
         preservedMotorIds.has(connection.parentId)
     )
   );
-  const rebuiltParts = [...foundationParts, ...positionedMotors, ...wheels];
+  const existingBatteries = existingParts.filter(
+    (part) => part.type === "Battery"
+  );
+  const battery = existingBatteries
+    .map((part) => ({
+      part,
+      definition: batteryCatalogue.find(
+        (item) => item.id === part.batteryCatalogueId
+      ),
+      connection: connections.find(
+        (connection) =>
+          connection.type === "Mechanical" &&
+          connection.parentId === "foundation-chassis" &&
+          connection.childId === part.id
+      ),
+    }))
+    .find((item) => item.definition && item.connection);
+  const positionedBattery = battery?.definition && battery.connection
+    ? createBatteryPart(
+        battery.definition,
+        battery.part.id,
+        foundation,
+        battery.connection.id
+      )
+    : null;
+  const rebuiltParts = [
+    ...foundationParts,
+    ...positionedMotors,
+    ...wheels,
+    ...(positionedBattery ? [positionedBattery] : []),
+  ];
+  const existingBatteryIds = new Set(existingBatteries.map((part) => part.id));
+  const connectionsWithoutRemovedBatteries = connections.filter(
+    (connection) => {
+      const touchesBattery =
+        existingBatteryIds.has(connection.parentId) ||
+        existingBatteryIds.has(connection.childId);
+      return (
+        !touchesBattery ||
+        (positionedBattery !== null &&
+          connection.id === battery?.connection?.id)
+      );
+    }
+  );
   const rebuiltConnections = remapMotorConnections(
-    connections,
+    connectionsWithoutRemovedBatteries,
     rebuiltParts,
     foundation
   );
@@ -280,8 +430,25 @@ function remapMotorConnections(
 
   return connections.map((connection) => {
     if (connection.type !== "Mechanical") return connection;
-    const childMotorId = connection.childId;
-    const motor = parts.find((part) => part.id === childMotorId);
+    const childId = connection.childId;
+    const childPart = parts.find((part) => part.id === childId);
+    if (childPart?.type === "Battery") {
+      const definition = batteryCatalogue.find(
+        (battery) => battery.id === childPart.batteryCatalogueId
+      );
+      if (!definition || connection.parentId !== "foundation-chassis") {
+        return connection;
+      }
+      const mount = getBatteryMountingTransform(definition, foundation);
+      return {
+        ...connection,
+        relativePosition: mount.relativePosition,
+        relativeRotation: [0, 0, 0],
+        childMountPointId: `battery-mount:${childId}`,
+      };
+    }
+    if (childPart?.type !== "Motor") return connection;
+    const motor = childPart;
     const zone = zones.find((item) => item.id === motor?.mountingZoneId);
     if (!zone) return connection;
 
@@ -293,7 +460,7 @@ function remapMotorConnections(
         zone.position[2],
       ],
       relativeRotation: motor?.rotation ?? zone.rotation,
-      childMountPointId: `motor-mount:${childMotorId}`,
+      childMountPointId: `motor-mount:${childId}`,
     };
   });
 }
@@ -301,21 +468,169 @@ function remapMotorConnections(
 export const useRobotStore = create<RobotStore>((set, get) => ({
   parts: [],
   connections: [],
+  hiddenPartIds: [],
   selectedId: null,
   transformMode: "select",
   foundation: null,
   foundationId: null,
   stage: "foundation",
+  drivetrain: createEmptyDrivetrain(),
   selectedMotorCatalogueId: null,
   selectedMountZoneId: null,
   selectedWheelCatalogueId: null,
   selectedWheelMotorId: null,
+  selectedWheelDiameterCm: 22,
+  selectedWheelWidthCm: 7,
+  selectedBatteryCatalogueId: "standard-lipo",
 
   setSelectedId: (id) => set({ selectedId: id }),
 
+  togglePartVisibility: (id) =>
+    set((state) => {
+      if (!state.parts.some((part) => part.id === id)) return state;
+      return {
+        hiddenPartIds: state.hiddenPartIds.includes(id)
+          ? state.hiddenPartIds.filter((partId) => partId !== id)
+          : [...state.hiddenPartIds, id],
+      };
+    }),
+
   setTransformMode: (mode) => set({ transformMode: mode }),
 
-  setStage: (stage) => set({ stage }),
+  setStage: (stage) =>
+    set((state) => {
+      if (
+        stage === "completed" &&
+        !validateDrivetrain(
+          state.drivetrain,
+          state.parts,
+          state.connections,
+          state.foundation
+        ).isValid
+      ) {
+        return state;
+      }
+
+      return {
+        stage,
+        ...(stage === "drivetrain" && !state.drivetrain.mappingCustomized
+          ? {
+              drivetrain: suggestDrivetrainMapping(
+                state.drivetrain.type,
+                state.parts,
+                state.connections,
+                state.foundation
+              ),
+            }
+          : {}),
+      };
+    }),
+
+  setDrivetrainType: (type, confirmDiscard = false) => {
+    let updated = false;
+    set((state) => {
+      if (state.drivetrain.type === type) {
+        updated = true;
+        return state;
+      }
+      if (state.drivetrain.mappingCustomized) {
+        const nextSlotCount = getDrivetrainSlotCount(type);
+        const discardsAssignments = (["left", "right"] as const).some(
+          (side) =>
+            state.drivetrain[side]
+              .slice(nextSlotCount)
+              .some((assignment) => assignment !== null)
+        );
+        if (discardsAssignments && !confirmDiscard) return state;
+        updated = true;
+        return {
+          drivetrain: resizeDrivetrainAssignments(
+            state.drivetrain,
+            type
+          ),
+        };
+      }
+
+      updated = true;
+      return {
+        drivetrain: suggestDrivetrainMapping(
+          type,
+          state.parts,
+          state.connections,
+          state.foundation
+        ),
+      };
+    });
+    return updated;
+  },
+
+  setDrivetrainAssignment: (side, index, assignment) =>
+    set((state) => {
+      if (index < 0 || index >= getDrivetrainSlotCount(state.drivetrain.type)) {
+        return state;
+      }
+      if (assignment) {
+        const validAssemblies = getPoweredWheelAssemblies(
+          state.parts,
+          state.connections,
+          state.foundation
+        );
+        if (
+          !validAssemblies.some(
+            (item) =>
+              item.motorId === assignment.motorId &&
+              item.wheelId === assignment.wheelId
+          )
+        ) {
+          return state;
+        }
+      }
+
+      const nextAssignments = {
+        left: [...state.drivetrain.left],
+        right: [...state.drivetrain.right],
+      };
+      if (assignment) {
+        for (const otherSide of ["left", "right"] as const) {
+          nextAssignments[otherSide] = nextAssignments[otherSide].map(
+            (item, itemIndex) =>
+              item !== null &&
+              !(otherSide === side && itemIndex === index) &&
+              (item.motorId === assignment.motorId ||
+                item.wheelId === assignment.wheelId)
+                ? null
+                : item
+          );
+        }
+      }
+      nextAssignments[side][index] = assignment ? { ...assignment } : null;
+      return {
+        drivetrain: {
+          ...state.drivetrain,
+          ...nextAssignments,
+          mappingCustomized: true,
+        },
+      };
+    }),
+
+  applySuggestedDrivetrainMapping: (confirmCustomized = false) => {
+    let applied = false;
+    set((state) => {
+      if (state.drivetrain.mappingCustomized && !confirmCustomized) {
+        return state;
+      }
+      applied = true;
+      return {
+        drivetrain: suggestDrivetrainMapping(
+          state.drivetrain.type,
+          state.parts,
+          state.connections,
+          state.foundation
+        ),
+      };
+    });
+    return applied;
+  },
 
   selectMotorCatalogueItem: (motorId) =>
     set({ selectedMotorCatalogueId: motorId }),
@@ -323,13 +638,214 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
   selectMountZone: (zoneId) =>
     set({ selectedMountZoneId: zoneId }),
 
-  selectWheelCatalogueItem: (wheelId) =>
-    set({ selectedWheelCatalogueId: wheelId }),
+  selectWheelCatalogueItem: (wheelId) => {
+    const definition = wheelCatalogue.find((wheel) => wheel.id === wheelId);
+    if (!definition) return;
+    set({
+      selectedWheelCatalogueId: wheelId,
+      selectedWheelDiameterCm: Number((definition.diameter * 100).toFixed(1)),
+      selectedWheelWidthCm: Number((definition.width * 100).toFixed(1)),
+    });
+  },
+
+  selectBatteryCatalogueItem: (batteryId) => {
+    if (!batteryCatalogue.some((battery) => battery.id === batteryId)) return;
+    set({ selectedBatteryCatalogueId: batteryId });
+  },
+
+  installBattery: (batteryId) => {
+    const definition = batteryCatalogue.find(
+      (battery) => battery.id === batteryId
+    );
+    if (!definition) return;
+
+    set((state) => {
+      if (!state.foundation || !state.foundation.confirmed) return state;
+
+      const currentBatteries = state.parts.filter(
+        (part) => part.type === "Battery"
+      );
+      const existingBattery = currentBatteries[0];
+      const existingConnection = existingBattery
+        ? state.connections.find(
+            (connection) =>
+              connection.type === "Mechanical" &&
+              connection.parentId === "foundation-chassis" &&
+              connection.childId === existingBattery.id
+          )
+        : undefined;
+      const batteryIdForPart = existingBattery?.id ?? crypto.randomUUID();
+      const connectionId = existingConnection?.id ?? crypto.randomUUID();
+      const mount = getBatteryMountingTransform(definition, state.foundation);
+      const part = createBatteryPart(
+        definition,
+        batteryIdForPart,
+        state.foundation,
+        connectionId
+      );
+      const connection: RobotConnection = {
+        id: connectionId,
+        sourceId: "foundation-chassis",
+        targetId: batteryIdForPart,
+        type: "Mechanical",
+        parentId: "foundation-chassis",
+        childId: batteryIdForPart,
+        parentMountPointId: "foundation-chassis",
+        childMountPointId: `battery-mount:${batteryIdForPart}`,
+        relativePosition: mount.relativePosition,
+        relativeRotation: [0, 0, 0],
+      };
+      const currentBatteryIds = new Set(
+        currentBatteries.map((battery) => battery.id)
+      );
+      const parts = [
+        ...state.parts.filter((existingPart) => existingPart.type !== "Battery"),
+        part,
+      ];
+      const connections = [
+        ...state.connections.filter(
+          (existingConnection) =>
+            !currentBatteryIds.has(existingConnection.parentId) &&
+            !currentBatteryIds.has(existingConnection.childId)
+        ),
+        connection,
+      ];
+
+      return {
+        parts: syncAssemblyTransforms(parts, connections),
+        connections,
+        hiddenPartIds: retainVisibilityForParts(state.hiddenPartIds, parts),
+        selectedId: batteryIdForPart,
+        selectedBatteryCatalogueId: batteryId,
+      };
+    });
+  },
+
+  removeBattery: () =>
+    set((state) => {
+      const batteryIds = new Set(
+        state.parts
+          .filter((part) => part.type === "Battery")
+          .map((part) => part.id)
+      );
+      if (batteryIds.size === 0) return state;
+
+      const parts = state.parts.filter((part) => !batteryIds.has(part.id));
+      const connections = state.connections.filter(
+        (connection) =>
+          !batteryIds.has(connection.parentId) &&
+          !batteryIds.has(connection.childId)
+      );
+      return {
+        parts,
+        connections,
+        hiddenPartIds: retainVisibilityForParts(state.hiddenPartIds, parts),
+        selectedId: batteryIds.has(state.selectedId ?? "")
+          ? state.foundationId
+          : state.selectedId,
+      };
+    }),
+
+  updateSelectedWheelDimensions: (dimensions) =>
+    set((state) => {
+      const diameterCm = clampWheelDimension(
+        dimensions.diameterCm ?? state.selectedWheelDiameterCm,
+        state.selectedWheelDiameterCm,
+        wheelDimensionBounds.diameterCm
+      );
+      const widthCm = clampWheelDimension(
+        dimensions.widthCm ?? state.selectedWheelWidthCm,
+        state.selectedWheelWidthCm,
+        wheelDimensionBounds.widthCm
+      );
+      const nextState = {
+        selectedWheelDiameterCm: diameterCm,
+        selectedWheelWidthCm: widthCm,
+      };
+      const selectedMotor = state.parts.find(
+        (part) => part.id === state.selectedWheelMotorId && part.type === "Motor"
+      );
+      const wheelDefinition = wheelCatalogue.find(
+        (wheel) => wheel.id === state.selectedWheelCatalogueId
+      );
+      const mountedWheel = state.parts.find(
+        (part) =>
+          part.type === "Wheel" &&
+          state.connections.some(
+            (connection) =>
+              connection.type === "Motor-Wheel" &&
+              connection.parentId === selectedMotor?.id &&
+              connection.childId === part.id
+          )
+      );
+      if (
+        !selectedMotor ||
+        !wheelDefinition ||
+        mountedWheel?.wheelCatalogueId !== wheelDefinition.id
+      ) return { ...state, ...nextState };
+
+      const wheelDimensions = getWheelDimensionsInMeters({
+        diameterCm,
+        widthCm,
+      });
+      const customDefinition = {
+        ...wheelDefinition,
+        ...wheelDimensions,
+      };
+      const mount = getWheelWorldMountTransform(selectedMotor, customDefinition);
+      const nextParts = state.parts.map((part) =>
+        part.id === mountedWheel.id
+          ? {
+              ...part,
+              wheelDiameter: wheelDimensions.diameter,
+              wheelWidth: wheelDimensions.width,
+              size: [
+                wheelDimensions.diameter / 2,
+                wheelDimensions.width,
+                wheelDimensions.diameter / 2,
+              ] as [number, number, number],
+              position: mount.position,
+              rotation: mount.rotation,
+            }
+          : part
+      );
+      const nextConnections = state.connections.map((connection) =>
+        connection.type === "Motor-Wheel" &&
+        connection.parentId === selectedMotor.id &&
+        connection.childId === mountedWheel.id
+          ? {
+              ...connection,
+              relativePosition: mount.relativePosition,
+              wheelOffset: getMotorShaftMountOffset(selectedMotor),
+            }
+          : connection
+      );
+
+      return {
+        ...nextState,
+        parts: syncAssemblyTransforms(nextParts, nextConnections),
+        connections: nextConnections,
+      };
+    }),
 
   selectWheelMotor: (motorId) =>
     set({ selectedWheelMotorId: motorId, selectedId: motorId }),
 
-  finishBuild: () => set({ stage: "completed", transformMode: "select" }),
+  finishBuild: () =>
+    set((state) => {
+      if (
+        state.stage !== "drivetrain" ||
+        !validateDrivetrain(
+          state.drivetrain,
+          state.parts,
+          state.connections,
+          state.foundation
+        ).isValid
+      ) {
+        return state;
+      }
+      return { stage: "completed", transformMode: "select" };
+    }),
 
   placeMotor: () =>
     set((state) => {
@@ -476,18 +992,39 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
             !parentMotor ||
             !wheelDefinition
           ) return connection;
+          const instanceDefinition = attachedWheel
+            ? {
+                ...wheelDefinition,
+                diameter:
+                  attachedWheel.wheelDiameter ??
+                  attachedWheel.size[0] * 2,
+                width: attachedWheel.wheelWidth ?? attachedWheel.size[1],
+              }
+            : wheelDefinition;
           return {
             ...connection,
             relativePosition: getWheelWorldMountTransform(
               parentMotor,
-              wheelDefinition
+              instanceDefinition
             ).relativePosition,
           };
         });
 
+      const synchronizedParts = syncAssemblyTransforms(
+        nextParts,
+        nextConnections
+      );
+
       return {
-        parts: syncAssemblyTransforms(nextParts, nextConnections),
+        parts: synchronizedParts,
         connections: nextConnections,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          synchronizedParts,
+          nextConnections,
+          state.foundation
+        ),
+        hiddenPartIds: retainVisibilityForParts(state.hiddenPartIds, nextParts),
         selectedMountZoneId: zoneId,
       };
     }),
@@ -508,15 +1045,27 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
           removedIds.add(connection.childId);
         }
       });
+      const nextParts = state.parts.filter(
+        (part) => !removedIds.has(part.id)
+      );
+      const nextConnections = state.connections.filter(
+        (connection) =>
+          !removedIds.has(connection.childId) &&
+          !removedIds.has(connection.parentId)
+      );
 
       return {
-        parts: state.parts.filter(
-          (part) => !removedIds.has(part.id)
+        parts: nextParts,
+        connections: nextConnections,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          nextParts,
+          nextConnections,
+          state.foundation
         ),
-        connections: state.connections.filter(
-          (connection) =>
-            !removedIds.has(connection.childId) &&
-            !removedIds.has(connection.parentId)
+        hiddenPartIds: retainVisibilityForParts(
+          state.hiddenPartIds,
+          nextParts
         ),
         selectedMountZoneId:
           state.selectedMountZoneId === zoneId
@@ -576,13 +1125,18 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
       foundationId: "foundation-chassis",
       parts: createFoundationParts(foundation),
       connections: [],
+      hiddenPartIds: [],
       selectedId: "foundation-chassis",
       transformMode: "select",
       stage: "foundation",
+      drivetrain: createEmptyDrivetrain(),
       selectedMotorCatalogueId: null,
       selectedMountZoneId: null,
       selectedWheelCatalogueId: null,
       selectedWheelMotorId: null,
+      selectedWheelDiameterCm: 22,
+      selectedWheelWidthCm: 7,
+      selectedBatteryCatalogueId: "standard-lipo",
     });
   },
 
@@ -600,21 +1154,30 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         includeFrontCover: state.foundation?.includeFrontCover ?? false,
         confirmed: false,
       };
+      const parts = preserveMountedMotors(
+        createFoundationParts(foundation),
+        state.parts,
+        foundation,
+        state.connections
+      );
+      const connections = remapMotorConnections(
+        state.connections,
+        state.parts,
+        foundation
+      );
 
       return {
         foundation,
         foundationId: "foundation-chassis",
-        parts: preserveMountedMotors(
-          createFoundationParts(foundation),
-          state.parts,
-          foundation,
-          state.connections
-        ),
-        connections: remapMotorConnections(
-          state.connections,
-          state.parts,
+        parts,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          parts,
+          connections,
           foundation
         ),
+        hiddenPartIds: retainVisibilityForParts(state.hiddenPartIds, parts),
+        connections,
         selectedId: "foundation-chassis",
       };
     });
@@ -640,20 +1203,29 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         ),
         confirmed: false,
       };
+      const parts = preserveMountedMotors(
+        createFoundationParts(foundation),
+        state.parts,
+        foundation,
+        state.connections
+      );
+      const connections = remapMotorConnections(
+        state.connections,
+        state.parts,
+        foundation
+      );
 
       return {
         foundation,
-        parts: preserveMountedMotors(
-          createFoundationParts(foundation),
-          state.parts,
-          foundation,
-          state.connections
-        ),
-        connections: remapMotorConnections(
-          state.connections,
-          state.parts,
+        parts,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          parts,
+          connections,
           foundation
         ),
+        hiddenPartIds: retainVisibilityForParts(state.hiddenPartIds, parts),
+        connections,
         selectedId: "foundation-chassis",
       };
     });
@@ -668,20 +1240,29 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         ...options,
         confirmed: false,
       };
+      const parts = preserveMountedMotors(
+        createFoundationParts(foundation),
+        state.parts,
+        foundation,
+        state.connections
+      );
+      const connections = remapMotorConnections(
+        state.connections,
+        state.parts,
+        foundation
+      );
 
       return {
         foundation,
-        parts: preserveMountedMotors(
-          createFoundationParts(foundation),
-          state.parts,
-          foundation,
-          state.connections
-        ),
-        connections: remapMotorConnections(
-          state.connections,
-          state.parts,
+        parts,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          parts,
+          connections,
           foundation
         ),
+        hiddenPartIds: retainVisibilityForParts(state.hiddenPartIds, parts),
+        connections,
         selectedId: "foundation-chassis",
       };
     });
@@ -697,7 +1278,7 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         },
         selectedId: "foundation-chassis",
         transformMode: "select",
-        stage: "motors",
+        stage: "battery",
       };
     });
   },
@@ -709,14 +1290,43 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
 
     set((state) => {
       const selectedPart = state.parts.find((part) => part.id === selectedId);
+      const deletingFoundation = selectedId === state.foundationId;
       const removedIds = new Set([selectedId]);
-      if (selectedPart?.type === "Motor") {
+      if (deletingFoundation) {
+        for (const part of state.parts) {
+          if (
+            part.id === "foundation-top-plate" ||
+            part.id === "foundation-front-cover"
+          ) {
+            removedIds.add(part.id);
+          }
+        }
+
+        const pendingIds = [...removedIds];
+        while (pendingIds.length > 0) {
+          const parentId = pendingIds.pop();
+          if (!parentId) continue;
+
+          for (const connection of state.connections) {
+            const connectionParentId =
+              connection.parentId ?? connection.sourceId;
+            const childId = connection.childId ?? connection.targetId;
+            if (
+              connectionParentId === parentId &&
+              !removedIds.has(childId)
+            ) {
+              removedIds.add(childId);
+              pendingIds.push(childId);
+            }
+          }
+        }
+      } else if (selectedPart?.type === "Motor") {
         state.connections.forEach((connection) => {
           if (
             connection.type === "Motor-Wheel" &&
-            connection.parentId === selectedId
+            (connection.parentId ?? connection.sourceId) === selectedId
           ) {
-            removedIds.add(connection.childId);
+            removedIds.add(connection.childId ?? connection.targetId);
           }
         });
       }
@@ -737,19 +1347,65 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
               connection.childId ?? connection.targetId
           )
       );
+      const nextParts = state.parts
+        .filter((part) => !removedIds.has(part.id))
+        .map((part) =>
+          detachedChildren.has(part.id)
+            ? { ...part, parentAttachmentId: undefined }
+            : part
+        );
+      const nextDrivetrain = deletingFoundation
+        ? createEmptyDrivetrain()
+        : retainValidDrivetrainAssignments(
+            state.drivetrain,
+            nextParts,
+            nextConnections,
+            state.foundation
+          );
 
       return {
-        parts: state.parts
-          .filter((part) => !removedIds.has(part.id))
-          .map((part) =>
-            detachedChildren.has(part.id)
-              ? { ...part, parentAttachmentId: undefined }
-              : part
-          ),
+        parts: nextParts,
         connections: nextConnections,
+        drivetrain: nextDrivetrain,
+        hiddenPartIds: state.hiddenPartIds.filter(
+          (partId) => !removedIds.has(partId)
+        ),
+        ...(deletingFoundation
+          ? {
+              foundation: null,
+              foundationId: null,
+              stage: "foundation" as const,
+              drivetrain: createEmptyDrivetrain(),
+              transformMode: "select" as const,
+              selectedMotorCatalogueId: null,
+              selectedMountZoneId: null,
+              selectedWheelCatalogueId: null,
+              selectedWheelMotorId: null,
+              selectedWheelDiameterCm: 22,
+              selectedWheelWidthCm: 7,
+              selectedBatteryCatalogueId: "standard-lipo",
+            }
+          : selectedId === "foundation-top-plate" && state.foundation
+            ? {
+                foundation: {
+                  ...state.foundation,
+                  includeTopPlate: false,
+                  confirmed: false,
+                },
+              }
+            : selectedId === "foundation-front-cover" && state.foundation
+              ? {
+                  foundation: {
+                    ...state.foundation,
+                    includeFrontCover: false,
+                    confirmed: false,
+                  },
+                }
+              : {}),
         selectedId: null,
-        selectedWheelMotorId:
-          state.selectedWheelMotorId === selectedId
+        selectedWheelMotorId: deletingFoundation
+          ? null
+          : state.selectedWheelMotorId === selectedId
             ? null
             : state.selectedWheelMotorId,
       };
@@ -803,6 +1459,7 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
     }),
 
   addPart: (type) => {
+    if (type === "Battery") return;
     const matchingCount = get().parts.filter(
       (part) => part.type === type
     ).length;
@@ -925,7 +1582,15 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         (part) => part.id === existingWheelId && part.type === "Wheel"
       );
       const wheelId = existingWheel?.id ?? crypto.randomUUID();
-      const mount = getWheelWorldMountTransform(motor, definition);
+      const wheelDimensions = getWheelDimensionsInMeters({
+        diameterCm: state.selectedWheelDiameterCm,
+        widthCm: state.selectedWheelWidthCm,
+      });
+      const instanceDefinition = {
+        ...definition,
+        ...wheelDimensions,
+      };
+      const mount = getWheelWorldMountTransform(motor, instanceDefinition);
       const connection: RobotConnection = {
         id: existingConnections[0]?.id ?? crypto.randomUUID(),
         sourceId: motorId,
@@ -949,9 +1614,15 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         name: definition.name,
         type: "Wheel",
         wheelCatalogueId: definition.id,
+        wheelDiameter: wheelDimensions.diameter,
+        wheelWidth: wheelDimensions.width,
         position: mount.position,
         rotation: mount.rotation,
-        size: [definition.diameter / 2, definition.width, definition.diameter / 2],
+        size: [
+          wheelDimensions.diameter / 2,
+          wheelDimensions.width,
+          wheelDimensions.diameter / 2,
+        ],
         color: definition.color,
         mass: definition.weight,
         parentAttachmentId: connection.id,
@@ -967,13 +1638,24 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
           )
       );
       nextConnections.push(connection);
+      const synchronizedParts = syncAssemblyTransforms(
+        [...nextParts, wheelPart],
+        nextConnections
+      );
 
       return {
-        parts: syncAssemblyTransforms(
-          [...nextParts, wheelPart],
-          nextConnections
-        ),
+        parts: synchronizedParts,
         connections: nextConnections,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          synchronizedParts,
+          nextConnections,
+          state.foundation
+        ),
+        hiddenPartIds: retainVisibilityForParts(
+          state.hiddenPartIds,
+          [...nextParts, wheelPart]
+        ),
         selectedWheelMotorId: motorId,
         selectedId: motorId,
       };
@@ -991,13 +1673,25 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
           .map((connection) => connection.childId)
       );
       if (wheelIds.size === 0) return state;
+      const nextParts = state.parts.filter((part) => !wheelIds.has(part.id));
+      const nextConnections = state.connections.filter(
+        (connection) =>
+          !wheelIds.has(connection.childId) &&
+          !wheelIds.has(connection.parentId)
+      );
 
       return {
-        parts: state.parts.filter((part) => !wheelIds.has(part.id)),
-        connections: state.connections.filter(
-          (connection) =>
-            !wheelIds.has(connection.childId) &&
-            !wheelIds.has(connection.parentId)
+        parts: nextParts,
+        connections: nextConnections,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          nextParts,
+          nextConnections,
+          state.foundation
+        ),
+        hiddenPartIds: retainVisibilityForParts(
+          state.hiddenPartIds,
+          nextParts
         ),
         selectedId: wheelIds.has(state.selectedId ?? "")
           ? motorId
@@ -1039,33 +1733,87 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         target.rotation[1] - source.rotation[1],
         target.rotation[2] - source.rotation[2],
       ];
+      const connections = [
+        ...state.connections,
+        {
+          id: crypto.randomUUID(),
+          sourceId,
+          targetId,
+          parentId: sourceId,
+          childId: targetId,
+          parentMountPointId: "motor-shaft",
+          childMountPointId: "wheel-hub",
+          relativePosition,
+          relativeRotation,
+          type: "Motor-Wheel" as const,
+        },
+      ];
 
       return {
-        connections: [
-          ...state.connections,
-          {
-            id: crypto.randomUUID(),
-            sourceId,
-            targetId,
-            parentId: sourceId,
-            childId: targetId,
-            parentMountPointId: "motor-shaft",
-            childMountPointId: "wheel-hub",
-            relativePosition,
-            relativeRotation,
-            type: "Motor-Wheel" as const,
-          },
-        ],
+        connections,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          state.parts,
+          connections,
+          state.foundation
+        ),
       };
     });
   },
 
   disconnectParts: (connectionId) => {
-    set((state) => ({
-      connections: state.connections.filter(
+    set((state) => {
+      const disconnected = state.connections.find(
+        (connection) => connection.id === connectionId
+      );
+      if (!disconnected) return state;
+
+      const childId = disconnected.childId ?? disconnected.targetId;
+      const connections = state.connections.filter(
         (connection) => connection.id !== connectionId
-      ),
-    }));
+      );
+      const child = state.parts.find((part) => part.id === childId);
+      if (!child) {
+        return {
+          connections,
+          drivetrain: retainValidDrivetrainAssignments(
+            state.drivetrain,
+            state.parts,
+            connections,
+            state.foundation
+          ),
+        };
+      }
+
+      const validAttachments = connections.filter((connection) => {
+        const connectionChildId = connection.childId ?? connection.targetId;
+        const parentId = connection.parentId ?? connection.sourceId;
+        return (
+          connectionChildId === childId &&
+          state.parts.some((part) => part.id === parentId)
+        );
+      });
+      const attachment =
+        validAttachments.find(
+          (connection) => connection.id === child.parentAttachmentId
+        ) ?? validAttachments[0];
+      const parts = state.parts.map((part) =>
+        part.id === childId
+          ? { ...part, parentAttachmentId: attachment?.id }
+          : part
+      );
+
+      return {
+        connections,
+        parts,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          parts,
+          connections,
+          state.foundation
+        ),
+      };
+    });
   },
 
   mountWheelToMotor: (motorId, wheelId) => {
@@ -1115,10 +1863,20 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
           : part
       );
       const nextConnections = [...remainingConnections, connection];
+      const synchronizedParts = syncAssemblyTransforms(
+        mountedParts,
+        nextConnections
+      );
 
       return {
-        parts: syncAssemblyTransforms(mountedParts, nextConnections),
+        parts: synchronizedParts,
         connections: nextConnections,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          synchronizedParts,
+          nextConnections,
+          state.foundation
+        ),
       };
     });
   },
@@ -1127,16 +1885,24 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
     set((state) => {
       const child = state.parts.find((part) => part.id === childId);
       if (!child) return state;
+      const parts = state.parts.map((part) =>
+        part.id === childId
+          ? { ...part, parentAttachmentId: undefined }
+          : part
+      );
+      const connections = state.connections.filter(
+        (connection) =>
+          (connection.childId ?? connection.targetId) !== childId
+      );
 
       return {
-        parts: state.parts.map((part) =>
-          part.id === childId
-            ? { ...part, parentAttachmentId: undefined }
-            : part
-        ),
-        connections: state.connections.filter(
-          (connection) =>
-            (connection.childId ?? connection.targetId) !== childId
+        parts,
+        connections,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          parts,
+          connections,
+          state.foundation
         ),
       };
     });
