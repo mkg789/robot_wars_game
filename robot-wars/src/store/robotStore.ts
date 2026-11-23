@@ -987,9 +987,9 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
               wheelDiameter: wheelDimensions.diameter,
               wheelWidth: wheelDimensions.width,
               size: [
-                wheelDimensions.diameter / 2,
+                wheelDimensions.diameter,
                 wheelDimensions.width,
-                wheelDimensions.diameter / 2,
+                wheelDimensions.diameter,
               ] as [number, number, number],
               position: mount.position,
               rotation: mount.rotation,
@@ -1184,7 +1184,7 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
                 ...wheelDefinition,
                 diameter:
                   attachedWheel.wheelDiameter ??
-                  attachedWheel.size[0] * 2,
+                  attachedWheel.size[0],
                 width: attachedWheel.wheelWidth ?? attachedWheel.size[1],
               }
             : wheelDefinition;
@@ -1823,9 +1823,9 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         position: mount.position,
         rotation: mount.rotation,
         size: [
-          wheelDimensions.diameter / 2,
+          wheelDimensions.diameter,
           wheelDimensions.width,
-          wheelDimensions.diameter / 2,
+          wheelDimensions.diameter,
         ],
         color: definition.color,
         mass: definition.weight,

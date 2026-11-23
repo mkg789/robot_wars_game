@@ -223,7 +223,7 @@ export default function RobotScene({
     assignedPreviewMotorWheel.wheelCatalogueId === previewWheelDefinition.id &&
     Math.abs(
       (assignedPreviewMotorWheel.wheelDiameter ??
-        assignedPreviewMotorWheel.size[0] * 2) -
+        assignedPreviewMotorWheel.size[0]) -
         previewWheelDefinition.diameter
     ) < 0.000001 &&
     Math.abs(

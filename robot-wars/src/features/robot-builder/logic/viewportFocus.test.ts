@@ -63,4 +63,17 @@ describe("viewport focus helpers", () => {
     ).toBeGreaterThan(frame?.radius ?? 0);
     expect(getAssemblyFocusFrame([])).toBeNull();
   });
+
+  it("frames a wheel component using normalized [diameter, width, diameter] extents", () => {
+    const wheel = makePart({
+      type: "Wheel",
+      position: [0, 0.5, 0.5],
+      size: [0.34, 0.12, 0.34], // [diameter, width, diameter]
+    });
+
+    expect(getComponentFocusFrame(wheel)).toEqual({
+      target: wheel.position,
+      radius: Math.hypot(0.17, 0.06, 0.17),
+    });
+  });
 });

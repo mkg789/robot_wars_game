@@ -13,10 +13,7 @@ function getPartRadius(part: RobotPart): number {
   const [sizeX, sizeY, sizeZ] = part.size.map((value) =>
     Number.isFinite(value) ? Math.abs(value) : 0
   );
-  const radius =
-    part.type === "Wheel"
-      ? Math.hypot(sizeX, sizeY * 0.5, sizeZ)
-      : Math.hypot(sizeX * 0.5, sizeY * 0.5, sizeZ * 0.5);
+  const radius = Math.hypot(sizeX * 0.5, sizeY * 0.5, sizeZ * 0.5);
 
   return Math.max(0.2, radius);
 }

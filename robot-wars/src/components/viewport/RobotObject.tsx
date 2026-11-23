@@ -154,7 +154,7 @@ export default function RobotObject({
         />
       ) : part.type === "Wheel" ? (
         <WheelModel
-          radius={part.size[0]}
+          radius={part.size[0] / 2}
           width={part.size[1]}
           color={materialColor}
           category={wheelCatalogue.find(

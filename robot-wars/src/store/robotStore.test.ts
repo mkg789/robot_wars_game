@@ -1214,9 +1214,10 @@ describe("robot assembly store", () => {
     );
     expect(firstWheel?.wheelDiameter).toBe(0.22);
     expect(firstWheel?.wheelWidth).toBe(0.07);
+    expect(firstWheel?.size).toEqual([0.22, 0.07, 0.22]);
     expect(secondWheel?.wheelDiameter).toBe(0.34);
     expect(secondWheel?.wheelWidth).toBe(0.12);
-    expect(secondWheel?.size).toEqual([0.17, 0.12, 0.17]);
+    expect(secondWheel?.size).toEqual([0.34, 0.12, 0.34]);
     expect(updatedConnection?.id).toBe(secondConnection?.id);
     expect(updatedConnection?.relativePosition).toEqual(
       getWheelWorldMountTransform(secondMotor, {
@@ -1731,5 +1732,44 @@ describe("robot assembly store", () => {
     expect(currentMotor.rotation[1]).toBeCloseTo(Math.PI / 2);
     expect(wheel.rotation[1]).toBeCloseTo(currentMotor.rotation[1]);
     expect(wheel.position[2]).toBeLessThan(currentMotor.position[2]);
+  });
+
+  it("normalizes wheel dimension storage to [diameter, width, diameter]", () => {
+    const store = useRobotStore.getState();
+    store.startNewBuild();
+    store.confirmFoundation();
+
+    store.selectMotorCatalogueItem("standard-dc");
+    store.selectMountZone("front-left");
+    store.placeMotor();
+    const motor = useRobotStore
+      .getState()
+      .parts.find((p) => p.mountingZoneId === "front-left")!;
+
+    store.selectWheelCatalogueItem("heavy-duty");
+    store.selectWheelMotor(motor.id);
+    store.assignWheel(motor.id);
+
+    const initialWheel = useRobotStore
+      .getState()
+      .parts.find((p) => p.type === "Wheel")!;
+
+    // Heavy duty catalogue: diameter = 0.28, width = 0.1
+    expect(initialWheel.wheelDiameter).toBe(0.28);
+    expect(initialWheel.wheelWidth).toBe(0.1);
+    expect(initialWheel.size).toEqual([0.28, 0.1, 0.28]);
+
+    // Update dimensions to custom draft
+    store.updateSelectedWheelDimensions({
+      diameterCm: 45,
+      widthCm: 16,
+    });
+
+    const updatedWheel = useRobotStore
+      .getState()
+      .parts.find((p) => p.type === "Wheel")!;
+    expect(updatedWheel.wheelDiameter).toBe(0.45);
+    expect(updatedWheel.wheelWidth).toBe(0.16);
+    expect(updatedWheel.size).toEqual([0.45, 0.16, 0.45]);
   });
 });
