@@ -1,4 +1,5 @@
 import type { WheelDimensionDraft } from "../types/robot.types";
+import { cmToMeters } from "./units";
 
 export const wheelDimensionBounds = {
   diameterCm: { min: 8, max: 60 },
@@ -18,7 +19,7 @@ export function getWheelDimensionsInMeters(
   dimensions: WheelDimensionDraft
 ): { diameter: number; width: number } {
   return {
-    diameter: dimensions.diameterCm / 100,
-    width: dimensions.widthCm / 100,
+    diameter: cmToMeters(dimensions.diameterCm),
+    width: cmToMeters(dimensions.widthCm),
   };
 }

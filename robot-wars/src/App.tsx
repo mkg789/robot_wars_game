@@ -27,6 +27,11 @@ import {
   type CameraFocusFrame,
   type CameraFocusRequest,
 } from "./features/robot-builder/logic/viewportFocus";
+import {
+  kgToGrams,
+  metersToCm,
+  metersToMm,
+} from "./features/robot-builder/logic/units";
 
 import "./App.css";
 
@@ -728,8 +733,8 @@ function App() {
                       <span>
                         <strong>{wheel.name}</strong>
                         <small>
-                          {(wheel.diameter * 100).toFixed(0)} cm ×{" "}
-                          {(wheel.width * 100).toFixed(1)} cm ·{" "}
+                          {metersToCm(wheel.diameter).toFixed(0)} cm ×{" "}
+                          {metersToCm(wheel.width).toFixed(1)} cm ·{" "}
                           {wheel.category}
                         </small>
                       </span>
@@ -1364,15 +1369,15 @@ function App() {
                     <div className="property-row">
                       <span>Dimensions (L × W × H)</span>
                       <span>
-                        {(selectedControllerDefinition.dimensions.length * 1000).toFixed(1)} ×{" "}
-                        {(selectedControllerDefinition.dimensions.width * 1000).toFixed(1)} ×{" "}
-                        {(selectedControllerDefinition.dimensions.height * 1000).toFixed(1)} mm
+                        {metersToMm(selectedControllerDefinition.dimensions.length).toFixed(1)} ×{" "}
+                        {metersToMm(selectedControllerDefinition.dimensions.width).toFixed(1)} ×{" "}
+                        {metersToMm(selectedControllerDefinition.dimensions.height).toFixed(1)} mm
                       </span>
                     </div>
                     <div className="property-row">
                       <span>Weight</span>
                       <span>
-                        {(selectedControllerDefinition.weight * 1000).toFixed(0)} g
+                        {kgToGrams(selectedControllerDefinition.weight).toFixed(0)} g
                       </span>
                     </div>
                   </div>
@@ -1500,17 +1505,24 @@ function App() {
                         </button>
                         <button
                           className="secondary-button"
-                          onClick={() =>
+                          onClick={() => {
+                            const currentMotor = mountedMotors.find(
+                              (motor) =>
+                                motor.mountingZoneId === selectedMountZoneId
+                            );
+                            const zone = motorMountZones.find(
+                              (item) => item.id === selectedMountZoneId
+                            );
+                            if (!currentMotor || !zone) return;
+                            const isBaseline =
+                              Math.abs(currentMotor.rotation[1] - zone.rotation[1]) < 0.001;
                             rotateMotor(
                               selectedMountZoneId,
-                              mountedMotors.find(
-                                (motor) =>
-                                  motor.mountingZoneId === selectedMountZoneId
-                              )?.rotation[1] === 0
-                                ? Math.PI
-                                : 0
-                            )
-                          }
+                              isBaseline
+                                ? zone.rotation[1] + Math.PI
+                                : zone.rotation[1]
+                            );
+                          }}
                         >
                           Rotate 180°
                         </button>
@@ -1570,11 +1582,11 @@ function App() {
                     </div>
                     <div className="property-row">
                       <span>Diameter</span>
-                      <span>{(selectedWheelDefinition.diameter * 100).toFixed(0)} cm</span>
+                      <span>{metersToCm(selectedWheelDefinition.diameter).toFixed(0)} cm</span>
                     </div>
                     <div className="property-row">
                       <span>Width</span>
-                      <span>{(selectedWheelDefinition.width * 100).toFixed(1)} cm</span>
+                      <span>{metersToCm(selectedWheelDefinition.width).toFixed(1)} cm</span>
                     </div>
                     <div className="property-row">
                       <span>Weight</span>

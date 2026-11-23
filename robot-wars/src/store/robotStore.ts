@@ -41,6 +41,7 @@ import {
   getWheelDimensionsInMeters,
   wheelDimensionBounds,
 } from "../features/robot-builder/logic/wheelDimensions";
+import { metersToCm } from "../features/robot-builder/logic/units";
 import {
   getDrivetrainSlotCount,
   getPoweredWheelAssemblies,
@@ -136,7 +137,7 @@ type RobotStore = {
   placeMotor: () => void;
   replaceMotor: (zoneId: string) => void;
   removeMotor: (zoneId: string) => void;
-  rotateMotor: (zoneId: string, rotationY: number) => void;
+  rotateMotor: (zoneId: string, rotationY?: number) => void;
   selectWheelCatalogueItem: (wheelId: WheelCatalogueId) => void;
   updateSelectedWheelDimensions: (
     dimensions: Partial<WheelDimensionDraft>
@@ -304,11 +305,11 @@ function createFoundationParts(config: FoundationConfig): RobotPart[] {
       id: "foundation-front-cover",
       name: "Front Protective Cover",
       type: "Front Bumper",
-      position: [0, config.height * 0.5, config.width * 0.5 + 0.06],
+      position: [config.length * 0.5 + 0.06, config.height * 0.5, 0],
       rotation: [0, 0, 0],
-      size: [config.length * 0.9, config.height * 0.55, 0.12],
+      size: [0.12, config.height * 0.55, config.width * 0.9],
       color: "#f59e0b",
-      mass: config.length * config.height * 0.12,
+      mass: config.width * config.height * 0.12,
     });
   }
 
@@ -729,8 +730,8 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
     if (!definition) return;
     set({
       selectedWheelCatalogueId: wheelId,
-      selectedWheelDiameterCm: Number((definition.diameter * 100).toFixed(1)),
-      selectedWheelWidthCm: Number((definition.width * 100).toFixed(1)),
+      selectedWheelDiameterCm: Number(metersToCm(definition.diameter).toFixed(1)),
+      selectedWheelWidthCm: Number(metersToCm(definition.width).toFixed(1)),
     });
   },
 
@@ -1271,11 +1272,26 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
 
   rotateMotor: (zoneId, rotationY) =>
     set((state) => {
-      const rotation: [number, number, number] = [0, rotationY, 0];
       const motors = state.parts.filter(
         (part) => part.type === "Motor" && part.mountingZoneId === zoneId
       );
       if (motors.length === 0) return state;
+
+      const zone = state.foundation
+        ? generateMotorMountZones(state.foundation).find((item) => item.id === zoneId)
+        : undefined;
+      const baseRotationY = zone?.rotation[1] ?? 0;
+      const currentMotor = motors[0];
+
+      let nextRotationY: number;
+      if (rotationY !== undefined) {
+        nextRotationY = rotationY;
+      } else {
+        const isBase = Math.abs(currentMotor.rotation[1] - baseRotationY) < 0.001;
+        nextRotationY = isBase ? baseRotationY + Math.PI : baseRotationY;
+      }
+
+      const rotation: [number, number, number] = [0, nextRotationY, 0];
       const motorIds = new Set(motors.map((motor) => motor.id));
       const nextConnections = state.connections.map((connection) =>
         connection.type === "Mechanical" &&

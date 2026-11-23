@@ -10,6 +10,7 @@ import { wheelCatalogue } from "../features/robot-builder/data/wheelCatalogue";
 import { batteryCatalogue } from "../features/robot-builder/data/batteryCatalogue";
 import { controllerCatalogue } from "../features/robot-builder/data/controllerCatalogue";
 import { getWheelWorldMountTransform } from "../features/robot-builder/logic/wheelMounting";
+import { getMotorShaftMountPosition } from "../features/robot-builder/logic/mounting";
 import {
   clampWheelDimension,
   getWheelDimensionsInMeters,
@@ -948,7 +949,7 @@ describe("robot assembly store", () => {
     expect(wheel.position).toEqual(expected.position);
     expect(wheel.rotation).toEqual(currentMotor.rotation);
 
-    useRobotStore.getState().rotateMotor("front-left", Math.PI);
+    useRobotStore.getState().rotateMotor("front-left");
     currentMotor = useRobotStore
       .getState()
       .parts.find((part) => part.id === motor.id);
@@ -958,7 +959,7 @@ describe("robot assembly store", () => {
     expect(currentMotor).toBeDefined();
     expect(wheel).toBeDefined();
     if (!currentMotor || !wheel) return;
-    expect(wheel.position[0]).toBeLessThan(currentMotor.position[0]);
+    expect(wheel.position[2]).toBeLessThan(currentMotor.position[2]);
     expect(wheel.rotation).toEqual(currentMotor.rotation);
 
     useRobotStore.getState().updateFoundationDimensions({ length: 3 });
@@ -1572,5 +1573,163 @@ describe("robot assembly store", () => {
       right: [null],
       mappingCustomized: false,
     });
+  });
+
+  it("places the front bumper on the front face along +X", () => {
+    const store = useRobotStore.getState();
+    store.startNewBuild();
+    store.setFoundationOptions({ includeFrontCover: true });
+    store.confirmFoundation();
+
+    const foundation = useRobotStore.getState().foundation!;
+    const bumper = useRobotStore
+      .getState()
+      .parts.find((part) => part.id === "foundation-front-cover");
+
+    expect(bumper).toBeDefined();
+    if (!bumper) return;
+
+    expect(bumper.position[0]).toBeCloseTo(foundation.length * 0.5 + 0.06);
+    expect(bumper.position[1]).toBeCloseTo(foundation.height * 0.5);
+    expect(bumper.position[2]).toBeCloseTo(0);
+    expect(bumper.size[0]).toBeCloseTo(0.12);
+    expect(bumper.size[1]).toBeCloseTo(foundation.height * 0.55);
+    expect(bumper.size[2]).toBeCloseTo(foundation.width * 0.9);
+  });
+
+  it("orients motors on +Z to face outward toward +Z and -Z to face outward toward -Z", () => {
+    const store = useRobotStore.getState();
+    store.startNewBuild();
+    store.confirmFoundation();
+    const foundation = useRobotStore.getState().foundation!;
+    const zones = generateMotorMountZones(foundation);
+
+    const frontLeftZone = zones.find((z) => z.id === "front-left")!;
+    const rearLeftZone = zones.find((z) => z.id === "rear-left")!;
+    const frontRightZone = zones.find((z) => z.id === "front-right")!;
+    const rearRightZone = zones.find((z) => z.id === "rear-right")!;
+
+    expect(frontLeftZone.rotation[1]).toBeCloseTo(-Math.PI / 2);
+    expect(rearLeftZone.rotation[1]).toBeCloseTo(-Math.PI / 2);
+    expect(frontRightZone.rotation[1]).toBeCloseTo(Math.PI / 2);
+    expect(rearRightZone.rotation[1]).toBeCloseTo(Math.PI / 2);
+
+    store.selectMotorCatalogueItem("standard-dc");
+    store.selectMountZone("front-left");
+    store.placeMotor();
+    store.selectMountZone("front-right");
+    store.placeMotor();
+
+    const leftMotor = useRobotStore
+      .getState()
+      .parts.find((p) => p.mountingZoneId === "front-left")!;
+    const rightMotor = useRobotStore
+      .getState()
+      .parts.find((p) => p.mountingZoneId === "front-right")!;
+
+    const leftShaftPos = getMotorShaftMountPosition(leftMotor);
+    const rightShaftPos = getMotorShaftMountPosition(rightMotor);
+
+    expect(leftShaftPos[2]).toBeGreaterThan(leftMotor.position[2]);
+    expect(leftShaftPos[0]).toBeCloseTo(leftMotor.position[0]);
+
+    expect(rightShaftPos[2]).toBeLessThan(rightMotor.position[2]);
+    expect(rightShaftPos[0]).toBeCloseTo(rightMotor.position[0]);
+  });
+
+  it("aligns wheel axes with the lateral axis (+Z / -Z) and positions wheels outward", () => {
+    const store = useRobotStore.getState();
+    store.startNewBuild();
+    store.confirmFoundation();
+
+    store.selectMotorCatalogueItem("standard-dc");
+    store.selectMountZone("front-left");
+    store.placeMotor();
+    store.selectMountZone("front-right");
+    store.placeMotor();
+
+    const leftMotor = useRobotStore
+      .getState()
+      .parts.find((p) => p.mountingZoneId === "front-left")!;
+    const rightMotor = useRobotStore
+      .getState()
+      .parts.find((p) => p.mountingZoneId === "front-right")!;
+
+    store.selectWheelCatalogueItem("standard-rubber");
+    store.selectWheelMotor(leftMotor.id);
+    store.assignWheel(leftMotor.id);
+
+    store.selectWheelMotor(rightMotor.id);
+    store.assignWheel(rightMotor.id);
+
+    const parts = useRobotStore.getState().parts;
+    const connections = useRobotStore.getState().connections;
+
+    const leftWheelId = connections.find((c) => c.parentId === leftMotor.id)?.childId;
+    const rightWheelId = connections.find((c) => c.parentId === rightMotor.id)?.childId;
+
+    const leftWheel = parts.find((p) => p.id === leftWheelId)!;
+    const rightWheel = parts.find((p) => p.id === rightWheelId)!;
+
+    expect(leftWheel.position[2]).toBeGreaterThan(leftMotor.position[2]);
+    expect(leftWheel.position[0]).toBeCloseTo(leftMotor.position[0]);
+    expect(leftWheel.rotation[1]).toBeCloseTo(-Math.PI / 2);
+
+    expect(rightWheel.position[2]).toBeLessThan(rightMotor.position[2]);
+    expect(rightWheel.position[0]).toBeCloseTo(rightMotor.position[0]);
+    expect(rightWheel.rotation[1]).toBeCloseTo(Math.PI / 2);
+  });
+
+  it("preserves motor rotation interaction relative to mounting baseline and updates wheel alignment", () => {
+    const store = useRobotStore.getState();
+    store.startNewBuild();
+    store.confirmFoundation();
+
+    store.selectMotorCatalogueItem("standard-dc");
+    store.selectMountZone("front-right");
+    store.placeMotor();
+
+    const motor = useRobotStore
+      .getState()
+      .parts.find((p) => p.mountingZoneId === "front-right")!;
+    expect(motor.rotation[1]).toBeCloseTo(Math.PI / 2);
+
+    store.selectWheelCatalogueItem("standard-rubber");
+    store.selectWheelMotor(motor.id);
+    store.assignWheel(motor.id);
+
+    let currentMotor = useRobotStore
+      .getState()
+      .parts.find((p) => p.id === motor.id)!;
+    let wheel = useRobotStore
+      .getState()
+      .parts.find((p) => p.type === "Wheel")!;
+    expect(wheel.position[2]).toBeLessThan(currentMotor.position[2]);
+
+    store.rotateMotor("front-right");
+
+    currentMotor = useRobotStore
+      .getState()
+      .parts.find((p) => p.id === motor.id)!;
+    wheel = useRobotStore
+      .getState()
+      .parts.find((p) => p.type === "Wheel")!;
+
+    expect(currentMotor.rotation[1]).toBeCloseTo(Math.PI / 2 + Math.PI);
+    expect(wheel.rotation[1]).toBeCloseTo(currentMotor.rotation[1]);
+    expect(wheel.position[2]).toBeGreaterThan(currentMotor.position[2]);
+
+    store.rotateMotor("front-right");
+
+    currentMotor = useRobotStore
+      .getState()
+      .parts.find((p) => p.id === motor.id)!;
+    wheel = useRobotStore
+      .getState()
+      .parts.find((p) => p.type === "Wheel")!;
+
+    expect(currentMotor.rotation[1]).toBeCloseTo(Math.PI / 2);
+    expect(wheel.rotation[1]).toBeCloseTo(currentMotor.rotation[1]);
+    expect(wheel.position[2]).toBeLessThan(currentMotor.position[2]);
   });
 });

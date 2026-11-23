@@ -26,25 +26,25 @@ export function generateMotorMountZones(
       id: "front-left",
       name: "Front Left",
       position: [xInset, y, zInset],
-      rotation: [0, 0, 0],
+      rotation: [0, -Math.PI / 2, 0],
     },
     {
       id: "front-right",
       name: "Front Right",
       position: [xInset, y, -zInset],
-      rotation: [0, 0, 0],
+      rotation: [0, Math.PI / 2, 0],
     },
     {
       id: "rear-left",
       name: "Rear Left",
       position: [-xInset, y, zInset],
-      rotation: [0, Math.PI, 0],
+      rotation: [0, -Math.PI / 2, 0],
     },
     {
       id: "rear-right",
       name: "Rear Right",
       position: [-xInset, y, -zInset],
-      rotation: [0, Math.PI, 0],
+      rotation: [0, Math.PI / 2, 0],
     },
   ];
 

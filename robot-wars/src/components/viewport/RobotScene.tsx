@@ -31,6 +31,7 @@ import { generateMotorMountZones } from "../../features/robot-builder/logic/moun
 import { motorCatalogue } from "../../features/robot-builder/data/motorCatalogue";
 import { wheelCatalogue } from "../../features/robot-builder/data/wheelCatalogue";
 import { getWheelWorldMountTransform } from "../../features/robot-builder/logic/wheelMounting";
+import { cmToMeters } from "../../features/robot-builder/logic/units";
 import {
   getCameraFocusDistance,
   type CameraFocusRequest,
@@ -190,8 +191,8 @@ export default function RobotScene({
   const previewWheelDefinition = previewWheel
     ? {
         ...previewWheel,
-        diameter: selectedWheelDiameterCm / 100,
-        width: selectedWheelWidthCm / 100,
+        diameter: cmToMeters(selectedWheelDiameterCm),
+        width: cmToMeters(selectedWheelWidthCm),
       }
     : undefined;
   const previewMotorPart = parts.find(
