@@ -236,6 +236,114 @@ describe("Catalogue Migration: Canonical Dimensional & Physical Types", () => {
       expect(omni?.category).toBe("Omni");
       expect(omni?.compatibleMotorIds).toEqual(["small-dc", "standard-dc"]);
     });
+
+    it("populates authoritative engineeringSpec on Standard Rubber Wheel", () => {
+      const wheel = wheelCatalogue.find((w) => w.id === "standard-rubber");
+      expect(wheel?.engineeringSpec).toBeDefined();
+      const spec = wheel!.engineeringSpec!;
+
+      expect(spec.category).toBe("wheel");
+      expect(spec.treadType).toBe("rubber");
+
+      // Unsupported fields must remain undefined
+      expect(spec.hub).toBeUndefined();
+      expect(spec.traction).toBeUndefined();
+
+      // Provenance
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:wheel:standard-rubber");
+        expect(spec.generalProvenance.notes).toContain("Generic game preset");
+      }
+
+      // Field provenance
+      expect(spec.fieldProvenance?.treadType?.method).toBe("estimated");
+    });
+
+    it("populates authoritative engineeringSpec on Heavy-Duty Wheel", () => {
+      const wheel = wheelCatalogue.find((w) => w.id === "heavy-duty");
+      expect(wheel?.engineeringSpec).toBeDefined();
+      const spec = wheel!.engineeringSpec!;
+
+      expect(spec.category).toBe("wheel");
+      expect(spec.treadType).toBe("polyurethane");
+
+      expect(spec.hub).toBeUndefined();
+      expect(spec.traction).toBeUndefined();
+
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:wheel:heavy-duty");
+      }
+      expect(spec.fieldProvenance?.treadType?.method).toBe("estimated");
+    });
+
+    it("populates authoritative engineeringSpec on Grip Wheel", () => {
+      const wheel = wheelCatalogue.find((w) => w.id === "grip");
+      expect(wheel?.engineeringSpec).toBeDefined();
+      const spec = wheel!.engineeringSpec!;
+
+      expect(spec.category).toBe("wheel");
+      expect(spec.treadType).toBe("rubber");
+
+      expect(spec.hub).toBeUndefined();
+      expect(spec.traction).toBeUndefined();
+
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:wheel:grip");
+      }
+      expect(spec.fieldProvenance?.treadType?.method).toBe("estimated");
+    });
+
+    it("populates authoritative engineeringSpec on Small Omni Wheel", () => {
+      const wheel = wheelCatalogue.find((w) => w.id === "small-omni");
+      expect(wheel?.engineeringSpec).toBeDefined();
+      const spec = wheel!.engineeringSpec!;
+
+      expect(spec.category).toBe("wheel");
+      expect(spec.treadType).toBe("omni-directional");
+
+      expect(spec.hub).toBeUndefined();
+      expect(spec.traction).toBeUndefined();
+
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:wheel:small-omni");
+      }
+      expect(spec.fieldProvenance?.treadType?.method).toBe("estimated");
+    });
+
+    it("preserves resolver compatibility and non-fabrication for catalogue wheels", () => {
+      const part: RobotPart = {
+        id: "wheel-instance-1",
+        name: "Standard Rubber Wheel Instance",
+        type: "Wheel",
+        position: [0, 0, 0],
+        rotation: [0, 0, 0],
+        size: [0.07, 0.22, 0.22],
+        color: "#20242b",
+        mass: 0.16,
+        wheelCatalogueId: "standard-rubber",
+      };
+
+      const resolved = resolveComponentEngineeringSpec(part);
+      expect(resolved).toBeDefined();
+      expect(resolved?.category).toBe("wheel");
+      if (resolved?.category === "wheel") {
+        expect(resolved.treadType).toBe("rubber");
+        expect(resolved.hub).toBeUndefined();
+        expect(resolved.traction).toBeUndefined();
+        expect(resolved.generalProvenance?.method).toBe("datasheet");
+        if (resolved.generalProvenance?.method === "datasheet") {
+          expect(resolved.generalProvenance.verified).toBe(false);
+        }
+      }
+    });
   });
 
   describe("batteryCatalogue", () => {

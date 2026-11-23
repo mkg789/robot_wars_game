@@ -24,6 +24,23 @@ export const wheelCatalogue: WheelDefinition[] = [
       axis: "x",
     },
     massKg: 0.16,
+    engineeringSpec: {
+      category: "wheel",
+      treadType: "rubber",
+      fieldProvenance: {
+        treadType: {
+          method: "estimated",
+          basis: "Adapted from catalogue category 'Rubber' and physical description",
+        },
+      },
+      generalProvenance: {
+        method: "datasheet",
+        verified: false,
+        source: "catalogue:wheel:standard-rubber",
+        notes:
+          "Generic game preset wheel (220mm diameter, 70mm width). Not verified against an official manufacturer datasheet; hub bore dimensions, mechanical coupling tolerances, and traction coefficients are unverified and left undefined.",
+      },
+    },
   },
   {
     id: "heavy-duty",
@@ -42,6 +59,23 @@ export const wheelCatalogue: WheelDefinition[] = [
       axis: "x",
     },
     massKg: 0.32,
+    engineeringSpec: {
+      category: "wheel",
+      treadType: "polyurethane",
+      fieldProvenance: {
+        treadType: {
+          method: "estimated",
+          basis: "Adapted from catalogue category 'Heavy-duty' reinforced tire specification",
+        },
+      },
+      generalProvenance: {
+        method: "datasheet",
+        verified: false,
+        source: "catalogue:wheel:heavy-duty",
+        notes:
+          "Generic game preset wheel (280mm diameter, 100mm width). Not verified against an official manufacturer datasheet; hub bore dimensions, mechanical coupling tolerances, and traction coefficients are unverified and left undefined.",
+      },
+    },
   },
   {
     id: "grip",
@@ -60,6 +94,23 @@ export const wheelCatalogue: WheelDefinition[] = [
       axis: "x",
     },
     massKg: 0.24,
+    engineeringSpec: {
+      category: "wheel",
+      treadType: "rubber",
+      fieldProvenance: {
+        treadType: {
+          method: "estimated",
+          basis: "Adapted from catalogue category 'Grip' soft high-traction tread specification",
+        },
+      },
+      generalProvenance: {
+        method: "datasheet",
+        verified: false,
+        source: "catalogue:wheel:grip",
+        notes:
+          "Generic game preset wheel (240mm diameter, 90mm width). Not verified against an official manufacturer datasheet; hub bore dimensions, mechanical coupling tolerances, and traction coefficients are unverified and left undefined.",
+      },
+    },
   },
   {
     id: "small-omni",
@@ -78,5 +129,22 @@ export const wheelCatalogue: WheelDefinition[] = [
       axis: "x",
     },
     massKg: 0.12,
+    engineeringSpec: {
+      category: "wheel",
+      treadType: "omni-directional",
+      fieldProvenance: {
+        treadType: {
+          method: "estimated",
+          basis: "Adapted from catalogue category 'Omni' multi-directional roller wheel specification",
+        },
+      },
+      generalProvenance: {
+        method: "datasheet",
+        verified: false,
+        source: "catalogue:wheel:small-omni",
+        notes:
+          "Generic game preset wheel (160mm diameter, 55mm width). Not verified against an official manufacturer datasheet; hub bore dimensions, mechanical coupling tolerances, and traction coefficients are unverified and left undefined.",
+      },
+    },
   },
 ];
