@@ -32,7 +32,7 @@ describe("Phase 3.1 — Engineering Specification Types", () => {
           case "controller":
             return `Controller (${spec.controllerType})`;
           case "structural":
-            return `Structural (${spec.material.material})`;
+            return `Structural (${spec.material?.material})`;
           default: {
             const _exhaustiveCheck: never = spec;
             return _exhaustiveCheck;
@@ -100,13 +100,11 @@ describe("Phase 3.1 — Engineering Specification Types", () => {
 
       const estimatedProv: ProvenanceMeta = {
         method: "estimated",
-        verified: false,
         basis: "Theoretical back-EMF formula Kv = 1 / Ke",
       };
 
       const unknownProv: ProvenanceMeta = {
         method: "unknown",
-        verified: false,
         notes: "Pending manufacturer response",
       };
 
@@ -116,7 +114,7 @@ describe("Phase 3.1 — Engineering Specification Types", () => {
       expect(estimatedProv.method).toBe("estimated");
       expect(estimatedProv.basis).toBeDefined();
       expect(unknownProv.method).toBe("unknown");
-      expect(unknownProv.verified).toBe(false);
+      expect(unknownProv.notes).toBe("Pending manufacturer response");
     });
 
     it("allows distinct fields on the same component to have different provenance", () => {
@@ -154,20 +152,18 @@ describe("Phase 3.1 — Engineering Specification Types", () => {
           // Gearbox efficiency was estimated via heuristic, while the rest was measured
           gearboxEfficiency: {
             method: "estimated",
-            verified: false,
             basis: "Standard 2-stage planetary spur gear loss (9% per stage)",
           },
           // Thermal limit is unknown
           thermalLimits: {
             method: "unknown",
-            verified: false,
             notes: "No thermal testing performed yet",
           },
         },
       };
 
-      expect(motor.electrical.provenance?.method).toBe("datasheet");
-      expect(motor.mechanical.provenance?.method).toBe("measured");
+      expect(motor.electrical?.provenance?.method).toBe("datasheet");
+      expect(motor.mechanical?.provenance?.method).toBe("measured");
       expect(motor.fieldProvenance?.gearboxEfficiency?.method).toBe("estimated");
       expect(motor.fieldProvenance?.thermalLimits?.method).toBe("unknown");
     });
@@ -192,9 +188,27 @@ describe("Phase 3.1 — Engineering Specification Types", () => {
         },
       };
 
-      expect(basicMotor.electrical.stallCurrentA).toBeUndefined();
-      expect(basicMotor.mechanical.ratedTorqueNm).toBeUndefined();
-      expect(basicMotor.mechanical.gearboxEfficiency).toBeUndefined();
+      expect(basicMotor.electrical?.stallCurrentA).toBeUndefined();
+      expect(basicMotor.mechanical?.ratedTorqueNm).toBeUndefined();
+      expect(basicMotor.mechanical?.gearboxEfficiency).toBeUndefined();
+    });
+
+    it("allows representing completely incomplete motor specifications without dummy numbers", () => {
+      const minimalMotor: MotorEngineeringSpec = {
+        category: "motor",
+      };
+      expect(minimalMotor.electrical).toBeUndefined();
+      expect(minimalMotor.mechanical).toBeUndefined();
+      expect(minimalMotor.shaft).toBeUndefined();
+
+      const partialMotor: MotorEngineeringSpec = {
+        category: "motor",
+        electrical: {},
+        mechanical: {},
+      };
+      expect(partialMotor.electrical?.nominalVoltageV).toBeUndefined();
+      expect(partialMotor.mechanical?.stallTorqueNm).toBeUndefined();
+      expect(partialMotor.mechanical?.noLoadSpeedRpm).toBeUndefined();
     });
   });
 
@@ -228,21 +242,21 @@ describe("Phase 3.1 — Engineering Specification Types", () => {
       };
 
       // Distinct torque values
-      expect(motorSpec.mechanical.stallTorqueNm).toBe(2.5);
-      expect(motorSpec.mechanical.ratedTorqueNm).toBe(0.75);
-      expect(motorSpec.mechanical.stallTorqueNm).not.toBe(motorSpec.mechanical.ratedTorqueNm);
+      expect(motorSpec.mechanical!.stallTorqueNm).toBe(2.5);
+      expect(motorSpec.mechanical!.ratedTorqueNm).toBe(0.75);
+      expect(motorSpec.mechanical!.stallTorqueNm).not.toBe(motorSpec.mechanical!.ratedTorqueNm);
 
       // Distinct speed values
-      expect(motorSpec.mechanical.noLoadSpeedRpm).toBe(12000);
-      expect(motorSpec.mechanical.ratedSpeedRpm).toBe(9500);
-      expect(motorSpec.mechanical.noLoadSpeedRpm).toBeGreaterThan(motorSpec.mechanical.ratedSpeedRpm!);
+      expect(motorSpec.mechanical!.noLoadSpeedRpm).toBe(12000);
+      expect(motorSpec.mechanical!.ratedSpeedRpm).toBe(9500);
+      expect(motorSpec.mechanical!.noLoadSpeedRpm).toBeGreaterThan(motorSpec.mechanical!.ratedSpeedRpm!);
 
       // Distinct current values
-      expect(motorSpec.electrical.noLoadCurrentA).toBe(1.2);
-      expect(motorSpec.electrical.ratedCurrentA).toBe(18.0);
-      expect(motorSpec.electrical.stallCurrentA).toBe(65.0);
-      expect(motorSpec.electrical.stallCurrentA).toBeGreaterThan(motorSpec.electrical.ratedCurrentA!);
-      expect(motorSpec.electrical.ratedCurrentA).toBeGreaterThan(motorSpec.electrical.noLoadCurrentA!);
+      expect(motorSpec.electrical!.noLoadCurrentA).toBe(1.2);
+      expect(motorSpec.electrical!.ratedCurrentA).toBe(18.0);
+      expect(motorSpec.electrical!.stallCurrentA).toBe(65.0);
+      expect(motorSpec.electrical!.stallCurrentA).toBeGreaterThan(motorSpec.electrical!.ratedCurrentA!);
+      expect(motorSpec.electrical!.ratedCurrentA).toBeGreaterThan(motorSpec.electrical!.noLoadCurrentA!);
     });
   });
 
@@ -325,8 +339,8 @@ describe("Phase 3.1 — Engineering Specification Types", () => {
       };
 
       expect(wheelSpec.category).toBe("wheel");
-      expect(wheelSpec.traction.staticFrictionCoeff).toBe(0.95);
-      expect(wheelSpec.traction.maxRadialLoadKg).toBe(25.0);
+      expect(wheelSpec.traction!.staticFrictionCoeff).toBe(0.95);
+      expect(wheelSpec.traction!.maxRadialLoadKg).toBe(25.0);
     });
 
     it("models battery chemistry, cell configuration, and C-ratings", () => {
@@ -351,8 +365,8 @@ describe("Phase 3.1 — Engineering Specification Types", () => {
       };
 
       expect(batterySpec.cellCountS).toBe(4);
-      expect(batterySpec.electrical.continuousDischargeC).toBe(60);
-      expect(batterySpec.electrical.burstDischargeC).toBe(120);
+      expect(batterySpec.electrical!.continuousDischargeC).toBe(60);
+      expect(batterySpec.electrical!.burstDischargeC).toBe(120);
       expect(batterySpec.connector?.type).toBe("xt90");
     });
 
@@ -376,8 +390,8 @@ describe("Phase 3.1 — Engineering Specification Types", () => {
         },
       };
 
-      expect(controllerSpec.electrical.logicLevelV).toBe(3.3);
-      expect(controllerSpec.interfaces.supportedProtocols).toContain("can");
+      expect(controllerSpec.electrical!.logicLevelV).toBe(3.3);
+      expect(controllerSpec.interfaces!.supportedProtocols).toContain("can");
       expect(controllerSpec.clockSpeedHz).toBe(84000000);
     });
 
@@ -397,7 +411,7 @@ describe("Phase 3.1 — Engineering Specification Types", () => {
 
       expect(armorSpec.role).toBe("armor-plate");
       expect(armorSpec.plateThicknessM).toBe(0.004);
-      expect(armorSpec.material.yieldStrengthPa).toBe(1.2e9);
+      expect(armorSpec.material!.yieldStrengthPa).toBe(1.2e9);
     });
   });
 
@@ -465,8 +479,8 @@ describe("Phase 3.1 — Engineering Specification Types", () => {
       expect(motorPart.engineeringSpec).toBeDefined();
       expect(motorPart.engineeringSpec?.category).toBe("motor");
       if (motorPart.engineeringSpec?.category === "motor") {
-        expect(motorPart.engineeringSpec.electrical.stallCurrentA).toBe(9.8);
-        expect(motorPart.engineeringSpec.mechanical.gearRatio).toBe(19.5);
+        expect(motorPart.engineeringSpec.electrical?.stallCurrentA).toBe(9.8);
+        expect(motorPart.engineeringSpec.mechanical?.gearRatio).toBe(19.5);
       }
       expect(motorPart.geometry?.shape).toBe("box");
       expect(motorPart.massKg).toBe(0.48);

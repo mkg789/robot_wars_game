@@ -36,18 +36,41 @@ export type ProvenanceMethod =
 /**
  * Provenance descriptor detailing the veracity, citation, and verification status
  * of an engineering specification group or field.
+ *
+ * Implemented as a discriminated union on `method` to eliminate contradictory states
+ * (e.g. method: 'unknown' cannot carry verified: true; estimated cannot be verified without authoritative source).
  */
-export type ProvenanceMeta = {
-  readonly method: ProvenanceMethod;
-  /** Whether the specification is verified against an authoritative source */
-  readonly verified: boolean;
-  /** Primary citation (datasheet URL, test report reference, etc.) */
-  readonly source?: string;
-  /** Technical rationale or formula used if method is 'estimated' */
-  readonly basis?: string;
-  /** Test conditions or qualification notes (e.g. 'at 25°C ambient, 12.0V rail') */
-  readonly notes?: string;
-};
+export type ProvenanceMeta =
+  | {
+      readonly method: "datasheet";
+      /** Whether the specification is verified against an authoritative source */
+      readonly verified: boolean;
+      /** Primary citation (datasheet URL, document reference, etc.) */
+      readonly source: string;
+      /** Test conditions or qualification notes */
+      readonly notes?: string;
+    }
+  | {
+      readonly method: "measured";
+      /** Whether the measurement is verified against a calibrated test procedure */
+      readonly verified: boolean;
+      /** Laboratory or bench test citation */
+      readonly source: string;
+      /** Test conditions or qualification notes */
+      readonly notes?: string;
+    }
+  | {
+      readonly method: "estimated";
+      /** Technical rationale or formula used for estimation */
+      readonly basis: string;
+      /** Estimation assumptions or context notes */
+      readonly notes?: string;
+    }
+  | {
+      readonly method: "unknown";
+      /** Clarification or reason why the value is unknown or unverified */
+      readonly notes?: string;
+    };
 
 /**
  * Field-level provenance map allowing distinct properties on the same component
@@ -80,9 +103,9 @@ export type ShaftInterface = {
   readonly identifier?: string;
   readonly profile: ShaftProfile;
   /** Shaft outer diameter in canonical meters (e.g. 0.004 for 4mm) */
-  readonly diameterM: number;
+  readonly diameterM?: number;
   /** Usable axial shaft length in canonical meters */
-  readonly lengthM: number;
+  readonly lengthM?: number;
   /** Flat depth in canonical meters for D-shafts (distance from outer diameter to flat surface) */
   readonly flatDepthM?: number;
   /** Keyway width in canonical meters for keyed shafts */
@@ -99,9 +122,9 @@ export type HubInterface = {
   readonly identifier?: string;
   readonly profile: ShaftProfile;
   /** Inner bore diameter in canonical meters */
-  readonly boreDiameterM: number;
+  readonly boreDiameterM?: number;
   /** Axial engagement depth of the hub in canonical meters */
-  readonly engagementDepthM: number;
+  readonly engagementDepthM?: number;
   /** Hub retention or clamping mechanism */
   readonly retentionType?:
     | "set-screw"
@@ -173,7 +196,7 @@ export type MotorTechnology =
  */
 export type MotorElectricalSpecs = {
   /** Nominal design voltage in canonical volts (V) */
-  readonly nominalVoltageV: number;
+  readonly nominalVoltageV?: number;
   /** Minimum operating voltage in volts (V) */
   readonly minVoltageV?: number;
   /** Maximum safe operating voltage in volts (V) */
@@ -195,11 +218,11 @@ export type MotorElectricalSpecs = {
  */
 export type MotorMechanicalSpecs = {
   /** Stall torque at the output shaft at nominal voltage in Newton-meters (N·m) */
-  readonly stallTorqueNm: number;
+  readonly stallTorqueNm?: number;
   /** Continuous rated operating torque at output shaft in Newton-meters (N·m) */
   readonly ratedTorqueNm?: number;
   /** No-load angular velocity at output shaft in revolutions per minute (RPM) */
-  readonly noLoadSpeedRpm: number;
+  readonly noLoadSpeedRpm?: number;
   /** Rated operating speed under nominal load in revolutions per minute (RPM) */
   readonly ratedSpeedRpm?: number;
   /** Gearhead reduction ratio, output = motor / ratio (e.g. 20 for 20:1). Defaults to 1 for direct drive */
@@ -214,10 +237,10 @@ export type MotorMechanicalSpecs = {
  */
 export type MotorEngineeringSpec = {
   readonly category: "motor";
-  readonly technology: MotorTechnology;
-  readonly electrical: MotorElectricalSpecs;
-  readonly mechanical: MotorMechanicalSpecs;
-  readonly shaft: ShaftInterface;
+  readonly technology?: MotorTechnology;
+  readonly electrical?: MotorElectricalSpecs;
+  readonly mechanical?: MotorMechanicalSpecs;
+  readonly shaft?: ShaftInterface;
   readonly mounting?: MountingInterface;
   readonly fieldProvenance?: FieldProvenanceMap;
   readonly generalProvenance?: ProvenanceMeta;
@@ -257,10 +280,10 @@ export type WheelTractionSpecs = {
  */
 export type WheelEngineeringSpec = {
   readonly category: "wheel";
-  readonly treadType: WheelTreadType;
+  readonly treadType?: WheelTreadType;
   /** Mechanical hub interface for coupling to motor/axle shaft */
-  readonly hub: HubInterface;
-  readonly traction: WheelTractionSpecs;
+  readonly hub?: HubInterface;
+  readonly traction?: WheelTractionSpecs;
   readonly fieldProvenance?: FieldProvenanceMap;
   readonly generalProvenance?: ProvenanceMeta;
 };
@@ -293,13 +316,13 @@ export type BatteryConnectorType =
  */
 export type BatteryElectricalSpecs = {
   /** Nominal pack voltage in canonical volts (V) */
-  readonly nominalVoltageV: number;
+  readonly nominalVoltageV?: number;
   /** Maximum safe fully charged voltage in volts (V) */
   readonly fullyChargedVoltageV?: number;
   /** Recommended minimum cutoff / discharge floor voltage in volts (V) */
   readonly cutoffVoltageV?: number;
   /** Stored electrical charge capacity in milliampere-hours (mAh) */
-  readonly capacityMah: number;
+  readonly capacityMah?: number;
   /** Continuous discharge C-rating (discharge Amps = capacityAh * continuousDischargeC) */
   readonly continuousDischargeC?: number;
   /** Burst / peak discharge C-rating (e.g. for 10-second burst bursts) */
@@ -314,12 +337,12 @@ export type BatteryElectricalSpecs = {
  */
 export type BatteryEngineeringSpec = {
   readonly category: "battery";
-  readonly chemistry: BatteryChemistryType;
+  readonly chemistry?: BatteryChemistryType;
   /** Number of series cells (e.g. 3 for 3S 11.1V LiPo pack) */
   readonly cellCountS?: number;
   /** Number of parallel cells (defaults to 1 for 1P) */
   readonly parallelCountP?: number;
-  readonly electrical: BatteryElectricalSpecs;
+  readonly electrical?: BatteryElectricalSpecs;
   readonly connector?: {
     readonly type: BatteryConnectorType;
     readonly ratedCurrentA?: number;
@@ -356,9 +379,9 @@ export type CommunicationProtocol =
  */
 export type ControllerElectricalSpecs = {
   /** Operating logic voltage level in volts (V) */
-  readonly logicLevelV: 3.3 | 5.0 | 12.0;
+  readonly logicLevelV?: 3.3 | 5.0 | 12.0;
   /** Acceptable input supply voltage range in volts (V) */
-  readonly inputVoltageRangeV: {
+  readonly inputVoltageRangeV?: {
     readonly minV: number;
     readonly maxV: number;
   };
@@ -386,11 +409,11 @@ export type ControllerInterfacesSpecs = {
  */
 export type ControllerEngineeringSpec = {
   readonly category: "controller";
-  readonly controllerType: ControllerCategory;
+  readonly controllerType?: ControllerCategory;
   readonly processorArchitecture?: string;
   readonly clockSpeedHz?: number;
-  readonly electrical: ControllerElectricalSpecs;
-  readonly interfaces: ControllerInterfacesSpecs;
+  readonly electrical?: ControllerElectricalSpecs;
+  readonly interfaces?: ControllerInterfacesSpecs;
   readonly mounting?: MountingInterface;
   readonly fieldProvenance?: FieldProvenanceMap;
   readonly generalProvenance?: ProvenanceMeta;
@@ -417,7 +440,7 @@ export type StructuralMaterialType =
  * Material physical properties and structural strength ratings.
  */
 export type StructuralMaterialSpecs = {
-  readonly material: StructuralMaterialType;
+  readonly material?: StructuralMaterialType;
   /** Material mass density in kg/m³ (e.g. 2700 for aluminum, 7850 for steel, 1200 for polycarbonate) */
   readonly densityKgM3?: number;
   /** Tensile yield strength in Pascals (N/m², e.g. 276e6 for 6061-T6 aluminum) */
@@ -434,7 +457,7 @@ export type StructuralMaterialSpecs = {
  */
 export type StructuralEngineeringSpec = {
   readonly category: "structural";
-  readonly material: StructuralMaterialSpecs;
+  readonly material?: StructuralMaterialSpecs;
   /** Nominal plate or wall thickness in canonical meters (e.g. 0.003 for 3mm armor) */
   readonly plateThicknessM?: number;
   /** Structural role within the assembly */
