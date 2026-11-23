@@ -1,3 +1,10 @@
+import type {
+  BoxGeometry,
+  CylinderGeometry,
+  ElectricalSpecs,
+  MechanicalSpecs,
+} from "./dimensions.types";
+
 export type RobotPart = {
   id: string;
   name: string;
@@ -114,6 +121,9 @@ export type BatteryDefinition = {
   };
   weight: number;
   color: string;
+  geometry: BoxGeometry;
+  massKg: number;
+  electrical: ElectricalSpecs;
 };
 
 export type ControllerCatalogueId =
@@ -138,6 +148,9 @@ export type ControllerDefinition = {
   processor: string;
   clockMHz: number;
   operatingVoltage: string;
+  geometry: BoxGeometry;
+  massKg: number;
+  electrical: ElectricalSpecs;
 };
 
 export type MotorDefinition = {
@@ -150,6 +163,9 @@ export type MotorDefinition = {
   torque: number;
   mountingFootprint: [number, number];
   color: string;
+  geometry: BoxGeometry;
+  massKg: number;
+  mechanical: MechanicalSpecs;
 };
 
 export type MotorMountZone = {
@@ -176,6 +192,8 @@ export type WheelDefinition = {
   category: "Rubber" | "Heavy-duty" | "Grip" | "Omni";
   color: string;
   compatibleMotorIds: MotorCatalogueId[];
+  geometry: CylinderGeometry;
+  massKg: number;
 };
 
 export type WheelDimensionDraft = {

@@ -1,3 +1,4 @@
+import type { BoxGeometry } from "../types/dimensions.types";
 import type { FoundationModelId } from "../types/robot.types";
 
 export type FoundationModel = {
@@ -8,6 +9,7 @@ export type FoundationModel = {
   width: number;
   height: number;
   icon: string;
+  geometry: BoxGeometry;
 };
 
 export const foundationModels: FoundationModel[] = [
@@ -19,6 +21,12 @@ export const foundationModels: FoundationModel[] = [
     width: 1.4,
     height: 0.28,
     icon: "▣",
+    geometry: {
+      shape: "box",
+      length: 1.6,
+      height: 0.28,
+      width: 1.4,
+    },
   },
   {
     id: "standard-rectangular",
@@ -28,6 +36,12 @@ export const foundationModels: FoundationModel[] = [
     width: 1.5,
     height: 0.35,
     icon: "▬",
+    geometry: {
+      shape: "box",
+      length: 2,
+      height: 0.35,
+      width: 1.5,
+    },
   },
   {
     id: "long-frame",
@@ -37,6 +51,11 @@ export const foundationModels: FoundationModel[] = [
     width: 1.25,
     height: 0.32,
     icon: "▰",
+    geometry: {
+      shape: "box",
+      length: 2.6,
+      height: 0.32,
+      width: 1.25,
+    },
   },
 ];
-

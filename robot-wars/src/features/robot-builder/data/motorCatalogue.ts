@@ -11,6 +11,17 @@ export const motorCatalogue: MotorDefinition[] = [
     torque: 0.35,
     mountingFootprint: [0.42, 0.34],
     color: "#ef4444",
+    geometry: {
+      shape: "box",
+      length: 0.28,
+      height: 0.26,
+      width: 0.34,
+    },
+    massKg: 0.22,
+    mechanical: {
+      stallTorqueNm: 0.35,
+      noLoadRpm: 180,
+    },
   },
   {
     id: "standard-dc",
@@ -22,6 +33,17 @@ export const motorCatalogue: MotorDefinition[] = [
     torque: 0.8,
     mountingFootprint: [0.54, 0.42],
     color: "#f97316",
+    geometry: {
+      shape: "box",
+      length: 0.38,
+      height: 0.34,
+      width: 0.42,
+    },
+    massKg: 0.48,
+    mechanical: {
+      stallTorqueNm: 0.8,
+      noLoadRpm: 150,
+    },
   },
   {
     id: "high-torque-dc",
@@ -33,5 +55,16 @@ export const motorCatalogue: MotorDefinition[] = [
     torque: 1.6,
     mountingFootprint: [0.66, 0.52],
     color: "#dc2626",
+    geometry: {
+      shape: "box",
+      length: 0.46,
+      height: 0.42,
+      width: 0.5,
+    },
+    massKg: 0.82,
+    mechanical: {
+      stallTorqueNm: 1.6,
+      noLoadRpm: 90,
+    },
   },
 ];

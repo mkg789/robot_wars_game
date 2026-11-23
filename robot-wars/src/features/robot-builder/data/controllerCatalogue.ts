@@ -11,6 +11,16 @@ export const controllerCatalogue: ControllerDefinition[] = [
     processor: "ATmega328P",
     clockMHz: 16,
     operatingVoltage: "5V",
+    geometry: {
+      shape: "box",
+      length: 0.069,
+      height: 0.015,
+      width: 0.054,
+    },
+    massKg: 0.025,
+    electrical: {
+      nominalVoltageV: 5.0,
+    },
   },
   {
     id: "esp32-devkit",
@@ -22,6 +32,16 @@ export const controllerCatalogue: ControllerDefinition[] = [
     processor: "ESP32",
     clockMHz: 240,
     operatingVoltage: "3.3V",
+    geometry: {
+      shape: "box",
+      length: 0.055,
+      height: 0.01,
+      width: 0.028,
+    },
+    massKg: 0.009,
+    electrical: {
+      nominalVoltageV: 3.3,
+    },
   },
   {
     id: "stm32-nucleo",
@@ -33,5 +53,15 @@ export const controllerCatalogue: ControllerDefinition[] = [
     processor: "STM32F401RE",
     clockMHz: 84,
     operatingVoltage: "3.3V",
+    geometry: {
+      shape: "box",
+      length: 0.07,
+      height: 0.014,
+      width: 0.053,
+    },
+    massKg: 0.025,
+    electrical: {
+      nominalVoltageV: 3.3,
+    },
   },
 ];

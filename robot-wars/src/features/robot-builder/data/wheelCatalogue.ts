@@ -17,6 +17,13 @@ export const wheelCatalogue: WheelDefinition[] = [
     category: "Rubber",
     color: "#20242b",
     compatibleMotorIds: [...compatibleMotorIds],
+    geometry: {
+      shape: "cylinder",
+      diameter: 0.22,
+      axialWidth: 0.07,
+      axis: "x",
+    },
+    massKg: 0.16,
   },
   {
     id: "heavy-duty",
@@ -28,6 +35,13 @@ export const wheelCatalogue: WheelDefinition[] = [
     category: "Heavy-duty",
     color: "#171a20",
     compatibleMotorIds: ["standard-dc", "high-torque-dc"],
+    geometry: {
+      shape: "cylinder",
+      diameter: 0.28,
+      axialWidth: 0.1,
+      axis: "x",
+    },
+    massKg: 0.32,
   },
   {
     id: "grip",
@@ -39,6 +53,13 @@ export const wheelCatalogue: WheelDefinition[] = [
     category: "Grip",
     color: "#30343b",
     compatibleMotorIds: [...compatibleMotorIds],
+    geometry: {
+      shape: "cylinder",
+      diameter: 0.24,
+      axialWidth: 0.09,
+      axis: "x",
+    },
+    massKg: 0.24,
   },
   {
     id: "small-omni",
@@ -50,5 +71,12 @@ export const wheelCatalogue: WheelDefinition[] = [
     category: "Omni",
     color: "#272b32",
     compatibleMotorIds: ["small-dc", "standard-dc"],
+    geometry: {
+      shape: "cylinder",
+      diameter: 0.16,
+      axialWidth: 0.055,
+      axis: "x",
+    },
+    massKg: 0.12,
   },
 ];
