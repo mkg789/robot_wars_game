@@ -60,6 +60,153 @@ describe("Catalogue Migration: Canonical Dimensional & Physical Types", () => {
       expect(standardMotor?.mountingFootprint).toEqual([0.54, 0.42]);
       expect(standardMotor?.color).toBe("#f97316");
     });
+
+    it("populates authoritative engineeringSpec on Small DC Gear Motor", () => {
+      const motor = motorCatalogue.find((m) => m.id === "small-dc");
+      expect(motor?.engineeringSpec).toBeDefined();
+      const spec = motor!.engineeringSpec!;
+
+      expect(spec.category).toBe("motor");
+      expect(spec.technology).toBe("brushed-dc");
+
+      // Mechanical specs
+      expect(spec.mechanical?.stallTorqueNm).toBe(0.35);
+      expect(spec.mechanical?.noLoadSpeedRpm).toBe(180);
+      expect(spec.mechanical?.ratedTorqueNm).toBeUndefined();
+      expect(spec.mechanical?.ratedSpeedRpm).toBeUndefined();
+      expect(spec.mechanical?.gearRatio).toBeUndefined();
+      expect(spec.mechanical?.gearboxEfficiency).toBeUndefined();
+
+      // Electrical specs unverified and non-fabricated
+      expect(spec.electrical).toBeUndefined();
+
+      // Mounting interface
+      expect(spec.mounting?.patternType).toBe("face-mount");
+      expect(spec.mounting?.footprintDimensionsM).toEqual([0.42, 0, 0.34]);
+      expect(spec.mounting?.boltPattern).toBeUndefined();
+
+      // Shaft unverified and non-fabricated
+      expect(spec.shaft).toBeUndefined();
+
+      // Provenance: generic preset without manufacturer verification
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:motor:small-dc");
+        expect(spec.generalProvenance.notes).toContain("Generic game preset");
+      }
+      expect(spec.mechanical?.provenance?.method).toBe("datasheet");
+      if (spec.mechanical?.provenance?.method === "datasheet") {
+        expect(spec.mechanical.provenance.verified).toBe(false);
+        expect(spec.mechanical.provenance.source).toBe("catalogue:motor:small-dc");
+      }
+
+      // Field provenance
+      expect(spec.fieldProvenance?.["mechanical.stallTorqueNm"]?.method).toBe("estimated");
+      expect(spec.fieldProvenance?.["mechanical.noLoadSpeedRpm"]?.method).toBe("estimated");
+      expect(spec.fieldProvenance?.["mounting.footprintDimensionsM"]?.method).toBe("estimated");
+    });
+
+    it("populates authoritative engineeringSpec on Standard DC Gear Motor", () => {
+      const motor = motorCatalogue.find((m) => m.id === "standard-dc");
+      expect(motor?.engineeringSpec).toBeDefined();
+      const spec = motor!.engineeringSpec!;
+
+      expect(spec.category).toBe("motor");
+      expect(spec.technology).toBe("brushed-dc");
+
+      // Mechanical specs
+      expect(spec.mechanical?.stallTorqueNm).toBe(0.8);
+      expect(spec.mechanical?.noLoadSpeedRpm).toBe(150);
+      expect(spec.mechanical?.ratedTorqueNm).toBeUndefined();
+      expect(spec.mechanical?.ratedSpeedRpm).toBeUndefined();
+      expect(spec.mechanical?.gearRatio).toBeUndefined();
+      expect(spec.mechanical?.gearboxEfficiency).toBeUndefined();
+
+      // Electrical specs unverified and non-fabricated
+      expect(spec.electrical).toBeUndefined();
+
+      // Mounting interface
+      expect(spec.mounting?.patternType).toBe("face-mount");
+      expect(spec.mounting?.footprintDimensionsM).toEqual([0.54, 0, 0.42]);
+      expect(spec.mounting?.boltPattern).toBeUndefined();
+
+      // Shaft unverified and non-fabricated
+      expect(spec.shaft).toBeUndefined();
+
+      // Provenance
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:motor:standard-dc");
+      }
+    });
+
+    it("populates authoritative engineeringSpec on High-Torque DC Gear Motor", () => {
+      const motor = motorCatalogue.find((m) => m.id === "high-torque-dc");
+      expect(motor?.engineeringSpec).toBeDefined();
+      const spec = motor!.engineeringSpec!;
+
+      expect(spec.category).toBe("motor");
+      expect(spec.technology).toBe("brushed-dc");
+
+      // Mechanical specs
+      expect(spec.mechanical?.stallTorqueNm).toBe(1.6);
+      expect(spec.mechanical?.noLoadSpeedRpm).toBe(90);
+      expect(spec.mechanical?.ratedTorqueNm).toBeUndefined();
+      expect(spec.mechanical?.ratedSpeedRpm).toBeUndefined();
+      expect(spec.mechanical?.gearRatio).toBeUndefined();
+      expect(spec.mechanical?.gearboxEfficiency).toBeUndefined();
+
+      // Electrical specs unverified and non-fabricated
+      expect(spec.electrical).toBeUndefined();
+
+      // Mounting interface
+      expect(spec.mounting?.patternType).toBe("face-mount");
+      expect(spec.mounting?.footprintDimensionsM).toEqual([0.66, 0, 0.52]);
+      expect(spec.mounting?.boltPattern).toBeUndefined();
+
+      // Shaft unverified and non-fabricated
+      expect(spec.shaft).toBeUndefined();
+
+      // Provenance
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:motor:high-torque-dc");
+      }
+    });
+
+    it("preserves resolver compatibility and non-fabrication for catalogue motors", () => {
+      const part: RobotPart = {
+        id: "motor-instance-1",
+        name: "Standard Motor Instance",
+        type: "Motor",
+        position: [0, 0, 0],
+        rotation: [0, 0, 0],
+        size: [0.38, 0.34, 0.42],
+        color: "#f97316",
+        mass: 0.48,
+        motorCatalogueId: "standard-dc",
+      };
+
+      const resolved = resolveComponentEngineeringSpec(part);
+      expect(resolved).toBeDefined();
+      expect(resolved?.category).toBe("motor");
+      if (resolved?.category === "motor") {
+        expect(resolved.technology).toBe("brushed-dc");
+        expect(resolved.mechanical?.stallTorqueNm).toBe(0.8);
+        expect(resolved.mechanical?.noLoadSpeedRpm).toBe(150);
+        expect(resolved.electrical).toBeUndefined();
+        expect(resolved.shaft).toBeUndefined();
+        expect(resolved.mounting?.patternType).toBe("face-mount");
+        expect(resolved.mounting?.footprintDimensionsM).toEqual([0.54, 0, 0.42]);
+        expect(resolved.generalProvenance?.method).toBe("datasheet");
+        if (resolved.generalProvenance?.method === "datasheet") {
+          expect(resolved.generalProvenance.verified).toBe(false);
+        }
+      }
+    });
   });
 
   describe("wheelCatalogue", () => {

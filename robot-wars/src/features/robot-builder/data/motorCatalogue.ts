@@ -22,6 +22,48 @@ export const motorCatalogue: MotorDefinition[] = [
       stallTorqueNm: 0.35,
       noLoadRpm: 180,
     },
+    engineeringSpec: {
+      category: "motor",
+      technology: "brushed-dc",
+      mechanical: {
+        stallTorqueNm: 0.35,
+        noLoadSpeedRpm: 180,
+        provenance: {
+          method: "datasheet",
+          verified: false,
+          source: "catalogue:motor:small-dc",
+          notes:
+            "Legacy catalogue preset mechanical values (0.35 N·m stall torque, 180 RPM no-load speed). Rated operating points, gear ratio, and efficiency are unverified and left undefined.",
+        },
+      },
+      mounting: {
+        patternType: "face-mount",
+        footprintDimensionsM: [0.42, 0, 0.34],
+      },
+      fieldProvenance: {
+        "mechanical.stallTorqueNm": {
+          method: "estimated",
+          basis: "Legacy catalogue preset value",
+          notes: "Stall torque represents arbitrary game preset",
+        },
+        "mechanical.noLoadSpeedRpm": {
+          method: "estimated",
+          basis: "Legacy catalogue preset value",
+          notes: "No-load RPM represents arbitrary game preset",
+        },
+        "mounting.footprintDimensionsM": {
+          method: "estimated",
+          basis: "Derived from catalogue mountingFootprint [0.42, 0.34]",
+        },
+      },
+      generalProvenance: {
+        method: "datasheet",
+        verified: false,
+        source: "catalogue:motor:small-dc",
+        notes:
+          "Generic game preset DC gear motor (180 RPM, 0.35 N·m). Not verified against an official manufacturer datasheet; electrical parameters, gearhead ratios, efficiency, and shaft geometry are unverified and left undefined.",
+      },
+    },
   },
   {
     id: "standard-dc",
@@ -44,6 +86,48 @@ export const motorCatalogue: MotorDefinition[] = [
       stallTorqueNm: 0.8,
       noLoadRpm: 150,
     },
+    engineeringSpec: {
+      category: "motor",
+      technology: "brushed-dc",
+      mechanical: {
+        stallTorqueNm: 0.8,
+        noLoadSpeedRpm: 150,
+        provenance: {
+          method: "datasheet",
+          verified: false,
+          source: "catalogue:motor:standard-dc",
+          notes:
+            "Legacy catalogue preset mechanical values (0.8 N·m stall torque, 150 RPM no-load speed). Rated operating points, gear ratio, and efficiency are unverified and left undefined.",
+        },
+      },
+      mounting: {
+        patternType: "face-mount",
+        footprintDimensionsM: [0.54, 0, 0.42],
+      },
+      fieldProvenance: {
+        "mechanical.stallTorqueNm": {
+          method: "estimated",
+          basis: "Legacy catalogue preset value",
+          notes: "Stall torque represents arbitrary game preset",
+        },
+        "mechanical.noLoadSpeedRpm": {
+          method: "estimated",
+          basis: "Legacy catalogue preset value",
+          notes: "No-load RPM represents arbitrary game preset",
+        },
+        "mounting.footprintDimensionsM": {
+          method: "estimated",
+          basis: "Derived from catalogue mountingFootprint [0.54, 0.42]",
+        },
+      },
+      generalProvenance: {
+        method: "datasheet",
+        verified: false,
+        source: "catalogue:motor:standard-dc",
+        notes:
+          "Generic game preset DC gear motor (150 RPM, 0.8 N·m). Not verified against an official manufacturer datasheet; electrical parameters, gearhead ratios, efficiency, and shaft geometry are unverified and left undefined.",
+      },
+    },
   },
   {
     id: "high-torque-dc",
@@ -65,6 +149,48 @@ export const motorCatalogue: MotorDefinition[] = [
     mechanical: {
       stallTorqueNm: 1.6,
       noLoadRpm: 90,
+    },
+    engineeringSpec: {
+      category: "motor",
+      technology: "brushed-dc",
+      mechanical: {
+        stallTorqueNm: 1.6,
+        noLoadSpeedRpm: 90,
+        provenance: {
+          method: "datasheet",
+          verified: false,
+          source: "catalogue:motor:high-torque-dc",
+          notes:
+            "Legacy catalogue preset mechanical values (1.6 N·m stall torque, 90 RPM no-load speed). Rated operating points, gear ratio, and efficiency are unverified and left undefined.",
+        },
+      },
+      mounting: {
+        patternType: "face-mount",
+        footprintDimensionsM: [0.66, 0, 0.52],
+      },
+      fieldProvenance: {
+        "mechanical.stallTorqueNm": {
+          method: "estimated",
+          basis: "Legacy catalogue preset value",
+          notes: "Stall torque represents arbitrary game preset",
+        },
+        "mechanical.noLoadSpeedRpm": {
+          method: "estimated",
+          basis: "Legacy catalogue preset value",
+          notes: "No-load RPM represents arbitrary game preset",
+        },
+        "mounting.footprintDimensionsM": {
+          method: "estimated",
+          basis: "Derived from catalogue mountingFootprint [0.66, 0.52]",
+        },
+      },
+      generalProvenance: {
+        method: "datasheet",
+        verified: false,
+        source: "catalogue:motor:high-torque-dc",
+        notes:
+          "Generic game preset DC gear motor (90 RPM, 1.6 N·m). Not verified against an official manufacturer datasheet; electrical parameters, gearhead ratios, efficiency, and shaft geometry are unverified and left undefined.",
+      },
     },
   },
 ];
