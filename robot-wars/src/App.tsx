@@ -28,10 +28,10 @@ import {
   type CameraFocusRequest,
 } from "./features/robot-builder/logic/viewportFocus";
 import {
-  kgToGrams,
-  metersToCm,
-  metersToMm,
-} from "./features/robot-builder/logic/units";
+  formatDimensions,
+  formatLength,
+  formatMass,
+} from "./features/robot-builder/logic/formatters";
 
 import "./App.css";
 
@@ -733,8 +733,8 @@ function App() {
                       <span>
                         <strong>{wheel.name}</strong>
                         <small>
-                          {metersToCm(wheel.diameter).toFixed(0)} cm ×{" "}
-                          {metersToCm(wheel.width).toFixed(1)} cm ·{" "}
+                          {formatLength(wheel.diameter, "cm", { decimals: 0 })} ×{" "}
+                          {formatLength(wheel.width, "cm", { decimals: 1 })} ·{" "}
                           {wheel.category}
                         </small>
                       </span>
@@ -1282,15 +1282,12 @@ function App() {
                     <div className="property-row">
                       <span>Dimensions (L × W × H)</span>
                       <span>
-                        {selectedBatteryDefinition.dimensions.length.toFixed(2)}{" "}
-                        × {selectedBatteryDefinition.dimensions.width.toFixed(2)}{" "}
-                        × {selectedBatteryDefinition.dimensions.height.toFixed(3)}{" "}
-                        m
+                        {formatDimensions(selectedBatteryDefinition.dimensions, "m", { decimals: [2, 2, 3] })}
                       </span>
                     </div>
                     <div className="property-row">
                       <span>Weight</span>
-                      <span>{selectedBatteryDefinition.weight.toFixed(2)} kg</span>
+                      <span>{formatMass(selectedBatteryDefinition.weight, "kg", { decimals: 2 })}</span>
                     </div>
                   </div>
                 ) : (
@@ -1369,15 +1366,13 @@ function App() {
                     <div className="property-row">
                       <span>Dimensions (L × W × H)</span>
                       <span>
-                        {metersToMm(selectedControllerDefinition.dimensions.length).toFixed(1)} ×{" "}
-                        {metersToMm(selectedControllerDefinition.dimensions.width).toFixed(1)} ×{" "}
-                        {metersToMm(selectedControllerDefinition.dimensions.height).toFixed(1)} mm
+                        {formatDimensions(selectedControllerDefinition.dimensions, "mm", { decimals: 1 })}
                       </span>
                     </div>
                     <div className="property-row">
                       <span>Weight</span>
                       <span>
-                        {kgToGrams(selectedControllerDefinition.weight).toFixed(0)} g
+                        {formatMass(selectedControllerDefinition.weight, "g", { decimals: 0 })}
                       </span>
                     </div>
                   </div>
@@ -1582,15 +1577,15 @@ function App() {
                     </div>
                     <div className="property-row">
                       <span>Diameter</span>
-                      <span>{metersToCm(selectedWheelDefinition.diameter).toFixed(0)} cm</span>
+                      <span>{formatLength(selectedWheelDefinition.diameter, "cm", { decimals: 0 })}</span>
                     </div>
                     <div className="property-row">
                       <span>Width</span>
-                      <span>{metersToCm(selectedWheelDefinition.width).toFixed(1)} cm</span>
+                      <span>{formatLength(selectedWheelDefinition.width, "cm", { decimals: 1 })}</span>
                     </div>
                     <div className="property-row">
                       <span>Weight</span>
-                      <span>{selectedWheelDefinition.weight.toFixed(2)} kg</span>
+                      <span>{formatMass(selectedWheelDefinition.weight, "kg", { decimals: 2 })}</span>
                     </div>
                     <small className="spec-disclaimer">
                       Placeholder simulation specifications, not manufacturer verified.
