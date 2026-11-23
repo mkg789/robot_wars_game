@@ -76,4 +76,76 @@ describe("viewport focus helpers", () => {
       radius: Math.hypot(0.17, 0.06, 0.17),
     });
   });
+
+  it("frames a component using canonical BoxGeometry", () => {
+    const boxPart = makePart({
+      position: [1, 2, 3],
+      size: [1, 1, 1], // legacy size
+      geometry: {
+        shape: "box",
+        length: 2.4,
+        height: 0.6,
+        width: 1.8,
+      },
+    });
+
+    expect(getComponentFocusFrame(boxPart)).toEqual({
+      target: [1, 2, 3],
+      radius: Math.hypot(1.2, 0.3, 0.9),
+    });
+  });
+
+  it("frames a cylindrical component using canonical CylinderGeometry", () => {
+    const wheel = makePart({
+      type: "Wheel",
+      position: [0, 0.5, 0.5],
+      size: [0.1, 0.1, 0.1], // legacy size differs
+      geometry: {
+        shape: "cylinder",
+        diameter: 0.4,
+        axialWidth: 0.14,
+        axis: "x",
+      },
+    });
+
+    // Cartesian bounding box for cylinder with axis "x" is [axialWidth, diameter, diameter]
+    expect(getComponentFocusFrame(wheel)).toEqual({
+      target: [0, 0.5, 0.5],
+      radius: Math.hypot(0.07, 0.2, 0.2),
+    });
+  });
+
+  it("demonstrates canonical-first behaviour when canonical geometry and legacy size differ", () => {
+    const conflictingPart = makePart({
+      position: [0, 0, 0],
+      size: [0.2, 0.2, 0.2], // small legacy size
+      geometry: {
+        shape: "box",
+        length: 4.0,
+        height: 2.0,
+        width: 2.0,
+      },
+    });
+
+    const frame = getComponentFocusFrame(conflictingPart);
+    expect(frame.radius).toBe(Math.hypot(2.0, 1.0, 1.0));
+    expect(frame.radius).not.toBe(Math.hypot(0.1, 0.1, 0.1));
+  });
+
+  it("computes assembly focus frame from canonical bounds", () => {
+    const partA = makePart({
+      position: [-2, 0, 0],
+      geometry: { shape: "box", length: 2, height: 1, width: 1 },
+    });
+    const partB = makePart({
+      id: "part-b",
+      position: [2, 0, 0],
+      geometry: { shape: "box", length: 2, height: 1, width: 1 },
+    });
+
+    const frame = getAssemblyFocusFrame([partA, partB]);
+    expect(frame).not.toBeNull();
+    expect(frame?.target[0]).toBeCloseTo(0);
+    expect(frame?.radius).toBeGreaterThan(2);
+  });
 });

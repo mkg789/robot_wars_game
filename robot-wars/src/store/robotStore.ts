@@ -85,6 +85,16 @@ type RobotStore = {
     rotation: [number, number, number]
   ) => void;
 
+  updatePartGeometry: (
+    id: string,
+    geometry: ComponentGeometry
+  ) => void;
+
+  updatePartMass: (
+    id: string,
+    massKg: number
+  ) => void;
+
   addPart: (type: ComponentType) => void;
 
   connectParts: (sourceId: string, targetId: string) => void;
@@ -339,6 +349,68 @@ function createFoundationParts(config: FoundationConfig): RobotPart[] {
   }
 
   return parts;
+}
+
+export function syncGeometryFromSize(
+  part: RobotPart,
+  size: [number, number, number]
+): Pick<RobotPart, "size" | "geometry"> &
+  Partial<Pick<RobotPart, "wheelDiameter" | "wheelWidth">> {
+  const isCylinder =
+    part.geometry?.shape === "cylinder" || part.type === "Wheel";
+
+  if (isCylinder) {
+    const axis =
+      part.geometry?.shape === "cylinder" ? part.geometry.axis : "x";
+    return {
+      size,
+      ...(part.type === "Wheel" || part.wheelDiameter !== undefined
+        ? { wheelDiameter: size[0], wheelWidth: size[1] }
+        : {}),
+      geometry: {
+        shape: "cylinder",
+        diameter: size[0],
+        axialWidth: size[1],
+        axis,
+      },
+    };
+  }
+
+  return {
+    size,
+    geometry: {
+      shape: "box",
+      length: size[0],
+      height: size[1],
+      width: size[2],
+    },
+  };
+}
+
+export function syncSizeFromGeometry(
+  part: RobotPart,
+  geometry: ComponentGeometry
+): Pick<RobotPart, "size" | "geometry"> &
+  Partial<Pick<RobotPart, "wheelDiameter" | "wheelWidth">> {
+  if (geometry.shape === "cylinder") {
+    const size: [number, number, number] = [
+      geometry.diameter,
+      geometry.axialWidth,
+      geometry.diameter,
+    ];
+    return {
+      geometry,
+      size,
+      ...(part.type === "Wheel" || part.wheelDiameter !== undefined
+        ? { wheelDiameter: geometry.diameter, wheelWidth: geometry.axialWidth }
+        : {}),
+    };
+  }
+
+  return {
+    geometry,
+    size: [geometry.length, geometry.height, geometry.width],
+  };
 }
 
 function retainVisibilityForParts(
@@ -1222,13 +1294,26 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
             !parentMotor ||
             !wheelDefinition
           ) return connection;
+          const canonicalDiameter =
+            attachedWheel?.geometry?.shape === "cylinder"
+              ? attachedWheel.geometry.diameter
+              : undefined;
+          const canonicalWidth =
+            attachedWheel?.geometry?.shape === "cylinder"
+              ? attachedWheel.geometry.axialWidth
+              : undefined;
+
           const instanceDefinition = attachedWheel
             ? {
                 ...wheelDefinition,
                 diameter:
+                  canonicalDiameter ??
                   attachedWheel.wheelDiameter ??
                   attachedWheel.size[0],
-                width: attachedWheel.wheelWidth ?? attachedWheel.size[1],
+                width:
+                  canonicalWidth ??
+                  attachedWheel.wheelWidth ??
+                  attachedWheel.size[1],
               }
             : wheelDefinition;
           return {
@@ -1661,11 +1746,16 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
 
   updatePartTransform: (id, position, rotation, size) =>
     set((state) => {
-      const updatedParts = state.parts.map((part) =>
-        part.id === id
-          ? { ...part, position, rotation, ...(size ? { size } : {}) }
-          : part
-      );
+      const updatedParts = state.parts.map((part) => {
+        if (part.id !== id) return part;
+        const synced = size ? syncGeometryFromSize(part, size) : {};
+        return {
+          ...part,
+          position,
+          rotation,
+          ...synced,
+        };
+      });
 
       return {
         parts: syncAssemblyTransforms(updatedParts, state.connections),
@@ -1685,9 +1775,11 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
 
   updatePartSize: (id, size) =>
     set((state) => {
-      const updatedParts = state.parts.map((part) =>
-        part.id === id ? { ...part, size } : part
-      );
+      const updatedParts = state.parts.map((part) => {
+        if (part.id !== id) return part;
+        const synced = syncGeometryFromSize(part, size);
+        return { ...part, ...synced };
+      });
 
       return {
         parts: syncAssemblyTransforms(updatedParts, state.connections),
@@ -1702,6 +1794,30 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
 
       return {
         parts: syncAssemblyTransforms(updatedParts, state.connections),
+      };
+    }),
+
+  updatePartGeometry: (id, geometry) =>
+    set((state) => {
+      const updatedParts = state.parts.map((part) => {
+        if (part.id !== id) return part;
+        const synced = syncSizeFromGeometry(part, geometry);
+        return { ...part, ...synced };
+      });
+
+      return {
+        parts: syncAssemblyTransforms(updatedParts, state.connections),
+      };
+    }),
+
+  updatePartMass: (id, massKg) =>
+    set((state) => {
+      const updatedParts = state.parts.map((part) =>
+        part.id === id ? { ...part, mass: massKg, massKg } : part
+      );
+
+      return {
+        parts: updatedParts,
       };
     }),
 

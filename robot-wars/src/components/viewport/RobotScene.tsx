@@ -32,6 +32,7 @@ import { motorCatalogue } from "../../features/robot-builder/data/motorCatalogue
 import { wheelCatalogue } from "../../features/robot-builder/data/wheelCatalogue";
 import { getWheelWorldMountTransform } from "../../features/robot-builder/logic/wheelMounting";
 import { cmToMeters } from "../../features/robot-builder/logic/units";
+import { getPartCylinderDimensions } from "../../features/robot-builder/logic/geometryAdapters";
 import {
   getCameraFocusDistance,
   type CameraFocusRequest,
@@ -217,20 +218,19 @@ export default function RobotScene({
           )
       )
     : undefined;
+  const assignedWheelDimensions = assignedPreviewMotorWheel
+    ? getPartCylinderDimensions(assignedPreviewMotorWheel)
+    : null;
+
   const assignedWheelMatchesDraft = Boolean(
     assignedPreviewMotorWheel &&
     previewWheelDefinition &&
+    assignedWheelDimensions &&
     assignedPreviewMotorWheel.wheelCatalogueId === previewWheelDefinition.id &&
-    Math.abs(
-      (assignedPreviewMotorWheel.wheelDiameter ??
-        assignedPreviewMotorWheel.size[0]) -
-        previewWheelDefinition.diameter
-    ) < 0.000001 &&
-    Math.abs(
-      (assignedPreviewMotorWheel.wheelWidth ??
-        assignedPreviewMotorWheel.size[1]) -
-        previewWheelDefinition.width
-    ) < 0.000001
+    Math.abs(assignedWheelDimensions.diameter - previewWheelDefinition.diameter) <
+      0.000001 &&
+    Math.abs(assignedWheelDimensions.width - previewWheelDefinition.width) <
+      0.000001
   );
   const hiddenWheelId =
     stage === "wheels" &&

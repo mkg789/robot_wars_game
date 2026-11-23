@@ -12,6 +12,10 @@ import WheelModel from "./WheelModel";
 import { batteryCatalogue } from "../../features/robot-builder/data/batteryCatalogue";
 import { controllerCatalogue } from "../../features/robot-builder/data/controllerCatalogue";
 import { wheelCatalogue } from "../../features/robot-builder/data/wheelCatalogue";
+import {
+  getPartBoxExtents,
+  getPartCylinderDimensions,
+} from "../../features/robot-builder/logic/geometryAdapters";
 import type {
   RobotPart,
   TransformMode,
@@ -56,7 +60,10 @@ export default function RobotObject({
     group.position.set(...part.position);
     group.rotation.set(...(part.rotation ?? [0, 0, 0]));
     group.scale.set(1, 1, 1);
-  }, [part.position, part.rotation, part.size]);
+  }, [part.position, part.rotation, part.size, part.geometry]);
+
+  const boxExtents = getPartBoxExtents(part);
+  const cylinderDimensions = getPartCylinderDimensions(part);
 
   const materialColor =
     selected || highlighted ? "#fbbf24" : part.color;
@@ -89,12 +96,12 @@ export default function RobotObject({
   const geometry = (() => {
     switch (part.type) {
       case "Armor Plate":
-        return <boxGeometry args={part.size} />;
+        return <boxGeometry args={boxExtents} />;
 
       case "Front Bumper":
         return (
           <RoundedBox
-            args={part.size}
+            args={boxExtents}
             radius={0.04}
             smoothness={3}
           />
@@ -108,7 +115,7 @@ export default function RobotObject({
 
       case "Structural Block":
       default:
-        return <boxGeometry args={part.size} />;
+        return <boxGeometry args={boxExtents} />;
     }
   })();
 
@@ -122,21 +129,21 @@ export default function RobotObject({
     >
       {part.id === "foundation-chassis" ? (
         <ChassisModel
-          size={part.size}
+          size={boxExtents}
           color={part.color}
           selected={selected || highlighted}
         />
       ) : part.id === "foundation-top-plate" ? (
-        <TopPlateModel size={part.size} color={materialColor} />
+        <TopPlateModel size={boxExtents} color={materialColor} />
       ) : part.type === "Motor" ? (
         <MotorModel
-          size={part.size}
+          size={boxExtents}
           housingColor={part.color}
           selected={selected || highlighted}
         />
       ) : part.type === "Battery" ? (
         <BatteryModel
-          size={part.size}
+          size={boxExtents}
           color={part.color}
           selected={selected || highlighted}
           design={batteryDesign}
@@ -147,20 +154,46 @@ export default function RobotObject({
         />
       ) : part.type === "Controller" ? (
         <ControllerModel
-          size={part.size}
+          size={boxExtents}
           color={controllerDefinition?.color ?? part.color}
           selected={selected || highlighted}
           variant={controllerVariant}
         />
       ) : part.type === "Wheel" ? (
         <WheelModel
-          radius={part.size[0] / 2}
-          width={part.size[1]}
+          radius={cylinderDimensions.radius}
+          width={cylinderDimensions.width}
           color={materialColor}
           category={wheelCatalogue.find(
             (wheel) => wheel.id === part.wheelCatalogueId
           )?.category ?? "Rubber"}
         />
+      ) : part.geometry?.shape === "cylinder" ? (
+        <mesh
+          rotation={
+            part.geometry.axis === "x"
+              ? [0, 0, Math.PI / 2]
+              : part.geometry.axis === "z"
+                ? [Math.PI / 2, 0, 0]
+                : [0, 0, 0]
+          }
+          castShadow
+          receiveShadow
+        >
+          <cylinderGeometry
+            args={[
+              cylinderDimensions.radius,
+              cylinderDimensions.radius,
+              cylinderDimensions.width,
+              32,
+            ]}
+          />
+          <meshStandardMaterial
+            color={materialColor}
+            metalness={0.55}
+            roughness={0.4}
+          />
+        </mesh>
       ) : (
         <mesh
           rotation={[0, 0, 0]}
@@ -206,9 +239,9 @@ export default function RobotObject({
         ];
 
         const scaledSize: [number, number, number] = [
-          Math.max(0.01, part.size[0] * group.scale.x),
-          Math.max(0.01, part.size[1] * group.scale.y),
-          Math.max(0.01, part.size[2] * group.scale.z),
+          Math.max(0.01, boxExtents[0] * group.scale.x),
+          Math.max(0.01, boxExtents[1] * group.scale.y),
+          Math.max(0.01, boxExtents[2] * group.scale.z),
         ];
 
         onTransformUpdate(

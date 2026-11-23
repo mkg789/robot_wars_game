@@ -1,4 +1,5 @@
 import type { RobotPart } from "../types/robot.types";
+import { getPartBoundingExtents } from "./geometryAdapters";
 
 export type CameraFocusFrame = {
   target: [number, number, number];
@@ -10,7 +11,8 @@ export type CameraFocusRequest = CameraFocusFrame & {
 };
 
 function getPartRadius(part: RobotPart): number {
-  const [sizeX, sizeY, sizeZ] = part.size.map((value) =>
+  const extents = getPartBoundingExtents(part);
+  const [sizeX, sizeY, sizeZ] = extents.map((value) =>
     Number.isFinite(value) ? Math.abs(value) : 0
   );
   const radius = Math.hypot(sizeX * 0.5, sizeY * 0.5, sizeZ * 0.5);

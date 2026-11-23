@@ -9,6 +9,9 @@ import {
   toBoundingBoxExtents,
   toBoundingExtentsObject,
   toBoundingTuple,
+  getPartBoundingExtents,
+  getPartBoxExtents,
+  getPartCylinderDimensions,
 } from "./geometryAdapters";
 
 describe("geometryAdapters", () => {
@@ -170,6 +173,165 @@ describe("geometryAdapters", () => {
       expect(restoredTuple[0]).toBe(originalTuple[0]);
       expect(restoredTuple[1]).toBe(originalTuple[1]);
       expect(restoredTuple[2]).toBe(originalTuple[2]);
+    });
+  });
+
+  describe("getPartBoundingExtents", () => {
+    it("returns Cartesian extents for BoxGeometry", () => {
+      const part = {
+        size: [1.0, 0.5, 0.8] as [number, number, number],
+        geometry: {
+          shape: "box" as const,
+          length: 2.2,
+          height: 0.4,
+          width: 1.6,
+        },
+      };
+
+      expect(getPartBoundingExtents(part)).toEqual([2.2, 0.4, 1.6]);
+    });
+
+    it("returns Cartesian extents for CylinderGeometry respecting symmetry axis", () => {
+      const xCylinder = {
+        size: [0.3, 0.1, 0.3] as [number, number, number],
+        geometry: {
+          shape: "cylinder" as const,
+          diameter: 0.3,
+          axialWidth: 0.1,
+          axis: "x" as const,
+        },
+      };
+      expect(getPartBoundingExtents(xCylinder)).toEqual([0.1, 0.3, 0.3]);
+
+      const zCylinder = {
+        size: [0.3, 0.1, 0.3] as [number, number, number],
+        geometry: {
+          shape: "cylinder" as const,
+          diameter: 0.25,
+          axialWidth: 0.6,
+          axis: "z" as const,
+        },
+      };
+      expect(getPartBoundingExtents(zCylinder)).toEqual([0.25, 0.25, 0.6]);
+    });
+
+    it("falls back to legacy part.size when canonical geometry is undefined", () => {
+      const legacyPart = {
+        size: [1.5, 0.3, 0.9] as [number, number, number],
+      };
+      expect(getPartBoundingExtents(legacyPart)).toEqual([1.5, 0.3, 0.9]);
+    });
+
+    it("prefers canonical geometry when canonical and legacy size differ", () => {
+      const conflictingPart = {
+        size: [99.0, 99.0, 99.0] as [number, number, number],
+        geometry: {
+          shape: "box" as const,
+          length: 2.0,
+          height: 0.5,
+          width: 1.2,
+        },
+      };
+      expect(getPartBoundingExtents(conflictingPart)).toEqual([2.0, 0.5, 1.2]);
+    });
+  });
+
+  describe("getPartBoxExtents", () => {
+    it("extracts [length, height, width] for box components", () => {
+      const part = {
+        size: [1, 1, 1] as [number, number, number],
+        geometry: {
+          shape: "box" as const,
+          length: 3.1,
+          height: 0.45,
+          width: 2.0,
+        },
+      };
+      expect(getPartBoxExtents(part)).toEqual([3.1, 0.45, 2.0]);
+    });
+
+    it("falls back to legacy part.size when geometry is missing", () => {
+      const part = {
+        size: [1.8, 0.2, 1.0] as [number, number, number],
+      };
+      expect(getPartBoxExtents(part)).toEqual([1.8, 0.2, 1.0]);
+    });
+
+    it("prefers canonical geometry when canonical and legacy size differ", () => {
+      const part = {
+        size: [5.0, 5.0, 5.0] as [number, number, number],
+        geometry: {
+          shape: "box" as const,
+          length: 1.4,
+          height: 0.3,
+          width: 0.8,
+        },
+      };
+      expect(getPartBoxExtents(part)).toEqual([1.4, 0.3, 0.8]);
+    });
+  });
+
+  describe("getPartCylinderDimensions", () => {
+    it("extracts canonical radius, diameter, and width from CylinderGeometry", () => {
+      const wheel = {
+        size: [0.22, 0.07, 0.22] as [number, number, number],
+        wheelDiameter: 0.22,
+        wheelWidth: 0.07,
+        geometry: {
+          shape: "cylinder" as const,
+          diameter: 0.32,
+          axialWidth: 0.12,
+          axis: "x" as const,
+        },
+      };
+
+      const result = getPartCylinderDimensions(wheel);
+      expect(result.diameter).toBe(0.32);
+      expect(result.width).toBe(0.12);
+      expect(result.radius).toBe(0.16);
+    });
+
+    it("falls back to legacy wheelDiameter and wheelWidth", () => {
+      const legacyWheel = {
+        size: [0.28, 0.09, 0.28] as [number, number, number],
+        wheelDiameter: 0.28,
+        wheelWidth: 0.09,
+      };
+
+      const result = getPartCylinderDimensions(legacyWheel);
+      expect(result.diameter).toBe(0.28);
+      expect(result.width).toBe(0.09);
+      expect(result.radius).toBe(0.14);
+    });
+
+    it("falls back to legacy part.size[0] and part.size[1] if wheelDiameter/wheelWidth are absent", () => {
+      const legacyPart = {
+        size: [0.4, 0.15, 0.4] as [number, number, number],
+      };
+
+      const result = getPartCylinderDimensions(legacyPart);
+      expect(result.diameter).toBe(0.4);
+      expect(result.width).toBe(0.15);
+      expect(result.radius).toBe(0.2);
+    });
+
+    it("prefers canonical geometry when canonical and legacy wheel dimensions differ", () => {
+      const conflictingWheel = {
+        size: [0.1, 0.02, 0.1] as [number, number, number],
+        wheelDiameter: 0.1,
+        wheelWidth: 0.02,
+        geometry: {
+          shape: "cylinder" as const,
+          diameter: 0.36,
+          axialWidth: 0.14,
+          axis: "x" as const,
+        },
+      };
+
+      const result = getPartCylinderDimensions(conflictingWheel);
+      expect(result.diameter).toBe(0.36);
+      expect(result.width).toBe(0.14);
+      expect(result.radius).toBe(0.18);
     });
   });
 });

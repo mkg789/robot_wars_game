@@ -5,6 +5,13 @@ import type {
   ElectricalSpecs,
   MechanicalSpecs,
 } from "./dimensions.types";
+import type {
+  ComponentEngineeringSpec,
+  MotorEngineeringSpec,
+  WheelEngineeringSpec,
+  BatteryEngineeringSpec,
+  ControllerEngineeringSpec,
+} from "./engineering.types";
 
 export type RobotPart = {
   id: string;
@@ -27,6 +34,7 @@ export type RobotPart = {
   massKg?: number;
   electrical?: ElectricalSpecs;
   mechanical?: MechanicalSpecs;
+  engineeringSpec?: ComponentEngineeringSpec;
 };
 
 export type Vector3Data = [number, number, number];
@@ -129,6 +137,7 @@ export type BatteryDefinition = {
   geometry: BoxGeometry;
   massKg: number;
   electrical: ElectricalSpecs;
+  engineeringSpec?: BatteryEngineeringSpec;
 };
 
 export type ControllerCatalogueId =
@@ -156,6 +165,7 @@ export type ControllerDefinition = {
   geometry: BoxGeometry;
   massKg: number;
   electrical: ElectricalSpecs;
+  engineeringSpec?: ControllerEngineeringSpec;
 };
 
 export type MotorDefinition = {
@@ -171,6 +181,7 @@ export type MotorDefinition = {
   geometry: BoxGeometry;
   massKg: number;
   mechanical: MechanicalSpecs;
+  engineeringSpec?: MotorEngineeringSpec;
 };
 
 export type MotorMountZone = {
@@ -199,6 +210,7 @@ export type WheelDefinition = {
   compatibleMotorIds: MotorCatalogueId[];
   geometry: CylinderGeometry;
   massKg: number;
+  engineeringSpec?: WheelEngineeringSpec;
 };
 
 export type WheelDimensionDraft = {
@@ -207,3 +219,4 @@ export type WheelDimensionDraft = {
 };
 
 export * from "./dimensions.types";
+export * from "./engineering.types";

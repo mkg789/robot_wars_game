@@ -1,5 +1,6 @@
 import type { BoxGeometry } from "../types/dimensions.types";
 import type { FoundationModelId } from "../types/robot.types";
+import type { StructuralEngineeringSpec } from "../types/engineering.types";
 
 export type FoundationModel = {
   id: FoundationModelId;
@@ -10,6 +11,7 @@ export type FoundationModel = {
   height: number;
   icon: string;
   geometry: BoxGeometry;
+  engineeringSpec?: StructuralEngineeringSpec;
 };
 
 export const foundationModels: FoundationModel[] = [
