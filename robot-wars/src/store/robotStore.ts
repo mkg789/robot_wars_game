@@ -6,6 +6,7 @@ import type {
   RobotPart,
   TransformMode,
   ComponentType,
+  ComponentGeometry,
   RobotConnection,
   FoundationConfig,
   FoundationModelId,
@@ -273,6 +274,7 @@ function syncAssemblyTransforms(
 }
 
 function createFoundationParts(config: FoundationConfig): RobotPart[] {
+  const chassisMass = Math.max(0.5, config.length * config.width * config.height * 3);
   const chassis: RobotPart = {
     id: "foundation-chassis",
     name: foundationModels.find((model) => model.id === config.modelId)?.name ??
@@ -282,12 +284,20 @@ function createFoundationParts(config: FoundationConfig): RobotPart[] {
     rotation: [0, 0, 0],
     size: [config.length, config.height, config.width],
     color: "#475569",
-    mass: Math.max(0.5, config.length * config.width * config.height * 3),
+    mass: chassisMass,
+    geometry: {
+      shape: "box",
+      length: config.length,
+      height: config.height,
+      width: config.width,
+    },
+    massKg: chassisMass,
   };
 
   const parts: RobotPart[] = [chassis];
 
   if (config.includeTopPlate) {
+    const topPlateMass = config.length * config.width * 0.18;
     parts.push({
       id: "foundation-top-plate",
       name: "Top Structural Plate",
@@ -296,11 +306,19 @@ function createFoundationParts(config: FoundationConfig): RobotPart[] {
       rotation: [0, 0, 0],
       size: [config.length * 0.82, 0.12, config.width * 0.78],
       color: "#64748b",
-      mass: config.length * config.width * 0.18,
+      mass: topPlateMass,
+      geometry: {
+        shape: "box",
+        length: config.length * 0.82,
+        height: 0.12,
+        width: config.width * 0.78,
+      },
+      massKg: topPlateMass,
     });
   }
 
   if (config.includeFrontCover) {
+    const frontCoverMass = config.width * config.height * 0.12;
     parts.push({
       id: "foundation-front-cover",
       name: "Front Protective Cover",
@@ -309,7 +327,14 @@ function createFoundationParts(config: FoundationConfig): RobotPart[] {
       rotation: [0, 0, 0],
       size: [0.12, config.height * 0.55, config.width * 0.9],
       color: "#f59e0b",
-      mass: config.width * config.height * 0.12,
+      mass: frontCoverMass,
+      geometry: {
+        shape: "box",
+        length: 0.12,
+        height: config.height * 0.55,
+        width: config.width * 0.9,
+      },
+      massKg: frontCoverMass,
     });
   }
 
@@ -346,6 +371,9 @@ function createBatteryPart(
     color: definition.color,
     mass: definition.weight,
     parentAttachmentId: connectionId,
+    geometry: definition.geometry,
+    massKg: definition.massKg,
+    electrical: definition.electrical,
   };
 }
 
@@ -371,6 +399,9 @@ function createControllerPart(
     color: definition.color,
     mass: definition.weight,
     parentAttachmentId: connectionId,
+    geometry: definition.geometry,
+    massKg: definition.massKg,
+    electrical: definition.electrical,
   };
 }
 
@@ -993,6 +1024,12 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
               ] as [number, number, number],
               position: mount.position,
               rotation: mount.rotation,
+              geometry: {
+                shape: "cylinder" as const,
+                diameter: wheelDimensions.diameter,
+                axialWidth: wheelDimensions.width,
+                axis: "x" as const,
+              },
             }
           : part
       );
@@ -1065,6 +1102,9 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         size: definition.dimensions,
         color: definition.color,
         mass: definition.weight,
+        geometry: definition.geometry,
+        massKg: definition.massKg,
+        mechanical: definition.mechanical,
       };
 
       const mechanicalConnection: RobotConnection = {
@@ -1143,6 +1183,9 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
                 size: definition.dimensions,
                 color: definition.color,
                 mass: definition.weight,
+                geometry: definition.geometry,
+                massKg: definition.massKg,
+                mechanical: definition.mechanical,
               }
             : part
         );
@@ -1710,24 +1753,50 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
       ];
     };
 
+    const size: [number, number, number] =
+      type === "Armor Plate"
+        ? [1.5, 0.12, 1]
+        : type === "Front Bumper"
+          ? [1.8, 0.22, 0.12]
+          : type === "Wheel"
+            ? [0.38, 0.28, 0.38]
+            : type === "Motor"
+              ? [0.35, 0.35, 0.6]
+              : [0.5, 0.5, 0.5];
+
+    const mass =
+      type === "Armor Plate"
+        ? 0.4
+        : type === "Front Bumper"
+          ? 0.3
+          : type === "Wheel"
+            ? 0.5
+            : type === "Motor"
+              ? 0.8
+              : 0.5;
+
+    const geometry: ComponentGeometry =
+      type === "Wheel"
+        ? {
+            shape: "cylinder",
+            diameter: size[0],
+            axialWidth: size[1],
+            axis: "x",
+          }
+        : {
+            shape: "box",
+            length: size[0],
+            height: size[1],
+            width: size[2],
+          };
+
     const newPart: RobotPart = {
       id: crypto.randomUUID(),
       name: `${type} ${matchingCount + 1}`,
       type,
       position: findPlacement(),
       rotation: [0, 0, 0],
-
-      size:
-        type === "Armor Plate"
-          ? [1.5, 0.12, 1]
-          : type === "Front Bumper"
-            ? [1.8, 0.22, 0.12]
-            : type === "Wheel"
-              ? [0.38, 0.28, 0.38]
-              : type === "Motor"
-                ? [0.35, 0.35, 0.6]
-                : [0.5, 0.5, 0.5],
-
+      size,
       color:
         type === "Armor Plate"
           ? "#64748b"
@@ -1738,17 +1807,9 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
               : type === "Motor"
                 ? "#ef4444"
                 : "#38bdf8",
-
-      mass:
-        type === "Armor Plate"
-          ? 0.4
-          : type === "Front Bumper"
-            ? 0.3
-            : type === "Wheel"
-              ? 0.5
-              : type === "Motor"
-                ? 0.8
-                : 0.5,
+      mass,
+      geometry,
+      massKg: mass,
     };
 
     set((state) => ({
@@ -1830,6 +1891,13 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         color: definition.color,
         mass: definition.weight,
         parentAttachmentId: connection.id,
+        geometry: {
+          shape: "cylinder",
+          diameter: wheelDimensions.diameter,
+          axialWidth: wheelDimensions.width,
+          axis: "x",
+        },
+        massKg: definition.massKg,
       };
       const nextParts = state.parts
         .filter((part) => !discardedWheelIds.has(part.id))

@@ -1,5 +1,6 @@
 import type {
   BoxGeometry,
+  ComponentGeometry,
   CylinderGeometry,
   ElectricalSpecs,
   MechanicalSpecs,
@@ -22,6 +23,10 @@ export type RobotPart = {
   wheelWidth?: number;
   batteryCatalogueId?: BatteryCatalogueId;
   controllerCatalogueId?: ControllerCatalogueId;
+  geometry?: ComponentGeometry;
+  massKg?: number;
+  electrical?: ElectricalSpecs;
+  mechanical?: MechanicalSpecs;
 };
 
 export type Vector3Data = [number, number, number];

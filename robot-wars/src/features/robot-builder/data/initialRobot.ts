@@ -10,6 +10,13 @@ export const initialParts: RobotPart[] = [
     size: [2, 0.35, 1.4],
     color: "#313b49",
     mass: 1.5,
+    geometry: {
+      shape: "box",
+      length: 2,
+      height: 0.35,
+      width: 1.4,
+    },
+    massKg: 1.5,
   },
   {
     id: "upper-plate",
@@ -20,6 +27,13 @@ export const initialParts: RobotPart[] = [
     size: [1.65, 0.12, 1.1],
     color: "#586574",
     mass: 0.4,
+    geometry: {
+      shape: "box",
+      length: 1.65,
+      height: 0.12,
+      width: 1.1,
+    },
+    massKg: 0.4,
   },
   {
     id: "front-bumper",
@@ -30,6 +44,13 @@ export const initialParts: RobotPart[] = [
     size: [0.12, 0.22, 1.26],
     color: "#f59e0b",
     mass: 0.3,
+    geometry: {
+      shape: "box",
+      length: 0.12,
+      height: 0.22,
+      width: 1.26,
+    },
+    massKg: 0.3,
   },
   {
     id: "rear-bumper",
@@ -40,5 +61,12 @@ export const initialParts: RobotPart[] = [
     size: [0.12, 0.22, 1.26],
     color: "#64748b",
     mass: 0.3,
+    geometry: {
+      shape: "box",
+      length: 0.12,
+      height: 0.22,
+      width: 1.26,
+    },
+    massKg: 0.3,
   },
 ];
