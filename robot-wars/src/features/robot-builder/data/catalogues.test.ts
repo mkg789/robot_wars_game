@@ -5,6 +5,8 @@ import { foundationModels } from "./foundationModels";
 import { motorCatalogue } from "./motorCatalogue";
 import { wheelCatalogue } from "./wheelCatalogue";
 import { toBoundingBoxExtents } from "../logic/geometryAdapters";
+import { resolveComponentEngineeringSpec } from "../logic/engineeringAdapters";
+import type { RobotPart } from "../types/robot.types";
 
 describe("Catalogue Migration: Canonical Dimensional & Physical Types", () => {
   describe("foundationModels", () => {
@@ -118,6 +120,151 @@ describe("Catalogue Migration: Canonical Dimensional & Physical Types", () => {
       expect(heavyLipo?.chemistry).toBe("LiPo");
       expect(heavyLipo?.color).toBe("#7c2d12");
     });
+
+    it("populates authoritative engineeringSpec on Compact LiPo", () => {
+      const compact = batteryCatalogue.find((b) => b.id === "compact-lipo");
+      expect(compact?.engineeringSpec).toBeDefined();
+      const spec = compact!.engineeringSpec!;
+
+      expect(spec.category).toBe("battery");
+      expect(spec.chemistry).toBe("lipo");
+      expect(spec.cellCountS).toBe(2);
+      expect(spec.parallelCountP).toBe(1);
+
+      // Electrical specs
+      expect(spec.electrical?.nominalVoltageV).toBe(7.4);
+      expect(spec.electrical?.fullyChargedVoltageV).toBe(8.4);
+      expect(spec.electrical?.cutoffVoltageV).toBe(6.0);
+      expect(spec.electrical?.capacityMah).toBe(1500);
+
+      // Unverified / non-fabricated specs must be undefined
+      expect(spec.electrical?.continuousDischargeC).toBeUndefined();
+      expect(spec.electrical?.burstDischargeC).toBeUndefined();
+      expect(spec.electrical?.internalResistanceOhm).toBeUndefined();
+      expect(spec.connector).toBeUndefined();
+
+      // Provenance: generic preset without manufacturer verification
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:battery:compact-lipo");
+        expect(spec.generalProvenance.notes).toContain("Generic game preset");
+      }
+
+      // Field provenance for derived/estimated properties
+      expect(spec.fieldProvenance?.cellCountS?.method).toBe("estimated");
+      expect(spec.fieldProvenance?.parallelCountP?.method).toBe("estimated");
+      expect(spec.fieldProvenance?.["electrical.fullyChargedVoltageV"]?.method).toBe("estimated");
+      expect(spec.fieldProvenance?.["electrical.cutoffVoltageV"]?.method).toBe("estimated");
+    });
+
+    it("populates authoritative engineeringSpec on Standard LiPo", () => {
+      const standard = batteryCatalogue.find((b) => b.id === "standard-lipo");
+      expect(standard?.engineeringSpec).toBeDefined();
+      const spec = standard!.engineeringSpec!;
+
+      expect(spec.category).toBe("battery");
+      expect(spec.chemistry).toBe("lipo");
+      expect(spec.cellCountS).toBe(3);
+      expect(spec.parallelCountP).toBe(1);
+
+      // Electrical specs
+      expect(spec.electrical?.nominalVoltageV).toBe(11.1);
+      expect(spec.electrical?.fullyChargedVoltageV).toBe(12.6);
+      expect(spec.electrical?.cutoffVoltageV).toBe(9.0);
+      expect(spec.electrical?.capacityMah).toBe(2200);
+
+      // Unverified / non-fabricated specs must be undefined
+      expect(spec.electrical?.continuousDischargeC).toBeUndefined();
+      expect(spec.electrical?.burstDischargeC).toBeUndefined();
+      expect(spec.electrical?.internalResistanceOhm).toBeUndefined();
+      expect(spec.connector).toBeUndefined();
+
+      // Provenance: generic preset without manufacturer verification
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:battery:standard-lipo");
+        expect(spec.generalProvenance.notes).toContain("Generic game preset");
+      }
+
+      // Field provenance for derived/estimated properties
+      expect(spec.fieldProvenance?.cellCountS?.method).toBe("estimated");
+      expect(spec.fieldProvenance?.parallelCountP?.method).toBe("estimated");
+      expect(spec.fieldProvenance?.["electrical.fullyChargedVoltageV"]?.method).toBe("estimated");
+      expect(spec.fieldProvenance?.["electrical.cutoffVoltageV"]?.method).toBe("estimated");
+    });
+
+    it("populates authoritative engineeringSpec on Heavy Duty LiPo", () => {
+      const heavy = batteryCatalogue.find((b) => b.id === "heavy-duty-lipo");
+      expect(heavy?.engineeringSpec).toBeDefined();
+      const spec = heavy!.engineeringSpec!;
+
+      expect(spec.category).toBe("battery");
+      expect(spec.chemistry).toBe("lipo");
+      expect(spec.cellCountS).toBe(4);
+      expect(spec.parallelCountP).toBe(1);
+
+      // Electrical specs
+      expect(spec.electrical?.nominalVoltageV).toBe(14.8);
+      expect(spec.electrical?.fullyChargedVoltageV).toBe(16.8);
+      expect(spec.electrical?.cutoffVoltageV).toBe(12.0);
+      expect(spec.electrical?.capacityMah).toBe(5000);
+
+      // Unverified / non-fabricated specs must be undefined
+      expect(spec.electrical?.continuousDischargeC).toBeUndefined();
+      expect(spec.electrical?.burstDischargeC).toBeUndefined();
+      expect(spec.electrical?.internalResistanceOhm).toBeUndefined();
+      expect(spec.connector).toBeUndefined();
+
+      // Provenance: generic preset without manufacturer verification
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:battery:heavy-duty-lipo");
+        expect(spec.generalProvenance.notes).toContain("Generic game preset");
+      }
+
+      // Field provenance for derived/estimated properties
+      expect(spec.fieldProvenance?.cellCountS?.method).toBe("estimated");
+      expect(spec.fieldProvenance?.parallelCountP?.method).toBe("estimated");
+      expect(spec.fieldProvenance?.["electrical.fullyChargedVoltageV"]?.method).toBe("estimated");
+      expect(spec.fieldProvenance?.["electrical.cutoffVoltageV"]?.method).toBe("estimated");
+    });
+
+    it("preserves resolver compatibility and non-fabrication for catalogue batteries", () => {
+      const part: RobotPart = {
+        id: "battery-instance-1",
+        name: "Standard Battery Instance",
+        type: "Battery",
+        position: [0, 0, 0],
+        rotation: [0, 0, 0],
+        size: [0.2, 0.04, 0.09],
+        color: "#b45309",
+        mass: 0.22,
+        batteryCatalogueId: "standard-lipo",
+      };
+
+      const resolved = resolveComponentEngineeringSpec(part);
+      expect(resolved).toBeDefined();
+      expect(resolved?.category).toBe("battery");
+      if (resolved?.category === "battery") {
+        expect(resolved.chemistry).toBe("lipo");
+        expect(resolved.cellCountS).toBe(3);
+        expect(resolved.parallelCountP).toBe(1);
+        expect(resolved.electrical?.nominalVoltageV).toBe(11.1);
+        expect(resolved.electrical?.fullyChargedVoltageV).toBe(12.6);
+        expect(resolved.electrical?.cutoffVoltageV).toBe(9.0);
+        expect(resolved.electrical?.capacityMah).toBe(2200);
+        expect(resolved.electrical?.continuousDischargeC).toBeUndefined();
+        expect(resolved.electrical?.internalResistanceOhm).toBeUndefined();
+        expect(resolved.connector).toBeUndefined();
+        expect(resolved.generalProvenance?.method).toBe("datasheet");
+        if (resolved.generalProvenance?.method === "datasheet") {
+          expect(resolved.generalProvenance.verified).toBe(false);
+        }
+      }
+    });
   });
 
   describe("controllerCatalogue", () => {
@@ -163,6 +310,138 @@ describe("Catalogue Migration: Canonical Dimensional & Physical Types", () => {
       expect(esp?.clockMHz).toBe(240);
       expect(esp?.operatingVoltage).toBe("3.3V");
       expect(esp?.controllerType).toBe("Wireless development board");
+    });
+
+    it("populates authoritative engineeringSpec on Arduino Uno", () => {
+      const uno = controllerCatalogue.find((c) => c.id === "arduino-uno");
+      expect(uno?.engineeringSpec).toBeDefined();
+      const spec = uno!.engineeringSpec!;
+
+      expect(spec.category).toBe("controller");
+      expect(spec.controllerType).toBe("microcontroller-board");
+      expect(spec.processorArchitecture).toBe("AVR (8-bit RISC)");
+      expect(spec.clockSpeedHz).toBe(16_000_000);
+
+      // Electrical specs
+      expect(spec.electrical?.logicLevelV).toBe(5.0);
+      expect(spec.electrical?.inputVoltageRangeV).toEqual({ minV: 7.0, maxV: 12.0 });
+      expect(spec.electrical?.maxLogicRailCurrentA).toBe(0.5);
+      expect(spec.electrical?.idleCurrentA).toBeUndefined(); // Deliberately undefined
+      expect(spec.electrical?.provenance?.method).toBe("datasheet");
+      if (spec.electrical?.provenance?.method === "datasheet") {
+        expect(spec.electrical.provenance.verified).toBe(true);
+      }
+
+      // Interfaces specs
+      expect(spec.interfaces?.digitalIoPins).toBe(14);
+      expect(spec.interfaces?.pwmOutputs).toBe(6);
+      expect(spec.interfaces?.analogInputs).toBe(6);
+      expect(spec.interfaces?.supportedProtocols).toEqual(["uart", "spi", "i2c", "usb"]);
+      expect(spec.interfaces?.motorChannels).toBeUndefined(); // Microcontroller, not ESC
+
+      // Mounting
+      expect(spec.mounting?.patternType).toBe("face-mount");
+      expect(spec.mounting?.boltPattern?.boltSize).toBe("M3");
+      expect(spec.mounting?.boltPattern?.holeCount).toBe(4);
+
+      // General provenance
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(true);
+      }
+
+      // Provenance notes clarification checks
+      expect(spec.electrical?.provenance?.notes).toContain("500mA PTC polyfuse");
+      expect(spec.electrical?.provenance?.notes).toContain("thermal");
+      expect(spec.electrical?.provenance?.notes).toContain("3.3V rail");
+      expect(spec.generalProvenance?.notes).toContain("USB 500mA");
+      expect(spec.generalProvenance?.notes).toContain("3.3V rail");
+    });
+
+    it("populates authoritative engineeringSpec on ESP32 DevKit", () => {
+      const esp = controllerCatalogue.find((c) => c.id === "esp32-devkit");
+      expect(esp?.engineeringSpec).toBeDefined();
+      const spec = esp!.engineeringSpec!;
+
+      expect(spec.category).toBe("controller");
+      expect(spec.controllerType).toBe("microcontroller-board");
+      expect(spec.processorArchitecture).toBe("Xtensa dual-core 32-bit LX6");
+      expect(spec.clockSpeedHz).toBe(240_000_000);
+
+      // Electrical specs
+      expect(spec.electrical?.logicLevelV).toBe(3.3);
+      expect(spec.electrical?.inputVoltageRangeV).toEqual({ minV: 4.5, maxV: 5.5 });
+      expect(spec.electrical?.maxLogicRailCurrentA).toBe(0.5);
+      expect(spec.electrical?.idleCurrentA).toBeUndefined();
+      expect(spec.electrical?.provenance?.method).toBe("datasheet");
+      if (spec.electrical?.provenance?.method === "datasheet") {
+        expect(spec.electrical.provenance.verified).toBe(true);
+      }
+
+      // Interfaces specs
+      expect(spec.interfaces?.digitalIoPins).toBe(28);
+      expect(spec.interfaces?.pwmOutputs).toBe(16);
+      expect(spec.interfaces?.analogInputs).toBe(16); // Corrected from 18 to 16 accessible ADC channels
+      expect(spec.interfaces?.supportedProtocols).toContain("wifi");
+      expect(spec.interfaces?.supportedProtocols).toContain("bluetooth");
+      expect(spec.interfaces?.supportedProtocols).toContain("can");
+      expect(spec.interfaces?.motorChannels).toBeUndefined();
+
+      // ESP32 breadboard-friendly devkit lacks dedicated bolt pattern
+      expect(spec.mounting).toBeUndefined();
+
+      // General provenance
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(true);
+      }
+
+      // Provenance notes clarification checks
+      expect(spec.generalProvenance?.notes).toContain("input-only");
+      expect(spec.generalProvenance?.notes).toContain("strapping pins");
+      expect(spec.generalProvenance?.notes).toContain("ADC2");
+      expect(spec.generalProvenance?.notes).toContain("transceiver");
+    });
+
+    it("populates authoritative engineeringSpec on STM32 Nucleo", () => {
+      const stm = controllerCatalogue.find((c) => c.id === "stm32-nucleo");
+      expect(stm?.engineeringSpec).toBeDefined();
+      const spec = stm!.engineeringSpec!;
+
+      expect(spec.category).toBe("controller");
+      expect(spec.controllerType).toBe("microcontroller-board");
+      expect(spec.processorArchitecture).toBe("Arm Cortex-M4 (32-bit with FPU)");
+      expect(spec.clockSpeedHz).toBe(84_000_000);
+
+      // Electrical specs
+      expect(spec.electrical?.logicLevelV).toBe(3.3);
+      expect(spec.electrical?.inputVoltageRangeV).toEqual({ minV: 7.0, maxV: 12.0 });
+      expect(spec.electrical?.maxLogicRailCurrentA).toBe(0.5);
+      expect(spec.electrical?.idleCurrentA).toBeUndefined();
+      expect(spec.electrical?.provenance?.method).toBe("datasheet");
+      if (spec.electrical?.provenance?.method === "datasheet") {
+        expect(spec.electrical.provenance.verified).toBe(true);
+      }
+
+      // Interfaces specs - verified STM32F401RE has no hardware CAN peripheral
+      expect(spec.interfaces?.digitalIoPins).toBe(50);
+      expect(spec.interfaces?.pwmOutputs).toBe(16);
+      expect(spec.interfaces?.analogInputs).toBe(16);
+      expect(spec.interfaces?.supportedProtocols).toEqual(["uart", "spi", "i2c", "usb", "pwm"]);
+      expect(spec.interfaces?.supportedProtocols).not.toContain("can");
+      expect(spec.interfaces?.motorChannels).toBeUndefined();
+
+      // General provenance
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(true);
+      }
+
+      // Provenance notes clarification checks
+      expect(spec.generalProvenance?.notes).toContain("Morpho");
+      expect(spec.generalProvenance?.notes).toContain("Arduino headers");
+      expect(spec.generalProvenance?.notes).toContain("ST-LINK");
+      expect(spec.generalProvenance?.notes).toContain("breakout");
     });
   });
 });

@@ -254,7 +254,52 @@ describe("Phase 3.2 — Engineering Specification Resolver / Adapter", () => {
     it("adapts legacy controller properties and parses operating voltage", () => {
       const legacyControllerPart: RobotPart = {
         id: "ctrl-legacy-1",
+        name: "Custom Legacy Controller",
+        type: "Controller",
+        position: [0, 0, 0],
+        rotation: [0, 0, 0],
+        size: [0.069, 0.015, 0.054],
+        color: "#177e89",
+        mass: 0.025,
+        electrical: {
+          nominalVoltageV: 5.0,
+        },
+      };
+
+      const mockLegacyCatalogueController = {
+        id: "arduino-uno" as const,
         name: "Arduino Uno",
+        controllerType: "Microcontroller board" as const,
+        dimensions: { length: 0.069, width: 0.054, height: 0.015 },
+        weight: 0.025,
+        color: "#177e89",
+        processor: "ATmega328P",
+        clockMHz: 16,
+        operatingVoltage: "5V",
+        geometry: { shape: "box" as const, length: 0.069, height: 0.015, width: 0.054 },
+        massKg: 0.025,
+        electrical: { nominalVoltageV: 5.0 },
+      };
+
+      const resolved = resolveControllerEngineeringSpec(
+        legacyControllerPart,
+        mockLegacyCatalogueController
+      );
+      expect(resolved).toBeDefined();
+      expect(resolved.category).toBe("controller");
+      expect(resolved.controllerType).toBe("microcontroller-board");
+      expect(resolved.processorArchitecture).toBe("ATmega328P");
+      expect(resolved.clockSpeedHz).toBe(16_000_000);
+      expect(resolved.electrical?.logicLevelV).toBe(5.0);
+      // Crucial: no fabricated input voltage range in legacy fallback
+      expect(resolved.electrical?.inputVoltageRangeV).toBeUndefined();
+      expect(resolved.generalProvenance?.method).toBe("datasheet");
+    });
+
+    it("resolves authoritative controller engineeringSpec from catalogue for arduino-uno", () => {
+      const part: RobotPart = {
+        id: "ctrl-cat-1",
+        name: "Arduino Uno Instance",
         type: "Controller",
         position: [0, 0, 0],
         rotation: [0, 0, 0],
@@ -262,23 +307,21 @@ describe("Phase 3.2 — Engineering Specification Resolver / Adapter", () => {
         color: "#177e89",
         mass: 0.025,
         controllerCatalogueId: "arduino-uno",
-        electrical: {
-          nominalVoltageV: 5.0,
-        },
       };
 
-      const resolved = resolveComponentEngineeringSpec(legacyControllerPart);
+      const resolved = resolveComponentEngineeringSpec(part);
       expect(resolved).toBeDefined();
       expect(resolved?.category).toBe("controller");
-
       if (resolved?.category === "controller") {
-        expect(resolved.controllerType).toBe("microcontroller-board");
-        expect(resolved.processorArchitecture).toBe("ATmega328P");
-        expect(resolved.clockSpeedHz).toBe(16_000_000);
-        expect(resolved.electrical?.logicLevelV).toBe(5.0);
-        // Crucial: no fabricated input voltage range
-        expect(resolved.electrical?.inputVoltageRangeV).toBeUndefined();
+        expect(resolved.electrical?.inputVoltageRangeV).toEqual({ minV: 7.0, maxV: 12.0 });
+        expect(resolved.interfaces?.digitalIoPins).toBe(14);
+        expect(resolved.interfaces?.pwmOutputs).toBe(6);
+        expect(resolved.interfaces?.analogInputs).toBe(6);
+        expect(resolved.interfaces?.supportedProtocols).toEqual(["uart", "spi", "i2c", "usb"]);
         expect(resolved.generalProvenance?.method).toBe("datasheet");
+        if (resolved.generalProvenance?.method === "datasheet") {
+          expect(resolved.generalProvenance.verified).toBe(true);
+        }
       }
     });
 
