@@ -29,6 +29,23 @@ export const foundationModels: FoundationModel[] = [
       height: 0.28,
       width: 1.4,
     },
+    engineeringSpec: {
+      category: "structural",
+      role: "chassis-frame",
+      fieldProvenance: {
+        role: {
+          method: "estimated",
+          basis: "Designated structural role as robot foundation chassis frame",
+        },
+      },
+      generalProvenance: {
+        method: "datasheet",
+        verified: false,
+        source: "catalogue:foundation:compact-square",
+        notes:
+          "Generic game preset chassis frame (1.6m × 1.4m × 0.28m). Not verified against an official manufacturer specification; material alloy, wall thickness, and structural load capacity are unverified and left undefined.",
+      },
+    },
   },
   {
     id: "standard-rectangular",
@@ -44,6 +61,23 @@ export const foundationModels: FoundationModel[] = [
       height: 0.35,
       width: 1.5,
     },
+    engineeringSpec: {
+      category: "structural",
+      role: "chassis-frame",
+      fieldProvenance: {
+        role: {
+          method: "estimated",
+          basis: "Designated structural role as robot foundation chassis frame",
+        },
+      },
+      generalProvenance: {
+        method: "datasheet",
+        verified: false,
+        source: "catalogue:foundation:standard-rectangular",
+        notes:
+          "Generic game preset chassis frame (2.0m × 1.5m × 0.35m). Not verified against an official manufacturer specification; material alloy, wall thickness, and structural load capacity are unverified and left undefined.",
+      },
+    },
   },
   {
     id: "long-frame",
@@ -58,6 +92,23 @@ export const foundationModels: FoundationModel[] = [
       length: 2.6,
       height: 0.32,
       width: 1.25,
+    },
+    engineeringSpec: {
+      category: "structural",
+      role: "chassis-frame",
+      fieldProvenance: {
+        role: {
+          method: "estimated",
+          basis: "Designated structural role as robot foundation chassis frame",
+        },
+      },
+      generalProvenance: {
+        method: "datasheet",
+        verified: false,
+        source: "catalogue:foundation:long-frame",
+        notes:
+          "Generic game preset chassis frame (2.6m × 1.25m × 0.32m). Not verified against an official manufacturer specification; material alloy, wall thickness, and structural load capacity are unverified and left undefined.",
+      },
     },
   },
 ];

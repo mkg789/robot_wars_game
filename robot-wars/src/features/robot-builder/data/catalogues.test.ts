@@ -33,6 +33,105 @@ describe("Catalogue Migration: Canonical Dimensional & Physical Types", () => {
       expect(square?.name).toBe("Compact Square");
       expect(square?.icon).toBe("▣");
     });
+
+    it("populates authoritative engineeringSpec on Compact Square", () => {
+      const model = foundationModels.find((m) => m.id === "compact-square");
+      expect(model?.engineeringSpec).toBeDefined();
+      const spec = model!.engineeringSpec!;
+
+      expect(spec.category).toBe("structural");
+      expect(spec.role).toBe("chassis-frame");
+
+      // Unsupported properties must remain undefined
+      expect(spec.material).toBeUndefined();
+      expect(spec.plateThicknessM).toBeUndefined();
+      expect(spec.mounting).toBeUndefined();
+
+      // Provenance
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:foundation:compact-square");
+        expect(spec.generalProvenance.notes).toContain("Generic game preset");
+      }
+
+      // Field provenance
+      expect(spec.fieldProvenance?.role?.method).toBe("estimated");
+    });
+
+    it("populates authoritative engineeringSpec on Standard Rectangle", () => {
+      const model = foundationModels.find((m) => m.id === "standard-rectangular");
+      expect(model?.engineeringSpec).toBeDefined();
+      const spec = model!.engineeringSpec!;
+
+      expect(spec.category).toBe("structural");
+      expect(spec.role).toBe("chassis-frame");
+
+      expect(spec.material).toBeUndefined();
+      expect(spec.plateThicknessM).toBeUndefined();
+      expect(spec.mounting).toBeUndefined();
+
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:foundation:standard-rectangular");
+      }
+      expect(spec.fieldProvenance?.role?.method).toBe("estimated");
+    });
+
+    it("populates authoritative engineeringSpec on Long Frame", () => {
+      const model = foundationModels.find((m) => m.id === "long-frame");
+      expect(model?.engineeringSpec).toBeDefined();
+      const spec = model!.engineeringSpec!;
+
+      expect(spec.category).toBe("structural");
+      expect(spec.role).toBe("chassis-frame");
+
+      expect(spec.material).toBeUndefined();
+      expect(spec.plateThicknessM).toBeUndefined();
+      expect(spec.mounting).toBeUndefined();
+
+      expect(spec.generalProvenance?.method).toBe("datasheet");
+      if (spec.generalProvenance?.method === "datasheet") {
+        expect(spec.generalProvenance.verified).toBe(false);
+        expect(spec.generalProvenance.source).toBe("catalogue:foundation:long-frame");
+      }
+      expect(spec.fieldProvenance?.role?.method).toBe("estimated");
+    });
+
+    it("preserves resolver compatibility and non-fabrication for foundation models", () => {
+      const part: RobotPart = {
+        id: "foundation-chassis",
+        name: "Compact Square",
+        type: "Structural Block",
+        position: [0, 0.14, 0],
+        rotation: [0, 0, 0],
+        size: [1.6, 0.28, 1.4],
+        color: "#475569",
+        mass: 1.88,
+        geometry: {
+          shape: "box",
+          length: 1.6,
+          height: 0.28,
+          width: 1.4,
+        },
+        massKg: 1.88,
+      };
+
+      const resolved = resolveComponentEngineeringSpec(part);
+      expect(resolved).toBeDefined();
+      expect(resolved?.category).toBe("structural");
+      if (resolved?.category === "structural") {
+        expect(resolved.role).toBe("chassis-frame");
+        expect(resolved.material).toBeUndefined();
+        expect(resolved.plateThicknessM).toBeUndefined();
+        expect(resolved.mounting).toBeUndefined();
+        expect(resolved.generalProvenance?.method).toBe("datasheet");
+        if (resolved.generalProvenance?.method === "datasheet") {
+          expect(resolved.generalProvenance.verified).toBe(false);
+        }
+      }
+    });
   });
 
   describe("motorCatalogue", () => {
