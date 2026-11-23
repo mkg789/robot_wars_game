@@ -182,3 +182,5 @@ export type WheelDimensionDraft = {
   diameterCm: number;
   widthCm: number;
 };
+
+export * from "./dimensions.types";
