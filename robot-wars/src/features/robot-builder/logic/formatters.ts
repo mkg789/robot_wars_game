@@ -171,3 +171,131 @@ export function formatDimensions(
 
   return `${formattedValues.join(separator)} ${unit}`;
 }
+
+export type SpeedUnit = "m/s" | "km/h";
+
+export type FormatSpeedOptions = {
+  decimals?: number;
+  includeUnit?: boolean;
+  trimTrailingZeros?: boolean;
+};
+
+/**
+ * Format linear speed from canonical meters per second (m/s).
+ */
+export function formatSpeed(
+  mps?: number | null,
+  unit: SpeedUnit = "m/s",
+  options: FormatSpeedOptions = {}
+): string {
+  if (mps === undefined || mps === null || !Number.isFinite(mps)) return "-";
+  const { includeUnit = true, trimTrailingZeros = false } = options;
+
+  let value = mps;
+  let defaultDecimals = 2;
+
+  if (unit === "km/h") {
+    value = mps * 3.6;
+    defaultDecimals = 1;
+  }
+
+  const decimals = options.decimals ?? defaultDecimals;
+  const formatted = formatNumber(value, decimals, trimTrailingZeros);
+  return includeUnit ? `${formatted} ${unit}` : formatted;
+}
+
+export type ForceUnit = "N" | "kgf";
+
+export type FormatForceOptions = {
+  decimals?: number;
+  includeUnit?: boolean;
+  trimTrailingZeros?: boolean;
+};
+
+/**
+ * Format push force from canonical Newtons (N).
+ */
+export function formatForce(
+  newtons?: number | null,
+  unit: ForceUnit = "N",
+  options: FormatForceOptions = {}
+): string {
+  if (newtons === undefined || newtons === null || !Number.isFinite(newtons)) return "-";
+  const { includeUnit = true, trimTrailingZeros = false } = options;
+
+  let value = newtons;
+  let defaultDecimals = 1;
+
+  if (unit === "kgf") {
+    value = newtons / 9.80665;
+    defaultDecimals = 2;
+  }
+
+  const decimals = options.decimals ?? defaultDecimals;
+  const formatted = formatNumber(value, decimals, trimTrailingZeros);
+  return includeUnit ? `${formatted} ${unit}` : formatted;
+}
+
+export type AccelerationUnit = "m/s²" | "g";
+
+export type FormatAccelerationOptions = {
+  decimals?: number;
+  includeUnit?: boolean;
+  trimTrailingZeros?: boolean;
+};
+
+/**
+ * Format acceleration from canonical m/s².
+ */
+export function formatAcceleration(
+  mps2?: number | null,
+  unit: AccelerationUnit = "m/s²",
+  options: FormatAccelerationOptions = {}
+): string {
+  if (mps2 === undefined || mps2 === null || !Number.isFinite(mps2)) return "-";
+  const { includeUnit = true, trimTrailingZeros = false } = options;
+
+  let value = mps2;
+  let defaultDecimals = 2;
+
+  if (unit === "g") {
+    value = mps2 / 9.80665;
+    defaultDecimals = 2;
+  }
+
+  const decimals = options.decimals ?? defaultDecimals;
+  const formatted = formatNumber(value, decimals, trimTrailingZeros);
+  return includeUnit ? `${formatted} ${unit}` : formatted;
+}
+
+export type YawRateUnit = "°/s" | "deg/s" | "rad/s";
+
+export type FormatYawRateOptions = {
+  decimals?: number;
+  includeUnit?: boolean;
+  trimTrailingZeros?: boolean;
+};
+
+/**
+ * Format yaw turning rate from canonical degrees per second (°/s).
+ */
+export function formatYawRate(
+  degPerSec?: number | null,
+  unit: YawRateUnit = "°/s",
+  options: FormatYawRateOptions = {}
+): string {
+  if (degPerSec === undefined || degPerSec === null || !Number.isFinite(degPerSec)) return "-";
+  const { includeUnit = true, trimTrailingZeros = false } = options;
+
+  let value = degPerSec;
+  let defaultDecimals = 0;
+
+  if (unit === "rad/s") {
+    value = degPerSec * (Math.PI / 180);
+    defaultDecimals = 2;
+  }
+
+  const decimals = options.decimals ?? defaultDecimals;
+  const formatted = formatNumber(value, decimals, trimTrailingZeros);
+  return includeUnit ? `${formatted} ${unit}` : formatted;
+}

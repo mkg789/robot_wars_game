@@ -28,10 +28,15 @@ import {
   type CameraFocusRequest,
 } from "./features/robot-builder/logic/viewportFocus";
 import {
+  formatAcceleration,
   formatDimensions,
+  formatForce,
   formatLength,
   formatMass,
+  formatSpeed,
+  formatYawRate,
 } from "./features/robot-builder/logic/formatters";
+import { compileRobotPerformanceProfile } from "./features/robot-builder/logic/robotKinematics";
 
 import "./App.css";
 
@@ -384,6 +389,11 @@ function App() {
     parts,
     connections,
     foundation
+  );
+  const performanceProfile = compileRobotPerformanceProfile(
+    parts,
+    connections,
+    drivetrain
   );
   const drivetrainSlotCount = getDrivetrainSlotCount(drivetrain.type);
 
@@ -1896,6 +1906,82 @@ function App() {
                       })}
                     </div>
                   ))}
+                </div>
+                <div className="section-label">THEORETICAL PERFORMANCE</div>
+                <div className="motor-spec-card">
+                  <div className="property-row">
+                    <span>Total mass</span>
+                    <span>{formatMass(performanceProfile.totalMassKg)}</span>
+                  </div>
+                  <div className="property-row">
+                    <span>Top speed</span>
+                    <span>
+                      {performanceProfile.topSpeedMps !== undefined
+                        ? `${formatSpeed(performanceProfile.topSpeedMps)} (${formatSpeed(performanceProfile.topSpeedKmh, "km/h")})`
+                        : "Unavailable"}
+                    </span>
+                  </div>
+                  <div className="property-row">
+                    <span>Est. push force</span>
+                    <span>
+                      {performanceProfile.theoreticalPushForceN !== undefined
+                        ? `${formatForce(performanceProfile.theoreticalPushForceN)} (${performanceProfile.pushForceLimiter === "motor-torque" ? "torque limited" : "traction limited"})`
+                        : "Unavailable"}
+                    </span>
+                  </div>
+                  <div className="property-row">
+                    <span>Est. acceleration</span>
+                    <span>
+                      {performanceProfile.maxAccelerationMps2 !== undefined
+                        ? `${formatAcceleration(performanceProfile.maxAccelerationMps2)} (${formatAcceleration(performanceProfile.maxAccelerationG, "g")})`
+                        : "Unavailable"}
+                    </span>
+                  </div>
+                  <div className="property-row">
+                    <span>Push-to-weight ratio</span>
+                    <span>
+                      {performanceProfile.pushToWeightRatio !== undefined
+                        ? `${performanceProfile.pushToWeightRatio.toFixed(2)} : 1`
+                        : "Unavailable"}
+                    </span>
+                  </div>
+                  <div className="property-row">
+                    <span>Track width</span>
+                    <span>
+                      {performanceProfile.trackWidthM !== undefined
+                        ? formatLength(performanceProfile.trackWidthM, "m")
+                        : "Unavailable"}
+                    </span>
+                  </div>
+                  <div className="property-row">
+                    <span>Wheelbase</span>
+                    <span>
+                      {performanceProfile.wheelbaseM !== undefined
+                        ? performanceProfile.wheelbaseM === 0
+                          ? "Single axle (0 m)"
+                          : formatLength(performanceProfile.wheelbaseM, "m")
+                        : "Unavailable"}
+                    </span>
+                  </div>
+                  <div className="property-row">
+                    <span>Turning rate (yaw)</span>
+                    <span>
+                      {performanceProfile.maxYawRateDegPerSec !== undefined
+                        ? `${formatYawRate(performanceProfile.maxYawRateDegPerSec)} (${formatYawRate(performanceProfile.maxYawRateRadPerSec, "rad/s")})`
+                        : "Unavailable"}
+                    </span>
+                  </div>
+                  <small
+                    style={{
+                      display: "block",
+                      padding: "8px 10px",
+                      color: "#64748b",
+                      fontSize: "10px",
+                      lineHeight: "1.4",
+                    }}
+                  >
+                    Theoretical performance estimates based on component specifications and zero-slip kinematic assumptions. Not simulated dynamics.
+                  </small>
                 </div>
                 <button
                   className="stage-back-button"

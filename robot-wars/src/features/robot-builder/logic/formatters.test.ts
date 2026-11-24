@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatAcceleration,
   formatDimensions,
+  formatForce,
   formatLength,
   formatMass,
+  formatSpeed,
+  formatYawRate,
   metersToCm,
 } from "./formatters";
 
@@ -158,5 +162,64 @@ describe("formatDimensions", () => {
 
   it("re-exports conversion utilities from units.ts", () => {
     expect(metersToCm(1)).toBe(100);
+  });
+});
+
+describe("formatSpeed", () => {
+  it("formats linear speed in m/s with 2 decimals", () => {
+    expect(formatSpeed(2.073)).toBe("2.07 m/s");
+    expect(formatSpeed(0)).toBe("0.00 m/s");
+  });
+
+  it("formats speed in km/h with 1 decimal", () => {
+    expect(formatSpeed(2.07345, "km/h")).toBe("7.5 km/h");
+  });
+
+  it("handles undefined or non-finite gracefully", () => {
+    expect(formatSpeed(undefined)).toBe("-");
+    expect(formatSpeed(NaN)).toBe("-");
+  });
+});
+
+describe("formatForce", () => {
+  it("formats force in N with 1 decimal", () => {
+    expect(formatForce(14.53)).toBe("14.5 N");
+    expect(formatForce(0)).toBe("0.0 N");
+  });
+
+  it("formats force in kgf with 2 decimals", () => {
+    expect(formatForce(9.80665, "kgf")).toBe("1.00 kgf");
+  });
+
+  it("handles undefined gracefully", () => {
+    expect(formatForce(undefined)).toBe("-");
+  });
+});
+
+describe("formatAcceleration", () => {
+  it("formats acceleration in m/s² with 2 decimals", () => {
+    expect(formatAcceleration(4.85)).toBe("4.85 m/s²");
+  });
+
+  it("formats acceleration in g with 2 decimals", () => {
+    expect(formatAcceleration(9.80665, "g")).toBe("1.00 g");
+  });
+
+  it("handles undefined gracefully", () => {
+    expect(formatAcceleration(undefined)).toBe("-");
+  });
+});
+
+describe("formatYawRate", () => {
+  it("formats yaw rate in °/s with 0 decimals", () => {
+    expect(formatYawRate(198.4)).toBe("198 °/s");
+  });
+
+  it("formats yaw rate in rad/s", () => {
+    expect(formatYawRate(180, "rad/s")).toBe("3.14 rad/s");
+  });
+
+  it("handles undefined gracefully", () => {
+    expect(formatYawRate(undefined)).toBe("-");
   });
 });
