@@ -587,4 +587,396 @@ describe("Runtime Part Population (Phase 2.4C.4.2)", () => {
       }
     });
   });
+
+  describe("Replacement & Customization Integrity (Phase 3.4.2)", () => {
+    it("clears stale electrical and foreign fields on motor replacement and prevents catalogue mutation", () => {
+      const store = useRobotStore.getState();
+      store.startNewBuild();
+      store.confirmFoundation();
+      store.selectMountZone("front-left");
+      store.selectMotorCatalogueItem("small-dc");
+      store.placeMotor();
+
+      // Simulate stale legacy and foreign fields on the existing motor part
+      const initialMotor = useRobotStore
+        .getState()
+        .parts.find((p) => p.mountingZoneId === "front-left")!;
+      useRobotStore.setState({
+        parts: useRobotStore.getState().parts.map((p) =>
+          p.id === initialMotor.id
+            ? {
+                ...p,
+                electrical: { nominalVoltageV: 48, maxCurrentA: 50 },
+                wheelDiameter: 0.22,
+                wheelWidth: 0.07,
+                wheelCatalogueId: "standard-rubber",
+                batteryCatalogueId: "standard-lipo",
+                controllerCatalogueId: "arduino-uno",
+                foundationModelId: "compact-square",
+              }
+            : p
+        ),
+      });
+
+      // Replace motor with high-torque-dc
+      store.selectMotorCatalogueItem("high-torque-dc");
+      store.replaceMotor("front-left");
+
+      const replacedMotor = useRobotStore
+        .getState()
+        .parts.find((p) => p.mountingZoneId === "front-left")!;
+
+      expect(replacedMotor.motorCatalogueId).toBe("high-torque-dc");
+      // Verify stale fields are explicitly cleared
+      expect(replacedMotor.electrical).toBeUndefined();
+      expect(replacedMotor.wheelDiameter).toBeUndefined();
+      expect(replacedMotor.wheelWidth).toBeUndefined();
+      expect(replacedMotor.wheelCatalogueId).toBeUndefined();
+      expect(replacedMotor.batteryCatalogueId).toBeUndefined();
+      expect(replacedMotor.controllerCatalogueId).toBeUndefined();
+      expect(replacedMotor.foundationModelId).toBeUndefined();
+
+      // Verify engineering spec belongs to high-torque-dc
+      expect(replacedMotor.engineeringSpec?.category).toBe("motor");
+      if (replacedMotor.engineeringSpec?.category === "motor") {
+        expect(replacedMotor.engineeringSpec.mechanical?.stallTorqueNm).toBe(1.6);
+        expect(replacedMotor.engineeringSpec.mechanical?.noLoadSpeedRpm).toBe(90);
+        // Ensure resolver does not pick up stale 48V
+        const resolved = resolveComponentEngineeringSpec(replacedMotor);
+        expect(resolved?.category).toBe("motor");
+        if (resolved?.category === "motor") {
+          expect(resolved.electrical?.nominalVoltageV).toBeUndefined();
+        }
+      }
+
+      // Verify catalogue isolation: modifying runtime spec does not mutate catalogue
+      const highTorqueCat = motorCatalogue.find((m) => m.id === "high-torque-dc")!;
+      if (replacedMotor.engineeringSpec && "mechanical" in replacedMotor.engineeringSpec) {
+        (replacedMotor.engineeringSpec.mechanical as { stallTorqueNm: number }).stallTorqueNm = 999;
+      }
+      expect(highTorqueCat.engineeringSpec?.mechanical?.stallTorqueNm).toBe(1.6);
+    });
+
+    it("replaces wheel engineering spec cleanly when reassigning wheel on a motor", () => {
+      const store = useRobotStore.getState();
+      store.startNewBuild();
+      store.confirmFoundation();
+      store.selectMountZone("front-left");
+      store.selectMotorCatalogueItem("standard-dc");
+      store.placeMotor();
+
+      const motor = useRobotStore.getState().parts.find((p) => p.type === "Motor")!;
+
+      // Assign standard-rubber wheel
+      store.selectWheelCatalogueItem("standard-rubber");
+      store.assignWheel(motor.id);
+
+      let wheel = useRobotStore.getState().parts.find((p) => p.type === "Wheel")!;
+      expect(wheel.wheelCatalogueId).toBe("standard-rubber");
+      expect(wheel.engineeringSpec?.category).toBe("wheel");
+      if (wheel.engineeringSpec?.category === "wheel") {
+        expect(wheel.engineeringSpec.treadType).toBe("rubber");
+      }
+
+      // Reassign to heavy-duty wheel
+      store.selectWheelCatalogueItem("heavy-duty");
+      store.assignWheel(motor.id);
+
+      wheel = useRobotStore.getState().parts.find((p) => p.type === "Wheel")!;
+      expect(wheel.wheelCatalogueId).toBe("heavy-duty");
+      expect(wheel.engineeringSpec?.category).toBe("wheel");
+      if (wheel.engineeringSpec?.category === "wheel") {
+        expect(wheel.engineeringSpec.treadType).toBe("polyurethane");
+      }
+
+      // Verify resolver reflects heavy-duty polyurethane
+      const resolved = resolveComponentEngineeringSpec(wheel);
+      expect(resolved?.category).toBe("wheel");
+      if (resolved?.category === "wheel") {
+        expect(resolved.treadType).toBe("polyurethane");
+      }
+
+      // Verify catalogue isolation
+      const hdCat = wheelCatalogue.find((w) => w.id === "heavy-duty")!;
+      expect(wheel.engineeringSpec).not.toBe(hdCat.engineeringSpec);
+    });
+
+    it("replaces battery and controller cleanly without retaining stale specs or references", () => {
+      const store = useRobotStore.getState();
+      store.startNewBuild();
+      store.confirmFoundation();
+
+      // Install compact-lipo
+      store.selectBatteryCatalogueItem("compact-lipo");
+      store.installBattery("compact-lipo");
+
+      let battery = useRobotStore.getState().parts.find((p) => p.type === "Battery")!;
+      expect(battery.batteryCatalogueId).toBe("compact-lipo");
+      expect(battery.engineeringSpec?.category).toBe("battery");
+      if (battery.engineeringSpec?.category === "battery") {
+        expect(battery.engineeringSpec.electrical?.nominalVoltageV).toBe(7.4);
+        expect(battery.engineeringSpec.cellCountS).toBe(2);
+      }
+
+      // Replace with heavy-duty-lipo
+      store.selectBatteryCatalogueItem("heavy-duty-lipo");
+      store.installBattery("heavy-duty-lipo");
+
+      battery = useRobotStore.getState().parts.find((p) => p.type === "Battery")!;
+      expect(battery.batteryCatalogueId).toBe("heavy-duty-lipo");
+      expect(battery.engineeringSpec?.category).toBe("battery");
+      if (battery.engineeringSpec?.category === "battery") {
+        expect(battery.engineeringSpec.electrical?.nominalVoltageV).toBe(14.8);
+        expect(battery.engineeringSpec.cellCountS).toBe(4);
+      }
+
+      // Install arduino-uno
+      store.selectControllerCatalogueItem("arduino-uno");
+      store.installController("arduino-uno");
+
+      let controller = useRobotStore.getState().parts.find((p) => p.type === "Controller")!;
+      expect(controller.controllerCatalogueId).toBe("arduino-uno");
+      expect(controller.engineeringSpec?.category).toBe("controller");
+      if (controller.engineeringSpec?.category === "controller") {
+        expect(controller.engineeringSpec.electrical?.logicLevelV).toBe(5);
+        expect(controller.engineeringSpec.clockSpeedHz).toBe(16_000_000);
+      }
+
+      // Replace with esp32-devkit
+      store.selectControllerCatalogueItem("esp32-devkit");
+      store.installController("esp32-devkit");
+
+      controller = useRobotStore.getState().parts.find((p) => p.type === "Controller")!;
+      expect(controller.controllerCatalogueId).toBe("esp32-devkit");
+      expect(controller.engineeringSpec?.category).toBe("controller");
+      if (controller.engineeringSpec?.category === "controller") {
+        expect(controller.engineeringSpec.electrical?.logicLevelV).toBe(3.3);
+        expect(controller.engineeringSpec.clockSpeedHz).toBe(240_000_000);
+      }
+
+      // Remove battery and controller
+      store.removeBattery();
+      store.removeController();
+      expect(useRobotStore.getState().parts.some((p) => p.type === "Battery")).toBe(false);
+      expect(useRobotStore.getState().parts.some((p) => p.type === "Controller")).toBe(false);
+    });
+
+    it("preserves runtime customizations of mounted components when foundation is updated", () => {
+      const store = useRobotStore.getState();
+      store.startNewBuild();
+      store.confirmFoundation();
+
+      store.selectBatteryCatalogueItem("standard-lipo");
+      store.installBattery("standard-lipo");
+
+      store.selectControllerCatalogueItem("arduino-uno");
+      store.installController("arduino-uno");
+
+      store.selectMountZone("front-left");
+      store.selectMotorCatalogueItem("standard-dc");
+      store.placeMotor();
+
+      const motor = useRobotStore.getState().parts.find((p) => p.type === "Motor")!;
+      store.selectWheelCatalogueItem("standard-rubber");
+      store.assignWheel(motor.id);
+
+      // Apply runtime customizations to mounted battery and controller
+      useRobotStore.setState({
+        parts: useRobotStore.getState().parts.map((p) => {
+          if (p.type === "Battery" && p.engineeringSpec?.category === "battery") {
+            return {
+              ...p,
+              massKg: 0.95,
+              engineeringSpec: {
+                ...p.engineeringSpec,
+                generalProvenance: {
+                  method: "estimated" as const,
+                  basis: "User bench-tested capacity rating",
+                },
+              },
+            };
+          }
+          if (p.type === "Controller" && p.engineeringSpec?.category === "controller") {
+            return {
+              ...p,
+              engineeringSpec: {
+                ...p.engineeringSpec,
+                generalProvenance: {
+                  method: "estimated" as const,
+                  basis: "User custom clock overclocking profile",
+                },
+              },
+            };
+          }
+          return p;
+        }),
+      });
+
+      // Update foundation dimensions
+      store.updateFoundationDimensions({ length: 3.2, width: 2.2, height: 0.45 });
+
+      const state = useRobotStore.getState();
+      const updatedBattery = state.parts.find((p) => p.type === "Battery")!;
+      const updatedController = state.parts.find((p) => p.type === "Controller")!;
+      const updatedMotor = state.parts.find((p) => p.type === "Motor")!;
+      const updatedWheel = state.parts.find((p) => p.type === "Wheel")!;
+
+      // Verify custom engineering provenance and mass were preserved rather than re-cloned from baseline
+      expect(updatedBattery.massKg).toBe(0.95);
+      const batteryProv = updatedBattery.engineeringSpec?.generalProvenance;
+      expect(batteryProv?.method).toBe("estimated");
+      if (batteryProv?.method === "estimated") {
+        expect(batteryProv.basis).toBe("User bench-tested capacity rating");
+      }
+
+      const controllerProv = updatedController.engineeringSpec?.generalProvenance;
+      expect(controllerProv?.method).toBe("estimated");
+      if (controllerProv?.method === "estimated") {
+        expect(controllerProv.basis).toBe("User custom clock overclocking profile");
+      }
+      expect(updatedMotor.engineeringSpec?.category).toBe("motor");
+      expect(updatedWheel.engineeringSpec?.category).toBe("wheel");
+    });
+
+    it("synchronizes plateThicknessM on Armor Plate when resized, without fabricating on chassis frame", () => {
+      const store = useRobotStore.getState();
+      store.startNewBuild();
+      store.confirmFoundation();
+
+      // 1. Armor Plate with explicit plateThicknessM
+      const armorPlateId = "custom-armor-plate";
+      useRobotStore.setState({
+        parts: [
+          ...useRobotStore.getState().parts,
+          {
+            id: armorPlateId,
+            name: "Front Armor 1",
+            type: "Armor Plate",
+            position: [0, 0.5, 1],
+            rotation: [0, 0, 0],
+            size: [1.5, 0.05, 1.0],
+            color: "#64748b",
+            mass: 0.5,
+            massKg: 0.5,
+            geometry: {
+              shape: "box",
+              length: 1.5,
+              height: 0.05,
+              width: 1.0,
+            },
+            engineeringSpec: {
+              category: "structural",
+              role: "armor-plate",
+              plateThicknessM: 0.05,
+              fieldProvenance: {},
+              generalProvenance: {
+                method: "estimated",
+                basis: "Baseline sheet metal specification",
+              },
+            },
+          },
+        ],
+      });
+
+      // Resize armor plate via updatePartSize
+      store.updatePartSize(armorPlateId, [1.5, 0.02, 1.0]);
+
+      let plate = useRobotStore.getState().parts.find((p) => p.id === armorPlateId)!;
+      expect(plate.size).toEqual([1.5, 0.02, 1.0]);
+      expect(plate.geometry).toEqual({
+        shape: "box",
+        length: 1.5,
+        height: 0.02,
+        width: 1.0,
+      });
+      expect(plate.engineeringSpec?.category).toBe("structural");
+      if (plate.engineeringSpec?.category === "structural") {
+        expect(plate.engineeringSpec.plateThicknessM).toBe(0.02);
+        const prov = plate.engineeringSpec.fieldProvenance?.plateThicknessM;
+        expect(prov?.method).toBe("estimated");
+        if (prov?.method === "estimated") {
+          expect(prov.basis).toContain(
+            "Synchronized from customized armor plate dimensions"
+          );
+        }
+      }
+
+      // Resize armor plate via updatePartGeometry
+      store.updatePartGeometry(armorPlateId, {
+        shape: "box",
+        length: 2.0,
+        height: 0.012,
+        width: 0.8,
+      });
+
+      plate = useRobotStore.getState().parts.find((p) => p.id === armorPlateId)!;
+      expect(plate.engineeringSpec?.category).toBe("structural");
+      if (plate.engineeringSpec?.category === "structural") {
+        expect(plate.engineeringSpec.plateThicknessM).toBe(0.012);
+      }
+
+      // 2. Chassis frame: ensure plateThicknessM remains strictly undefined
+      const chassis = useRobotStore.getState().parts.find((p) => p.id === "foundation-chassis")!;
+      expect(chassis.engineeringSpec?.category).toBe("structural");
+      if (chassis.engineeringSpec?.category === "structural") {
+        expect(chassis.engineeringSpec.plateThicknessM).toBeUndefined();
+      }
+
+      // Update foundation dimensions (chassis envelope)
+      store.updateFoundationDimensions({ length: 2.8, width: 1.8, height: 0.4 });
+      const updatedChassis = useRobotStore
+        .getState()
+        .parts.find((p) => p.id === "foundation-chassis")!;
+      expect(updatedChassis.engineeringSpec?.category).toBe("structural");
+      if (updatedChassis.engineeringSpec?.category === "structural") {
+        // Must remain undefined (ground clearance / frame height, NOT plate thickness)
+        expect(updatedChassis.engineeringSpec.plateThicknessM).toBeUndefined();
+      }
+    });
+
+    it("preserves resolver integrity across replacement and customization cycles", () => {
+      const store = useRobotStore.getState();
+      store.startNewBuild();
+      store.confirmFoundation();
+
+      // Mount motor, wheel, battery, controller
+      store.selectMountZone("front-left");
+      store.selectMotorCatalogueItem("small-dc");
+      store.placeMotor();
+
+      const motor = useRobotStore.getState().parts.find((p) => p.type === "Motor")!;
+      store.selectWheelCatalogueItem("standard-rubber");
+      store.assignWheel(motor.id);
+
+      store.selectBatteryCatalogueItem("standard-lipo");
+      store.installBattery("standard-lipo");
+
+      store.selectControllerCatalogueItem("arduino-uno");
+      store.installController("arduino-uno");
+
+      // Verify all resolvers immediately resolve canonical specs
+      const state = useRobotStore.getState();
+      const initialMotor = state.parts.find((p) => p.type === "Motor")!;
+      const initialWheel = state.parts.find((p) => p.type === "Wheel")!;
+      const initialBattery = state.parts.find((p) => p.type === "Battery")!;
+      const initialController = state.parts.find((p) => p.type === "Controller")!;
+      const chassis = state.parts.find((p) => p.id === "foundation-chassis")!;
+
+      expect(resolveComponentEngineeringSpec(initialMotor)?.category).toBe("motor");
+      expect(resolveComponentEngineeringSpec(initialWheel)?.category).toBe("wheel");
+      expect(resolveComponentEngineeringSpec(initialBattery)?.category).toBe("battery");
+      expect(resolveComponentEngineeringSpec(initialController)?.category).toBe("controller");
+      expect(resolveComponentEngineeringSpec(chassis)?.category).toBe("structural");
+
+      // Replace foundation model
+      store.selectFoundationModel("long-frame");
+      const updatedChassis = useRobotStore.getState().parts.find((p) => p.id === "foundation-chassis")!;
+      expect(updatedChassis.foundationModelId).toBe("long-frame");
+      const resolvedChassis = resolveComponentEngineeringSpec(updatedChassis);
+      expect(resolvedChassis?.category).toBe("structural");
+      if (resolvedChassis?.category === "structural" && resolvedChassis.generalProvenance?.method === "datasheet") {
+        expect(resolvedChassis.generalProvenance.source).toBe("catalogue:foundation:long-frame");
+      }
+    });
+  });
 });

@@ -359,9 +359,26 @@ export function syncGeometryFromSize(
   part: RobotPart,
   size: [number, number, number]
 ): Pick<RobotPart, "size" | "geometry"> &
-  Partial<Pick<RobotPart, "wheelDiameter" | "wheelWidth">> {
+  Partial<Pick<RobotPart, "wheelDiameter" | "wheelWidth" | "engineeringSpec">> {
   const isCylinder =
     part.geometry?.shape === "cylinder" || part.type === "Wheel";
+
+  const syncedEngineeringSpec =
+    part.type === "Armor Plate" &&
+    part.engineeringSpec?.category === "structural" &&
+    part.engineeringSpec.plateThicknessM !== undefined
+      ? {
+          ...part.engineeringSpec,
+          plateThicknessM: Math.min(size[0], size[1], size[2]),
+          fieldProvenance: {
+            ...(part.engineeringSpec.fieldProvenance ?? {}),
+            plateThicknessM: {
+              method: "estimated" as const,
+              basis: "Synchronized from customized armor plate dimensions",
+            },
+          },
+        }
+      : undefined;
 
   if (isCylinder) {
     const axis =
@@ -377,6 +394,7 @@ export function syncGeometryFromSize(
         axialWidth: size[1],
         axis,
       },
+      ...(syncedEngineeringSpec ? { engineeringSpec: syncedEngineeringSpec } : {}),
     };
   }
 
@@ -388,6 +406,7 @@ export function syncGeometryFromSize(
       height: size[1],
       width: size[2],
     },
+    ...(syncedEngineeringSpec ? { engineeringSpec: syncedEngineeringSpec } : {}),
   };
 }
 
@@ -395,7 +414,7 @@ export function syncSizeFromGeometry(
   part: RobotPart,
   geometry: ComponentGeometry
 ): Pick<RobotPart, "size" | "geometry"> &
-  Partial<Pick<RobotPart, "wheelDiameter" | "wheelWidth">> {
+  Partial<Pick<RobotPart, "wheelDiameter" | "wheelWidth" | "engineeringSpec">> {
   if (geometry.shape === "cylinder") {
     const size: [number, number, number] = [
       geometry.diameter,
@@ -411,9 +430,31 @@ export function syncSizeFromGeometry(
     };
   }
 
+  const syncedEngineeringSpec =
+    part.type === "Armor Plate" &&
+    part.engineeringSpec?.category === "structural" &&
+    part.engineeringSpec.plateThicknessM !== undefined
+      ? {
+          ...part.engineeringSpec,
+          plateThicknessM: Math.min(
+            geometry.length,
+            geometry.height,
+            geometry.width
+          ),
+          fieldProvenance: {
+            ...(part.engineeringSpec.fieldProvenance ?? {}),
+            plateThicknessM: {
+              method: "estimated" as const,
+              basis: "Synchronized from customized armor plate dimensions",
+            },
+          },
+        }
+      : undefined;
+
   return {
     geometry,
     size: [geometry.length, geometry.height, geometry.width],
+    ...(syncedEngineeringSpec ? { engineeringSpec: syncedEngineeringSpec } : {}),
   };
 }
 
@@ -539,14 +580,27 @@ function preserveMountedComponents(
       ),
     }))
     .find((item) => item.definition && item.connection);
-  const positionedBattery = battery?.definition && battery.connection
-    ? createBatteryPart(
-        battery.definition,
-        battery.part.id,
-        foundation,
-        battery.connection.id
-      )
-    : null;
+  let positionedBattery: RobotPart | null = null;
+  if (battery?.definition && battery.connection) {
+    const freshPart = createBatteryPart(
+      battery.definition,
+      battery.part.id,
+      foundation,
+      battery.connection.id
+    );
+    positionedBattery = {
+      ...freshPart,
+      mass: battery.part.mass,
+      massKg: battery.part.massKg ?? freshPart.massKg,
+      color: battery.part.color,
+      electrical: battery.part.electrical
+        ? structuredClone(battery.part.electrical)
+        : freshPart.electrical,
+      engineeringSpec: battery.part.engineeringSpec
+        ? structuredClone(battery.part.engineeringSpec)
+        : freshPart.engineeringSpec,
+    };
+  }
   const existingControllers = existingParts.filter(
     (part) => part.type === "Controller"
   );
@@ -564,15 +618,27 @@ function preserveMountedComponents(
       ),
     }))
     .find((item) => item.definition && item.connection);
-  const positionedController =
-    controller?.definition && controller.connection
-      ? createControllerPart(
-          controller.definition,
-          controller.part.id,
-          foundation,
-          controller.connection.id
-        )
-      : null;
+  let positionedController: RobotPart | null = null;
+  if (controller?.definition && controller.connection) {
+    const freshPart = createControllerPart(
+      controller.definition,
+      controller.part.id,
+      foundation,
+      controller.connection.id
+    );
+    positionedController = {
+      ...freshPart,
+      mass: controller.part.mass,
+      massKg: controller.part.massKg ?? freshPart.massKg,
+      color: controller.part.color,
+      electrical: controller.part.electrical
+        ? structuredClone(controller.part.electrical)
+        : freshPart.electrical,
+      engineeringSpec: controller.part.engineeringSpec
+        ? structuredClone(controller.part.engineeringSpec)
+        : freshPart.engineeringSpec,
+    };
+  }
   const rebuiltParts = [
     ...foundationParts,
     ...positionedMotors,
@@ -1279,6 +1345,13 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
                 mechanical: definition.mechanical
                   ? structuredClone(definition.mechanical)
                   : undefined,
+                electrical: undefined,
+                wheelDiameter: undefined,
+                wheelWidth: undefined,
+                wheelCatalogueId: undefined,
+                batteryCatalogueId: undefined,
+                controllerCatalogueId: undefined,
+                foundationModelId: undefined,
                 engineeringSpec: definition.engineeringSpec
                   ? structuredClone(definition.engineeringSpec)
                   : undefined,
