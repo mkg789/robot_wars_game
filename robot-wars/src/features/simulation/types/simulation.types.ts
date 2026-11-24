@@ -207,6 +207,7 @@ export interface SimulationState {
   // Electrical runtime telemetry
   readonly batteryTerminalVoltageV: number;
   readonly totalCurrentDrawA: number;
+  readonly isBatteryCutoff?: boolean;
 
   // Forces and torques
   readonly netDriveForceN: number;
@@ -288,3 +289,91 @@ export interface DynamicsStepResult {
   readonly state: SimulationState;
   readonly diagnostics: DrivetrainDynamicsDiagnostics;
 }
+
+/**
+ * Configurable simulation options for battery dynamics.
+ */
+export interface BatterySimulationOptions {
+  /**
+   * Internal resistance of the battery pack in Ohms (Ω).
+   * Default assumption for multi-cell LiPo packs: 0.025 Ω (25 mΩ).
+   */
+  readonly internalResistanceOhm?: number;
+  /**
+   * Open circuit voltage in Volts (V). If omitted, defaults to fullyChargedVoltageV or nominalVoltageV.
+   */
+  readonly openCircuitVoltageV?: number;
+  /**
+   * Cutoff voltage threshold in Volts (V). If omitted, defaults to battery.cutoffVoltageV or 0.8 * nominalVoltageV.
+   */
+  readonly cutoffVoltageV?: number;
+  /**
+   * Whether low-voltage cutoff is enabled (default: true).
+   */
+  readonly enableCutoff?: boolean;
+}
+
+/**
+ * Diagnostics output for battery dynamics during a simulation step.
+ */
+export interface BatteryDynamicsDiagnostics {
+  readonly openCircuitVoltageV: number;
+  readonly terminalVoltageV: number;
+  readonly voltageSagV: number;
+  readonly currentDrawA: number;
+  readonly internalResistanceOhm: number;
+  readonly isCutoff: boolean;
+  readonly cutoffVoltageV: number;
+  readonly nominalVoltageV: number;
+  readonly assumptions: readonly SimulationAssumption[];
+}
+
+/**
+ * Configuration options for the deterministic simulation runner.
+ */
+export interface SimulationRunnerOptions {
+  /**
+   * Fixed physics timestep in seconds.
+   * Default: 1 / 120 s (~0.008333 s).
+   */
+  readonly fixedTimestepSeconds?: number;
+  /**
+   * Maximum physics sub-steps permitted in a single advance call to prevent spiral of death.
+   * Default: 120 steps.
+   */
+  readonly maxSubSteps?: number;
+  /**
+   * Battery simulation options.
+   */
+  readonly battery?: BatterySimulationOptions;
+}
+
+/**
+ * Persistent state of the simulation runner across advance requests.
+ */
+export interface SimulationRunnerState {
+  readonly simulationState: SimulationState;
+  /** Remainder time in seconds accumulated from non-exact timestep requests */
+  readonly accumulatorSeconds: number;
+  /** Whether the battery has triggered low-voltage cutoff */
+  readonly isCutoff: boolean;
+  /** Cumulative simulated time advanced in seconds */
+  readonly totalSimulatedTimeSeconds: number;
+  /** Total physics integration steps executed by the runner */
+  readonly totalPhysicsSteps: number;
+}
+
+/**
+ * Result returned by advanceSimulation.
+ */
+export interface SimulationAdvanceResult {
+  readonly runnerState: SimulationRunnerState;
+  readonly durationRequestedSeconds: number;
+  readonly timeAdvancedSeconds: number;
+  readonly stepsExecuted: number;
+  readonly fixedTimestepSeconds: number;
+  readonly accumulatorRemainderSeconds: number;
+  readonly batteryDiagnostics: BatteryDynamicsDiagnostics;
+  readonly stepDiagnostics: readonly DynamicsStepResult[];
+}
+

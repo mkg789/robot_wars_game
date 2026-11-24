@@ -298,7 +298,9 @@ export function stepDrivetrainDynamics(
   config: SimulationRobotConfig,
   currentState: SimulationState,
   input: DrivetrainInput,
-  dt: number
+  dt: number,
+  operatingVoltageV?: number,
+  totalCurrentDrawA?: number
 ): DynamicsStepResult {
   // 1. Validation & Safety
   if (!Number.isFinite(dt) || dt <= 0) {
@@ -390,10 +392,23 @@ export function stepDrivetrainDynamics(
       ? currentState.leftWheelAngularVelocityRadPerSec
       : currentState.rightWheelAngularVelocityRadPerSec;
 
+    // Voltage scaling of motor capability
+    const nominalVoltageV =
+      motor.nominalVoltageV ?? config.battery?.nominalVoltageV ?? 12.0;
+    const voltageRatio =
+      operatingVoltageV !== undefined
+        ? nominalVoltageV > 0
+          ? Math.max(0, operatingVoltageV / nominalVoltageV)
+          : 1.0
+        : 1.0;
+
+    const effectiveStallTorqueNm = motor.stallTorqueNm * voltageRatio;
+    const effectiveNoLoadOmega = motor.noLoadAngularVelocityRadPerSec * voltageRatio;
+
     // Motor torque calculation
     const motorRes = calculateMotorTorque(
-      motor.stallTorqueNm,
-      motor.noLoadAngularVelocityRadPerSec,
+      effectiveStallTorqueNm,
+      effectiveNoLoadOmega,
       throttle,
       currentWheelOmega
     );
@@ -492,15 +507,26 @@ export function stepDrivetrainDynamics(
     let sumSlip = 0;
 
     for (const { wheel, motor } of wheels) {
+      const nominalVoltageV =
+        motor.nominalVoltageV ?? config.battery?.nominalVoltageV ?? 12.0;
+      const voltageRatio =
+        operatingVoltageV !== undefined
+          ? nominalVoltageV > 0
+            ? Math.max(0, operatingVoltageV / nominalVoltageV)
+            : 1.0
+          : 1.0;
+      const effectiveStallTorqueNm = motor.stallTorqueNm * voltageRatio;
+      const effectiveNoLoadOmega = motor.noLoadAngularVelocityRadPerSec * voltageRatio;
+
       const normalForceN = resolveWheelNormalForce(wheel, config, totalDrivenWheels);
       const frictionCoeff = wheel.staticFrictionCoeff ?? DEFAULT_FRICTION_COEFF;
       const tractionLimitN = calculateWheelTractionLimit(frictionCoeff, normalForceN);
-      const maxDriveForceN = motor.stallTorqueNm / wheel.radiusM;
+      const maxDriveForceN = effectiveStallTorqueNm / wheel.radiusM;
 
       let wheelOmega: number;
 
-      if (Math.abs(throttle) < 1e-6) {
-        // Zero throttle: wheels roll synchronously with contact velocity (no slip)
+      if (Math.abs(throttle) < 1e-6 || effectiveStallTorqueNm <= 0) {
+        // Zero throttle or unpowered: wheels roll synchronously with contact velocity (no slip)
         wheelOmega = contactSpeed / wheel.radiusM;
       } else if (maxDriveForceN > tractionLimitN + 1e-6) {
         // Traction saturated: wheel spins at equilibrium where motor torque matches traction limit
@@ -508,8 +534,8 @@ export function stepDrivetrainDynamics(
         const u = Math.max(-1.0, Math.min(1.0, throttle));
         const sign = u >= 0 ? 1 : -1;
         const slipOmega =
-          motor.noLoadAngularVelocityRadPerSec *
-          (u - (sign * tractionLimitN * wheel.radiusM) / motor.stallTorqueNm);
+          effectiveNoLoadOmega *
+          (u - (sign * tractionLimitN * wheel.radiusM) / effectiveStallTorqueNm);
 
         wheelOmega = slipOmega;
       } else {
@@ -556,8 +582,13 @@ export function stepDrivetrainDynamics(
     leftSlipRatio: updatedLeft.slipRatio,
     rightSlipRatio: updatedRight.slipRatio,
     batteryTerminalVoltageV:
-      config.battery?.nominalVoltageV ?? currentState.batteryTerminalVoltageV,
-    totalCurrentDrawA: 0,
+      operatingVoltageV !== undefined
+        ? operatingVoltageV
+        : (config.battery?.nominalVoltageV ?? currentState.batteryTerminalVoltageV),
+    totalCurrentDrawA:
+      totalCurrentDrawA !== undefined
+        ? totalCurrentDrawA
+        : currentState.totalCurrentDrawA,
     netDriveForceN,
     netYawTorqueNm,
   };
