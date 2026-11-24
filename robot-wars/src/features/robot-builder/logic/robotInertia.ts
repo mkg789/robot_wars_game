@@ -17,6 +17,7 @@ import type {
   RobotPart,
 } from "../types/robot.types";
 import { getPartBoundingExtents } from "./geometryAdapters";
+import { resolveComponentMass } from "./massResolvers";
 import {
   calculateCenterOfMass,
   type CalculationValidity,
@@ -35,7 +36,7 @@ export type InertiaMatrix3x3 = readonly [
   readonly [number, number, number]
 ];
 
-export type PrincipalMomentsOfInertia = {
+export type BodyMomentsOfInertia = {
   /** Roll moment of inertia about canonical longitudinal X axis (+X Front) in kg·m² */
   readonly ixx: number;
   /** Yaw moment of inertia about canonical vertical Y axis (+Y Up) in kg·m² */
@@ -43,6 +44,11 @@ export type PrincipalMomentsOfInertia = {
   /** Pitch moment of inertia about canonical lateral Z axis (+Z Left) in kg·m² */
   readonly izz: number;
 };
+
+/**
+ * @deprecated Renamed to BodyMomentsOfInertia. Kept for backwards compatibility.
+ */
+export type PrincipalMomentsOfInertia = BodyMomentsOfInertia;
 
 export type RadiiOfGyration = {
   /** Radius of gyration about X axis in canonical meters (m) */
@@ -74,8 +80,10 @@ export type RobotInertiaProfile = {
   readonly centerOfMass: CenterOfMass;
   /** Full 3x3 symmetric inertia tensor about assembly CoM in kg·m² */
   readonly tensor: InertiaMatrix3x3;
-  /** Diagonal principal moments of inertia in kg·m² */
-  readonly principalMoments: PrincipalMomentsOfInertia;
+  /** Body-frame moments of inertia (diagonal elements Ixx, Iyy, Izz about assembly CoM) in kg·m² */
+  readonly bodyMomentsOfInertia: BodyMomentsOfInertia;
+  /** @deprecated Kept for backwards compatibility. Use bodyMomentsOfInertia. */
+  readonly principalMoments: BodyMomentsOfInertia;
   /** Radii of gyration in meters */
   readonly radiiOfGyration: RadiiOfGyration;
   /** Detailed component-by-component inertia breakdown */
@@ -248,17 +256,17 @@ export function calculateLocalComponentInertia(part: RobotPart): {
   warnings: string[];
 } {
   const warnings: string[] = [];
-  const rawMass = part.massKg ?? part.mass;
+  const massRes = resolveComponentMass(part);
 
-  if (rawMass === undefined || rawMass === null || !Number.isFinite(rawMass) || rawMass <= 0) {
+  if (!massRes.isValid) {
     return {
       tensor: createZeroInertiaMatrix(),
       isApproximated: true,
-      warnings: [`Component "${part.name}" (${part.id}) has invalid or non-positive mass (${rawMass}).`],
+      warnings: [`Component "${part.name}" (${part.id}) has invalid or non-positive mass (${massRes.rawValue}).`],
     };
   }
 
-  const m = rawMass;
+  const m = massRes.massKg;
 
   // 1. Canonical BoxGeometry: uniform solid rectangular cuboid
   if (part.geometry && part.geometry.shape === "box") {
@@ -385,11 +393,13 @@ export function compileRobotInertiaProfile(
   warnings.push(...com.warnings);
 
   if (parts.length === 0 || com.totalMassKg <= 0 || com.validity === "unsupported") {
+    const zeroMoments: BodyMomentsOfInertia = { ixx: 0, iyy: 0, izz: 0 };
     return {
       totalMassKg: 0,
       centerOfMass: com,
       tensor: createZeroInertiaMatrix(),
-      principalMoments: { ixx: 0, iyy: 0, izz: 0 },
+      bodyMomentsOfInertia: zeroMoments,
+      principalMoments: zeroMoments,
       radiiOfGyration: { kx: 0, ky: 0, kz: 0 },
       componentInertias: [],
       validity: "unsupported",
@@ -414,12 +424,13 @@ export function compileRobotInertiaProfile(
   const comZ = com.z;
 
   for (const part of parts) {
-    const rawMass = part.massKg ?? part.mass;
-    if (rawMass === undefined || rawMass === null || !Number.isFinite(rawMass) || rawMass <= 0) {
+    const massRes = resolveComponentMass(part);
+    if (!massRes.isValid) {
       hasInvalidPart = true;
-      warnings.push(`Component "${part.name}" (${part.id}) has invalid mass (${rawMass}); excluded from inertia tensor.`);
+      warnings.push(`Component "${part.name}" (${part.id}) has invalid mass (${massRes.rawValue}); excluded from inertia tensor.`);
       continue;
     }
+    const rawMass = massRes.massKg;
 
     const localResult = calculateLocalComponentInertia(part);
     if (localResult.isApproximated) {
@@ -463,7 +474,7 @@ export function compileRobotInertiaProfile(
     [totalIxz, totalIyz, totalIzz],
   ];
 
-  const principalMoments: PrincipalMomentsOfInertia = {
+  const bodyMomentsOfInertia: BodyMomentsOfInertia = {
     ixx: totalIxx,
     iyy: totalIyy,
     izz: totalIzz,
@@ -487,7 +498,8 @@ export function compileRobotInertiaProfile(
     totalMassKg: totalMass,
     centerOfMass: com,
     tensor,
-    principalMoments,
+    bodyMomentsOfInertia,
+    principalMoments: bodyMomentsOfInertia,
     radiiOfGyration,
     componentInertias,
     validity,

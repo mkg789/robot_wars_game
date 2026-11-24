@@ -139,3 +139,166 @@ export function getPartCylinderDimensions(
     width,
   };
 }
+
+export type WheelDiameterResolutionSource =
+  | "explicit-wheel-diameter"
+  | "canonical-cylinder"
+  | "legacy-size"
+  | "none";
+
+export type WheelDiameterFailureReason =
+  | "missing-geometry"
+  | "invalid-geometry"
+  | "unsupported-shape"
+  | "non-positive";
+
+export type WheelDimensionResolution = {
+  readonly isValid: boolean;
+  /** Resolved wheel diameter in canonical meters (0 if invalid) */
+  readonly diameterM: number;
+  /** Resolved wheel radius in canonical meters (0 if invalid) */
+  readonly radiusM: number;
+  /** Resolved wheel axial width in canonical meters, if available */
+  readonly widthM?: number;
+  /** Field or geometry source from which diameter was resolved */
+  readonly source: WheelDiameterResolutionSource;
+  /** Structured failure reason if invalid */
+  readonly failureReason?: WheelDiameterFailureReason;
+  /** Human-readable warning or explanation string */
+  readonly warning?: string;
+};
+
+/**
+ * Pure helper that resolves wheel diameter, radius, and width using canonical geometry
+ * and legacy fallback rules.
+ *
+ * Precedence:
+ * 1. Explicit `part.wheelDiameter` if finite and strictly positive (> 0).
+ * 2. Canonical `CylinderGeometry` (`geometry.diameter` and `geometry.axialWidth`).
+ *    - Rejects unsupported geometry shapes (e.g., `BoxGeometry`) as invalid for a wheel.
+ * 3. Legacy `part.size[0]` (diameter) and `part.size[1]` (width) if `part.geometry` is undefined.
+ */
+export function resolveWheelDimensions(
+  part: PartDimensionalSource & { readonly id?: string; readonly name?: string }
+): WheelDimensionResolution {
+  const partName = part.name ?? part.id ?? "Unknown Wheel";
+
+  // 1. Explicit wheelDiameter
+  if (
+    typeof part.wheelDiameter === "number" &&
+    Number.isFinite(part.wheelDiameter) &&
+    part.wheelDiameter > 0
+  ) {
+    const widthM =
+      typeof part.wheelWidth === "number" &&
+      Number.isFinite(part.wheelWidth) &&
+      part.wheelWidth > 0
+        ? part.wheelWidth
+        : part.geometry?.shape === "cylinder" &&
+          Number.isFinite(part.geometry.axialWidth) &&
+          part.geometry.axialWidth > 0
+        ? part.geometry.axialWidth
+        : part.size && Number.isFinite(part.size[1]) && part.size[1] > 0
+        ? part.size[1]
+        : undefined;
+
+    return {
+      isValid: true,
+      diameterM: part.wheelDiameter,
+      radiusM: part.wheelDiameter / 2,
+      widthM,
+      source: "explicit-wheel-diameter",
+    };
+  }
+
+  // 2. Canonical geometry
+  if (part.geometry) {
+    if (part.geometry.shape === "cylinder") {
+      const d = part.geometry.diameter;
+      if (typeof d === "number" && Number.isFinite(d) && d > 0) {
+        const w = part.geometry.axialWidth;
+        const widthM = typeof w === "number" && Number.isFinite(w) && w > 0 ? w : undefined;
+        return {
+          isValid: true,
+          diameterM: d,
+          radiusM: d / 2,
+          widthM,
+          source: "canonical-cylinder",
+        };
+      }
+      return {
+        isValid: false,
+        diameterM: 0,
+        radiusM: 0,
+        source: "none",
+        failureReason: "invalid-geometry",
+        warning: `Component "${partName}" has cylinder geometry with invalid or non-positive diameter (${d}).`,
+      };
+    }
+
+    // Geometry is not a cylinder (e.g. box) -> unsupported shape for wheel
+    return {
+      isValid: false,
+      diameterM: 0,
+      radiusM: 0,
+      source: "none",
+      failureReason: "unsupported-shape",
+      warning: `Component "${partName}" has unsupported geometry shape "${part.geometry.shape}" for a wheel; cannot resolve diameter.`,
+    };
+  }
+
+  // 3. Legacy size fallback (when geometry is undefined)
+  if (part.size && Array.isArray(part.size)) {
+    const d = part.size[0];
+    if (typeof d === "number" && Number.isFinite(d) && d > 0) {
+      const w = part.size[1];
+      const widthM = typeof w === "number" && Number.isFinite(w) && w > 0 ? w : undefined;
+      return {
+        isValid: true,
+        diameterM: d,
+        radiusM: d / 2,
+        widthM,
+        source: "legacy-size",
+      };
+    }
+
+    if (typeof d === "number" && (!Number.isFinite(d) || d <= 0)) {
+      return {
+        isValid: false,
+        diameterM: 0,
+        radiusM: 0,
+        source: "none",
+        failureReason: "non-positive",
+        warning: `Component "${partName}" has invalid or non-positive legacy wheel size [${d}].`,
+      };
+    }
+  }
+
+  return {
+    isValid: false,
+    diameterM: 0,
+    radiusM: 0,
+    source: "none",
+    failureReason: "missing-geometry",
+    warning: `Component "${partName}" has missing or invalid wheel geometry.`,
+  };
+}
+
+/**
+ * Resolves wheel diameter in canonical meters, returning 0 if invalid.
+ */
+export function resolveWheelDiameter(
+  part: PartDimensionalSource & { readonly id?: string; readonly name?: string }
+): number {
+  return resolveWheelDimensions(part).diameterM;
+}
+
+/**
+ * Resolves wheel radius in canonical meters, returning 0 if invalid.
+ */
+export function resolveWheelRadius(
+  part: PartDimensionalSource & { readonly id?: string; readonly name?: string }
+): number {
+  return resolveWheelDimensions(part).radiusM;
+}
+

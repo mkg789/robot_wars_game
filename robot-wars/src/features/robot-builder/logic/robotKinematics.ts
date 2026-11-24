@@ -17,6 +17,8 @@ import {
   resolveMotorEngineeringSpec,
   resolveWheelEngineeringSpec,
 } from "./engineeringAdapters";
+import { resolveWheelDimensions } from "./geometryAdapters";
+import { resolveAssemblyMass } from "./massResolvers";
 import type { RobotStabilityProfile } from "./robotStability";
 
 export const STANDARD_GRAVITY_MPS2 = 9.80665;
@@ -182,13 +184,16 @@ export function compileRobotPerformanceProfile(
   drivetrain?: DrivetrainConfiguration | null,
   stabilityProfile?: RobotStabilityProfile
 ): RobotPerformanceProfile {
-  // 1. Total robot assembly mass
-  const totalMassKg = parts.reduce(
-    (sum, part) => sum + (part.massKg ?? part.mass ?? 0),
-    0
-  );
+  // 1. Total robot assembly mass (unified resolution)
+  const assemblyMass = resolveAssemblyMass(parts);
+  const totalMassKg = assemblyMass.totalMassKg;
 
   const assumptions: string[] = [];
+  for (const inv of assemblyMass.invalidComponents) {
+    if (inv.warning) {
+      assumptions.push(inv.warning);
+    }
+  }
 
   // Guard against unconfigured or missing drivetrain
   if (!drivetrain || (!drivetrain.left.some(Boolean) && !drivetrain.right.some(Boolean))) {
@@ -197,6 +202,7 @@ export function compileRobotPerformanceProfile(
       drivenWheelCount: 0,
       stabilityProfile,
       assumptions: [
+        ...assumptions,
         "No powered wheel assemblies assigned to drivetrain.",
       ],
     };
@@ -224,13 +230,12 @@ export function compileRobotPerformanceProfile(
       );
       if (!isConnected) continue;
 
-      const wheelDiameterM =
-        wheel.wheelDiameter ??
-        (wheel.geometry?.shape === "cylinder" ? wheel.geometry.diameter : undefined) ??
-        (wheel.size ? wheel.size[0] : undefined) ??
-        0;
-
-      const wheelRadiusM = wheelDiameterM / 2;
+      const wheelRes = resolveWheelDimensions(wheel);
+      const wheelDiameterM = wheelRes.diameterM;
+      const wheelRadiusM = wheelRes.radiusM;
+      if (!wheelRes.isValid && wheelRes.warning) {
+        assumptions.push(wheelRes.warning);
+      }
 
       const motorSpec = resolveMotorEngineeringSpec(motor);
       const wheelSpec = resolveWheelEngineeringSpec(wheel);

@@ -12,6 +12,9 @@ import {
   getPartBoundingExtents,
   getPartBoxExtents,
   getPartCylinderDimensions,
+  resolveWheelDiameter,
+  resolveWheelDimensions,
+  resolveWheelRadius,
 } from "./geometryAdapters";
 
 describe("geometryAdapters", () => {
@@ -332,6 +335,166 @@ describe("geometryAdapters", () => {
       expect(result.diameter).toBe(0.36);
       expect(result.width).toBe(0.14);
       expect(result.radius).toBe(0.18);
+    });
+  });
+
+  describe("resolveWheelDimensions", () => {
+    it("resolves canonical cylinder wheel geometry", () => {
+      const wheel = {
+        id: "wheel-std",
+        name: "Standard Rubber Wheel",
+        size: [0.22, 0.07, 0.22] as [number, number, number],
+        geometry: {
+          shape: "cylinder" as const,
+          diameter: 0.22,
+          axialWidth: 0.07,
+          axis: "x" as const,
+        },
+      };
+
+      const res = resolveWheelDimensions(wheel);
+      expect(res.isValid).toBe(true);
+      expect(res.diameterM).toBe(0.22);
+      expect(res.radiusM).toBe(0.11);
+      expect(res.widthM).toBe(0.07);
+      expect(res.source).toBe("canonical-cylinder");
+      expect(res.failureReason).toBeUndefined();
+
+      expect(resolveWheelDiameter(wheel)).toBe(0.22);
+      expect(resolveWheelRadius(wheel)).toBe(0.11);
+    });
+
+    it("prefers explicit wheelDiameter when provided and valid", () => {
+      const customWheel = {
+        id: "wheel-custom",
+        name: "Custom Wheel",
+        size: [0.2, 0.05, 0.2] as [number, number, number],
+        wheelDiameter: 0.3,
+        wheelWidth: 0.08,
+        geometry: {
+          shape: "cylinder" as const,
+          diameter: 0.25,
+          axialWidth: 0.06,
+          axis: "x" as const,
+        },
+      };
+
+      const res = resolveWheelDimensions(customWheel);
+      expect(res.isValid).toBe(true);
+      expect(res.diameterM).toBe(0.3);
+      expect(res.radiusM).toBe(0.15);
+      expect(res.widthM).toBe(0.08);
+      expect(res.source).toBe("explicit-wheel-diameter");
+    });
+
+    it("falls back to legacy part.size[0] when geometry is absent", () => {
+      const legacyWheel = {
+        id: "wheel-legacy",
+        name: "Legacy Wheel",
+        size: [0.24, 0.09, 0.24] as [number, number, number],
+      };
+
+      const res = resolveWheelDimensions(legacyWheel);
+      expect(res.isValid).toBe(true);
+      expect(res.diameterM).toBe(0.24);
+      expect(res.radiusM).toBe(0.12);
+      expect(res.widthM).toBe(0.09);
+      expect(res.source).toBe("legacy-size");
+    });
+
+    it("rejects unsupported geometry shape (e.g. BoxGeometry) for a wheel", () => {
+      const boxWheel = {
+        id: "wheel-box",
+        name: "Wedge/Box Wheel",
+        size: [0.5, 0.2, 0.3] as [number, number, number],
+        geometry: {
+          shape: "box" as const,
+          length: 0.5,
+          height: 0.2,
+          width: 0.3,
+        },
+      };
+
+      const res = resolveWheelDimensions(boxWheel);
+      expect(res.isValid).toBe(false);
+      expect(res.diameterM).toBe(0);
+      expect(res.radiusM).toBe(0);
+      expect(res.source).toBe("none");
+      expect(res.failureReason).toBe("unsupported-shape");
+      expect(res.warning).toContain("unsupported geometry shape \"box\"");
+
+      expect(resolveWheelDiameter(boxWheel)).toBe(0);
+      expect(resolveWheelRadius(boxWheel)).toBe(0);
+    });
+
+    it("rejects invalid cylinder geometry with non-positive or non-finite diameter", () => {
+      const zeroCyl = {
+        id: "wheel-zero",
+        name: "Zero Cylinder",
+        size: [0, 0, 0] as [number, number, number],
+        geometry: {
+          shape: "cylinder" as const,
+          diameter: 0,
+          axialWidth: 0.05,
+          axis: "x" as const,
+        },
+      };
+
+      const res = resolveWheelDimensions(zeroCyl);
+      expect(res.isValid).toBe(false);
+      expect(res.failureReason).toBe("invalid-geometry");
+
+      const nanCyl = {
+        id: "wheel-nan",
+        name: "NaN Cylinder",
+        size: [0.2, 0.05, 0.2] as [number, number, number],
+        geometry: {
+          shape: "cylinder" as const,
+          diameter: NaN,
+          axialWidth: 0.05,
+          axis: "x" as const,
+        },
+      };
+
+      const resNan = resolveWheelDimensions(nanCyl);
+      expect(resNan.isValid).toBe(false);
+      expect(resNan.failureReason).toBe("invalid-geometry");
+    });
+
+    it("rejects missing geometry when size is also absent or invalid", () => {
+      const missingWheel = {
+        id: "wheel-none",
+        name: "Missing Wheel",
+        size: [0, 0, 0] as [number, number, number],
+      };
+
+      const res = resolveWheelDimensions(missingWheel);
+      expect(res.isValid).toBe(false);
+      expect(res.failureReason).toBe("non-positive");
+    });
+
+    it("guarantees mathematical consistency between wheel diameter and wheel radius", () => {
+      const testCases = [
+        { diameter: 0.16, axialWidth: 0.055 },
+        { diameter: 0.22, axialWidth: 0.07 },
+        { diameter: 0.28, axialWidth: 0.1 },
+      ];
+
+      for (const tc of testCases) {
+        const wheel = {
+          size: [tc.diameter, tc.axialWidth, tc.diameter] as [number, number, number],
+          geometry: {
+            shape: "cylinder" as const,
+            diameter: tc.diameter,
+            axialWidth: tc.axialWidth,
+            axis: "x" as const,
+          },
+        };
+        const res = resolveWheelDimensions(wheel);
+        expect(res.isValid).toBe(true);
+        expect(res.radiusM).toBe(res.diameterM / 2);
+        expect(resolveWheelRadius(wheel)).toBe(resolveWheelDiameter(wheel) / 2);
+      }
     });
   });
 });

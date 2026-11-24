@@ -12,6 +12,8 @@ import type {
   RobotConnection,
   RobotPart,
 } from "../types/robot.types";
+import { resolveWheelDimensions } from "./geometryAdapters";
+import { resolveComponentMass } from "./massResolvers";
 import { STANDARD_GRAVITY_MPS2 } from "./robotKinematics";
 
 export type CalculationValidity = "valid" | "marginal" | "invalid" | "unsupported";
@@ -182,17 +184,9 @@ export function calculateGroundDatum(parts: RobotPart[]): {
     let validWheelFound = false;
 
     for (const wheel of wheels) {
-      const radiusM =
-        (wheel.wheelDiameter !== undefined && wheel.wheelDiameter > 0
-          ? wheel.wheelDiameter / 2
-          : undefined) ??
-        (wheel.geometry?.shape === "cylinder" && wheel.geometry.diameter > 0
-          ? wheel.geometry.diameter / 2
-          : undefined) ??
-        (wheel.size && wheel.size[0] > 0 ? wheel.size[0] / 2 : undefined);
-
-      if (radiusM !== undefined && Number.isFinite(radiusM) && radiusM > 0) {
-        const bottomY = wheel.position[1] - radiusM;
+      const wheelRes = resolveWheelDimensions(wheel);
+      if (wheelRes.isValid && wheelRes.radiusM > 0) {
+        const bottomY = wheel.position[1] - wheelRes.radiusM;
         if (bottomY < minWheelBottom) {
           minWheelBottom = bottomY;
           validWheelFound = true;
@@ -276,11 +270,11 @@ export function calculateCenterOfMass(
   let hasInvalidPart = false;
 
   for (const part of parts) {
-    const rawMass = part.massKg ?? part.mass;
-    if (rawMass === undefined || rawMass === null || !Number.isFinite(rawMass) || rawMass <= 0) {
+    const massRes = resolveComponentMass(part);
+    if (!massRes.isValid) {
       hasInvalidPart = true;
       warnings.push(
-        `Part "${part.name}" (${part.id}) has invalid or non-positive mass (${rawMass}); excluded from moments.`
+        `Part "${part.name}" (${part.id}) has invalid or non-positive mass (${massRes.rawValue}); excluded from moments.`
       );
       continue;
     }
@@ -290,10 +284,10 @@ export function calculateCenterOfMass(
     const py = Number.isFinite(pos[1]) ? pos[1] : 0;
     const pz = Number.isFinite(pos[2]) ? pos[2] : 0;
 
-    totalMass += rawMass;
-    momentX += rawMass * px;
-    momentY += rawMass * py;
-    momentZ += rawMass * pz;
+    totalMass += massRes.massKg;
+    momentX += massRes.massKg * px;
+    momentY += massRes.massKg * py;
+    momentZ += massRes.massKg * pz;
   }
 
   if (totalMass <= 0) {

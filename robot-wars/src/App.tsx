@@ -2189,19 +2189,19 @@ function App() {
                   </div>
 
                   <div style={{ marginTop: "6px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
-                    PRINCIPAL MOMENTS OF INERTIA (CoM)
+                    BODY-FRAME MOMENTS OF INERTIA (CoM)
                   </div>
                   <div className="property-row">
                     <span>Ixx (Roll inertia)</span>
-                    <span>{formatInertia(inertiaProfile.principalMoments.ixx)}</span>
+                    <span>{formatInertia(inertiaProfile.bodyMomentsOfInertia.ixx)}</span>
                   </div>
                   <div className="property-row">
                     <span>Iyy (Yaw inertia)</span>
-                    <span>{formatInertia(inertiaProfile.principalMoments.iyy)}</span>
+                    <span>{formatInertia(inertiaProfile.bodyMomentsOfInertia.iyy)}</span>
                   </div>
                   <div className="property-row">
                     <span>Izz (Pitch inertia)</span>
-                    <span>{formatInertia(inertiaProfile.principalMoments.izz)}</span>
+                    <span>{formatInertia(inertiaProfile.bodyMomentsOfInertia.izz)}</span>
                   </div>
 
                   <div style={{ marginTop: "6px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
@@ -2217,7 +2217,7 @@ function App() {
                   </div>
 
                   <div style={{ marginTop: "6px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
-                    INERTIA TENSOR CROSS-TERMS
+                    PRODUCTS OF INERTIA (CoM)
                   </div>
                   <div className="property-row">
                     <span>Ixy · Ixz · Iyz</span>

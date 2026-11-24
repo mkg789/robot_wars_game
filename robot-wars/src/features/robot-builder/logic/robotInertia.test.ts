@@ -175,9 +175,11 @@ describe("robotInertia — Benchmark A: Unit Cube", () => {
     const profile = compileRobotInertiaProfile([cube]);
     expect(profile.validity).toBe("valid");
     expect(profile.totalMassKg).toBe(12.0);
-    expect(profile.principalMoments.ixx).toBeCloseTo(2.0, 6);
-    expect(profile.principalMoments.iyy).toBeCloseTo(2.0, 6);
-    expect(profile.principalMoments.izz).toBeCloseTo(2.0, 6);
+    expect(profile.bodyMomentsOfInertia.ixx).toBeCloseTo(2.0, 6);
+    expect(profile.bodyMomentsOfInertia.iyy).toBeCloseTo(2.0, 6);
+    expect(profile.bodyMomentsOfInertia.izz).toBeCloseTo(2.0, 6);
+    // Backward compatibility alias
+    expect(profile.principalMoments.ixx).toBe(profile.bodyMomentsOfInertia.ixx);
 
     // Radii of gyration: k = sqrt(2 / 12) = sqrt(1/6) ~= 0.408248 m
     expect(profile.radiiOfGyration.kx).toBeCloseTo(Math.sqrt(2 / 12), 6);
@@ -338,9 +340,10 @@ describe("robotInertia — Benchmark E: Two-Body Symmetrical Assembly", () => {
     expect(profile.centerOfMass.y).toBeCloseTo(0, 6);
     expect(profile.centerOfMass.z).toBeCloseTo(0, 6);
 
-    expect(profile.principalMoments.ixx).toBeCloseTo(4.026667, 5);
-    expect(profile.principalMoments.iyy).toBeCloseTo(4.026667, 5);
-    expect(profile.principalMoments.izz).toBeCloseTo(0.026667, 5);
+    expect(profile.bodyMomentsOfInertia.ixx).toBeCloseTo(4.026667, 5);
+    expect(profile.bodyMomentsOfInertia.iyy).toBeCloseTo(4.026667, 5);
+    expect(profile.bodyMomentsOfInertia.izz).toBeCloseTo(0.026667, 5);
+    expect(profile.principalMoments.ixx).toBe(profile.bodyMomentsOfInertia.ixx);
 
     // Cross-terms must be zero
     expect(profile.tensor[0][1]).toBeCloseTo(0, 6);
@@ -392,12 +395,12 @@ describe("robotInertia — Benchmark G: Symmetrical 4-Wheel Robot", () => {
     expect(profile.tensor[2][1]).toBeCloseTo(0, 6);
 
     // Diagonal moments must be strictly positive
-    expect(profile.principalMoments.ixx).toBeGreaterThan(0);
-    expect(profile.principalMoments.iyy).toBeGreaterThan(0);
-    expect(profile.principalMoments.izz).toBeGreaterThan(0);
+    expect(profile.bodyMomentsOfInertia.ixx).toBeGreaterThan(0);
+    expect(profile.bodyMomentsOfInertia.iyy).toBeGreaterThan(0);
+    expect(profile.bodyMomentsOfInertia.izz).toBeGreaterThan(0);
 
     // Yaw inertia (Iyy) for a robot is typically largest because mass is spread along X and Z
-    expect(profile.principalMoments.iyy).toBeGreaterThan(profile.principalMoments.ixx);
+    expect(profile.bodyMomentsOfInertia.iyy).toBeGreaterThan(profile.bodyMomentsOfInertia.ixx);
   });
 });
 
@@ -406,7 +409,7 @@ describe("robotInertia — Benchmark H: Missing & Degenerate Data Handling", () 
     const profile = compileRobotInertiaProfile([]);
     expect(profile.validity).toBe("unsupported");
     expect(profile.totalMassKg).toBe(0);
-    expect(profile.principalMoments.ixx).toBe(0);
+    expect(profile.bodyMomentsOfInertia.ixx).toBe(0);
     expect(profile.warnings.length).toBeGreaterThan(0);
   });
 
@@ -432,7 +435,7 @@ describe("robotInertia — Benchmark H: Missing & Degenerate Data Handling", () 
 
     expect(profile.validity).toBe("marginal");
     expect(profile.componentInertias[0].isApproximated).toBe(true);
-    expect(profile.principalMoments.ixx).toBeGreaterThan(0);
+    expect(profile.bodyMomentsOfInertia.ixx).toBeGreaterThan(0);
     expect(profile.warnings.some((w) => w.includes("lacks canonical geometry"))).toBe(true);
   });
 });
