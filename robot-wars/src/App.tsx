@@ -29,14 +29,17 @@ import {
 } from "./features/robot-builder/logic/viewportFocus";
 import {
   formatAcceleration,
+  formatAngle,
   formatDimensions,
   formatForce,
   formatLength,
   formatMass,
+  formatPercentage,
   formatSpeed,
   formatYawRate,
 } from "./features/robot-builder/logic/formatters";
 import { compileRobotPerformanceProfile } from "./features/robot-builder/logic/robotKinematics";
+import { compileRobotStabilityProfile } from "./features/robot-builder/logic/robotStability";
 
 import "./App.css";
 
@@ -390,10 +393,16 @@ function App() {
     connections,
     foundation
   );
-  const performanceProfile = compileRobotPerformanceProfile(
+  const stabilityProfile = compileRobotStabilityProfile(
     parts,
     connections,
     drivetrain
+  );
+  const performanceProfile = compileRobotPerformanceProfile(
+    parts,
+    connections,
+    drivetrain,
+    stabilityProfile
   );
   const drivetrainSlotCount = getDrivetrainSlotCount(drivetrain.type);
 
@@ -1981,6 +1990,153 @@ function App() {
                     }}
                   >
                     Theoretical performance estimates based on component specifications and zero-slip kinematic assumptions. Not simulated dynamics.
+                  </small>
+                </div>
+
+                <div className="section-label">MASS DISTRIBUTION &amp; STATIC STABILITY</div>
+                <div className="motor-spec-card">
+                  <div className="property-row">
+                    <span>Stability status</span>
+                    <span
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "4px",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        backgroundColor:
+                          stabilityProfile.stabilityStatus === "stable"
+                            ? "rgba(22, 101, 52, 0.25)"
+                            : stabilityProfile.stabilityStatus === "marginal"
+                            ? "rgba(133, 77, 14, 0.25)"
+                            : "rgba(185, 28, 28, 0.25)",
+                        color:
+                          stabilityProfile.stabilityStatus === "stable"
+                            ? "#86efac"
+                            : stabilityProfile.stabilityStatus === "marginal"
+                            ? "#fcd34d"
+                            : "#fca5a5",
+                        border: `1px solid ${
+                          stabilityProfile.stabilityStatus === "stable"
+                            ? "#166534"
+                            : stabilityProfile.stabilityStatus === "marginal"
+                            ? "#854d0e"
+                            : "#7f1d1d"
+                        }`,
+                      }}
+                    >
+                      {stabilityProfile.stabilityStatus}
+                    </span>
+                  </div>
+
+                  <div style={{ marginTop: "6px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
+                    CENTER OF MASS (CoM)
+                  </div>
+                  <div className="property-row">
+                    <span>CoM position (X, Y, Z)</span>
+                    <span>
+                      {formatLength(stabilityProfile.centerOfMass.x, "m", { trimTrailingZeros: true })} ·{" "}
+                      {formatLength(stabilityProfile.centerOfMass.y, "m", { trimTrailingZeros: true })} ·{" "}
+                      {formatLength(stabilityProfile.centerOfMass.z, "m", { trimTrailingZeros: true })}
+                    </span>
+                  </div>
+                  <div className="property-row">
+                    <span>Height above ground</span>
+                    <span>{formatLength(stabilityProfile.centerOfMass.heightAboveGroundM, "m")}</span>
+                  </div>
+
+                  <div style={{ marginTop: "8px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
+                    MASS &amp; WHEEL LOAD DISTRIBUTION
+                  </div>
+                  <div className="property-row">
+                    <span>Total assembly mass</span>
+                    <span>{formatMass(stabilityProfile.centerOfMass.totalMassKg)}</span>
+                  </div>
+                  <div className="property-row">
+                    <span>Driven-wheel load</span>
+                    <span>
+                      {formatPercentage(stabilityProfile.wheelLoadDistribution.drivenLoadFraction, { decimals: 1 })}{" "}
+                      ({formatForce(stabilityProfile.wheelLoadDistribution.drivenNormalForceN)})
+                    </span>
+                  </div>
+                  <div className="property-row">
+                    <span>Driven supported mass</span>
+                    <span>{formatMass(stabilityProfile.wheelLoadDistribution.drivenMassEquivalentKg)}</span>
+                  </div>
+
+                  {stabilityProfile.wheelLoadDistribution.perWheelLoads.length > 0 && (
+                    <div style={{ margin: "6px 0", padding: "6px 8px", background: "rgba(15, 23, 42, 0.4)", borderRadius: "4px" }}>
+                      <div style={{ fontSize: "10px", color: "#64748b", marginBottom: "4px" }}>Per-wheel normal loads:</div>
+                      {stabilityProfile.wheelLoadDistribution.perWheelLoads.map((w) => (
+                        <div key={w.partId} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", padding: "2px 0" }}>
+                          <span>{w.location ? w.location.toUpperCase() : w.name}</span>
+                          <span>
+                            {formatForce(w.normalForceN)} ({formatPercentage(w.loadFraction, { decimals: 0 })})
+                          </span>
+                        </div>
+                      ))}
+                      {stabilityProfile.wheelLoadDistribution.skidNormalForceN !== undefined && (
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", padding: "2px 0", color: "#94a3b8" }}>
+                          <span>PASSIVE SKID</span>
+                          <span>
+                            {formatForce(stabilityProfile.wheelLoadDistribution.skidNormalForceN)} ({formatPercentage(stabilityProfile.wheelLoadDistribution.skidLoadFraction, { decimals: 0 })})
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <div style={{ marginTop: "8px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
+                    STATIC STABILITY &amp; TIPPING LIMITS
+                  </div>
+                  <div className="property-row">
+                    <span>Min stability margin</span>
+                    <span>
+                      {stabilityProfile.minimumStabilityMarginM !== undefined
+                        ? formatLength(stabilityProfile.minimumStabilityMarginM, "m")
+                        : "Unavailable"}
+                    </span>
+                  </div>
+                  <div className="property-row">
+                    <span>Forward tipping angle</span>
+                    <span>
+                      {stabilityProfile.forwardTipAngleDeg !== undefined
+                        ? formatAngle(stabilityProfile.forwardTipAngleDeg)
+                        : "Unavailable"}
+                    </span>
+                  </div>
+                  <div className="property-row">
+                    <span>Backward tipping angle</span>
+                    <span>
+                      {stabilityProfile.backwardTipAngleDeg !== undefined
+                        ? formatAngle(stabilityProfile.backwardTipAngleDeg)
+                        : "Unavailable"}
+                    </span>
+                  </div>
+                  <div className="property-row">
+                    <span>Lateral tipping angle (min)</span>
+                    <span>
+                      {stabilityProfile.minTipAngleDeg !== undefined
+                        ? formatAngle(
+                            Math.min(
+                              stabilityProfile.leftTipAngleDeg ?? Infinity,
+                              stabilityProfile.rightTipAngleDeg ?? Infinity
+                            )
+                          )
+                        : "Unavailable"}
+                    </span>
+                  </div>
+
+                  <small
+                    style={{
+                      display: "block",
+                      padding: "8px 10px",
+                      color: "#64748b",
+                      fontSize: "10px",
+                      lineHeight: "1.4",
+                    }}
+                  >
+                    Analytical static equilibrium estimates (flat ground, rigid body). Component positions represent geometric centroids. Not simulated dynamic rollover.
                   </small>
                 </div>
                 <button

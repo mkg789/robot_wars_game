@@ -299,3 +299,58 @@ export function formatYawRate(
   const formatted = formatNumber(value, decimals, trimTrailingZeros);
   return includeUnit ? `${formatted} ${unit}` : formatted;
 }
+
+export type AngleUnit = "°" | "deg" | "rad";
+
+export type FormatAngleOptions = {
+  decimals?: number;
+  includeUnit?: boolean;
+  trimTrailingZeros?: boolean;
+};
+
+/**
+ * Format planar angle from canonical degrees (°).
+ */
+export function formatAngle(
+  degrees?: number | null,
+  unit: AngleUnit = "°",
+  options: FormatAngleOptions = {}
+): string {
+  if (degrees === undefined || degrees === null || !Number.isFinite(degrees)) return "-";
+  const { includeUnit = true, trimTrailingZeros = false } = options;
+
+  let value = degrees;
+  let defaultDecimals = 1;
+
+  if (unit === "rad") {
+    value = degrees * (Math.PI / 180);
+    defaultDecimals = 3;
+  }
+
+  const decimals = options.decimals ?? defaultDecimals;
+  const formatted = formatNumber(value, decimals, trimTrailingZeros);
+  if (!includeUnit) return formatted;
+  return unit === "°" ? `${formatted}°` : `${formatted} ${unit}`;
+}
+
+export type FormatPercentageOptions = {
+  decimals?: number;
+  includeUnit?: boolean;
+  trimTrailingZeros?: boolean;
+};
+
+/**
+ * Format dimensionless fraction (e.g. 0.25 -> 25%) to percentage string.
+ */
+export function formatPercentage(
+  fraction?: number | null,
+  options: FormatPercentageOptions = {}
+): string {
+  if (fraction === undefined || fraction === null || !Number.isFinite(fraction)) return "-";
+  const { includeUnit = true, trimTrailingZeros = false } = options;
+
+  const value = fraction * 100;
+  const decimals = options.decimals ?? 0;
+  const formatted = formatNumber(value, decimals, trimTrailingZeros);
+  return includeUnit ? `${formatted}%` : formatted;
+}

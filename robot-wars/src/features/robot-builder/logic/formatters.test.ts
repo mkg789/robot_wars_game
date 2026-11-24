@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   formatAcceleration,
+  formatAngle,
   formatDimensions,
   formatForce,
   formatLength,
   formatMass,
+  formatPercentage,
   formatSpeed,
   formatYawRate,
   metersToCm,
@@ -221,5 +223,53 @@ describe("formatYawRate", () => {
 
   it("handles undefined gracefully", () => {
     expect(formatYawRate(undefined)).toBe("-");
+  });
+});
+
+describe("formatAngle", () => {
+  it("formats angle in ° with default 1 decimal", () => {
+    expect(formatAngle(45.67)).toBe("45.7°");
+    expect(formatAngle(90)).toBe("90.0°");
+  });
+
+  it("formats angle in deg with unit suffix", () => {
+    expect(formatAngle(30.25, "deg")).toBe("30.3 deg");
+  });
+
+  it("formats angle in rad with 3 decimals", () => {
+    expect(formatAngle(180, "rad")).toBe("3.142 rad");
+  });
+
+  it("honors custom decimal places and trimming", () => {
+    expect(formatAngle(45.5, "°", { decimals: 0 })).toBe("46°");
+    expect(formatAngle(45.5, "°", { trimTrailingZeros: true })).toBe("45.5°");
+  });
+
+  it("handles undefined, null and non-finite gracefully", () => {
+    expect(formatAngle(undefined)).toBe("-");
+    expect(formatAngle(null)).toBe("-");
+    expect(formatAngle(NaN)).toBe("-");
+  });
+});
+
+describe("formatPercentage", () => {
+  it("formats fraction as percentage with 0 decimals by default", () => {
+    expect(formatPercentage(0.6)).toBe("60%");
+    expect(formatPercentage(0.25)).toBe("25%");
+    expect(formatPercentage(1.0)).toBe("100%");
+  });
+
+  it("honors custom decimal places", () => {
+    expect(formatPercentage(0.625, { decimals: 1 })).toBe("62.5%");
+  });
+
+  it("supports suppressing unit suffix", () => {
+    expect(formatPercentage(0.75, { includeUnit: false })).toBe("75");
+  });
+
+  it("handles undefined, null and non-finite gracefully", () => {
+    expect(formatPercentage(undefined)).toBe("-");
+    expect(formatPercentage(null)).toBe("-");
+    expect(formatPercentage(NaN)).toBe("-");
   });
 });

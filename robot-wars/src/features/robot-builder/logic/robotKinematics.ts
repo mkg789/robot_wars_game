@@ -17,6 +17,7 @@ import {
   resolveMotorEngineeringSpec,
   resolveWheelEngineeringSpec,
 } from "./engineeringAdapters";
+import type { RobotStabilityProfile } from "./robotStability";
 
 export const STANDARD_GRAVITY_MPS2 = 9.80665;
 
@@ -56,6 +57,8 @@ export type RobotPerformanceProfile = {
   maxYawRateDegPerSec?: number;
   /** Dimensionless ratio of effective push force to total robot weight */
   pushToWeightRatio?: number;
+  /** Static stability profile compiled for this robot, if provided */
+  stabilityProfile?: RobotStabilityProfile;
   /** Explicit engineering assumptions and caveats governing the calculation */
   assumptions: string[];
 };
@@ -176,7 +179,8 @@ type DrivenAssemblyData = {
 export function compileRobotPerformanceProfile(
   parts: RobotPart[],
   connections: RobotConnection[],
-  drivetrain?: DrivetrainConfiguration | null
+  drivetrain?: DrivetrainConfiguration | null,
+  stabilityProfile?: RobotStabilityProfile
 ): RobotPerformanceProfile {
   // 1. Total robot assembly mass
   const totalMassKg = parts.reduce(
@@ -191,6 +195,7 @@ export function compileRobotPerformanceProfile(
     return {
       totalMassKg,
       drivenWheelCount: 0,
+      stabilityProfile,
       assumptions: [
         "No powered wheel assemblies assigned to drivetrain.",
       ],
@@ -255,6 +260,7 @@ export function compileRobotPerformanceProfile(
     return {
       totalMassKg,
       drivenWheelCount: 0,
+      stabilityProfile,
       assumptions: [
         "Assigned drivetrain assemblies do not have valid motor-wheel attachments.",
       ],
@@ -327,25 +333,48 @@ export function compileRobotPerformanceProfile(
   }
 
   // 5. Traction-limited push force
-  // Load distribution assumption: 4WD carries ~100% of mass on driven wheels.
-  // 2WD carries ~60% of total mass on driven wheels (remaining 40% on passive skids/casters).
-  const drivenMassFraction =
-    drivetrain.type === "differential-4" || drivenWheelCount >= 4 ? 1.0 : 0.6;
-  const drivenMassKg = totalMassKg * drivenMassFraction;
+  // If a valid stabilityProfile with positive driven normal load is provided,
+  // use geometry-based driven normal force.
+  // Otherwise, explicitly fall back to nominal driven mass fraction (100% for 4WD, 60% for 2WD).
   const avgFrictionCoeff =
     drivenAssemblies.reduce((sum, a) => sum + a.staticFrictionCoeff, 0) /
     drivenWheelCount;
 
   let tractionLimitedPushForceN: number | undefined;
-  if (totalMassKg > 0 && avgFrictionCoeff > 0) {
-    const normalForceN = drivenMassKg * STANDARD_GRAVITY_MPS2;
+
+  if (
+    stabilityProfile &&
+    stabilityProfile.wheelLoadDistribution &&
+    stabilityProfile.wheelLoadDistribution.validity === "valid" &&
+    stabilityProfile.wheelLoadDistribution.drivenNormalForceN > 0
+  ) {
+    const normalForceN = stabilityProfile.wheelLoadDistribution.drivenNormalForceN;
+    const drivenLoadFraction = stabilityProfile.wheelLoadDistribution.drivenLoadFraction;
     tractionLimitedPushForceN = calculateTractionLimitedForce(
       avgFrictionCoeff,
       normalForceN
     );
     assumptions.push(
-      `Traction limit assumes ${(drivenMassFraction * 100).toFixed(0)}% normal mass on driven wheels with average static friction µs = ${avgFrictionCoeff.toFixed(2)} on a clean, dry arena floor.`
+      `Traction limit calculated from geometry-based driven wheel load (${(drivenLoadFraction * 100).toFixed(1)}% normal load, ${normalForceN.toFixed(1)} N) with average static friction µs = ${avgFrictionCoeff.toFixed(2)} on a clean, dry arena floor.`
     );
+  } else if (totalMassKg > 0 && avgFrictionCoeff > 0) {
+    const drivenMassFraction =
+      drivetrain.type === "differential-4" || drivenWheelCount >= 4 ? 1.0 : 0.6;
+    const drivenMassKg = totalMassKg * drivenMassFraction;
+    const normalForceN = drivenMassKg * STANDARD_GRAVITY_MPS2;
+    tractionLimitedPushForceN = calculateTractionLimitedForce(
+      avgFrictionCoeff,
+      normalForceN
+    );
+    if (stabilityProfile && stabilityProfile.wheelLoadDistribution?.validity !== "valid") {
+      assumptions.push(
+        `Traction limit falls back to nominal ${(drivenMassFraction * 100).toFixed(0)}% normal mass on driven wheels (stability calculation is invalid or unstable) with average static friction µs = ${avgFrictionCoeff.toFixed(2)} on a clean, dry arena floor.`
+      );
+    } else {
+      assumptions.push(
+        `Traction limit assumes ${(drivenMassFraction * 100).toFixed(0)}% normal mass on driven wheels with average static friction µs = ${avgFrictionCoeff.toFixed(2)} on a clean, dry arena floor.`
+      );
+    }
   }
 
   // 6. Effective push force and limiter
@@ -425,6 +454,7 @@ export function compileRobotPerformanceProfile(
     maxYawRateRadPerSec,
     maxYawRateDegPerSec,
     pushToWeightRatio,
+    stabilityProfile,
     assumptions,
   };
 }
