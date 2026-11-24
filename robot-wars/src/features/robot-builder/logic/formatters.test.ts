@@ -4,6 +4,7 @@ import {
   formatAngle,
   formatDimensions,
   formatForce,
+  formatInertia,
   formatLength,
   formatMass,
   formatPercentage,
@@ -271,5 +272,27 @@ describe("formatPercentage", () => {
     expect(formatPercentage(undefined)).toBe("-");
     expect(formatPercentage(null)).toBe("-");
     expect(formatPercentage(NaN)).toBe("-");
+  });
+});
+
+describe("formatInertia", () => {
+  it("formats moment of inertia in kg·m² with default 4 decimals", () => {
+    expect(formatInertia(0.00666667)).toBe("0.0067 kg·m²");
+    expect(formatInertia(2.5)).toBe("2.5000 kg·m²");
+  });
+
+  it("honors custom decimal places and trimming", () => {
+    expect(formatInertia(2.5, "kg·m²", { decimals: 2 })).toBe("2.50 kg·m²");
+    expect(formatInertia(2.5, "kg·m²", { trimTrailingZeros: true })).toBe("2.5 kg·m²");
+  });
+
+  it("supports suppressing the unit suffix", () => {
+    expect(formatInertia(1.23456, "kg·m²", { includeUnit: false, decimals: 3 })).toBe("1.235");
+  });
+
+  it("handles undefined, null and non-finite gracefully", () => {
+    expect(formatInertia(undefined)).toBe("-");
+    expect(formatInertia(null)).toBe("-");
+    expect(formatInertia(NaN)).toBe("-");
   });
 });

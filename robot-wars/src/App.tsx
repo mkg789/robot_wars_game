@@ -32,6 +32,7 @@ import {
   formatAngle,
   formatDimensions,
   formatForce,
+  formatInertia,
   formatLength,
   formatMass,
   formatPercentage,
@@ -40,6 +41,7 @@ import {
 } from "./features/robot-builder/logic/formatters";
 import { compileRobotPerformanceProfile } from "./features/robot-builder/logic/robotKinematics";
 import { compileRobotStabilityProfile } from "./features/robot-builder/logic/robotStability";
+import { compileRobotInertiaProfile } from "./features/robot-builder/logic/robotInertia";
 
 import "./App.css";
 
@@ -403,6 +405,11 @@ function App() {
     connections,
     drivetrain,
     stabilityProfile
+  );
+  const inertiaProfile = compileRobotInertiaProfile(
+    parts,
+    drivetrain,
+    stabilityProfile.centerOfMass
   );
   const drivetrainSlotCount = getDrivetrainSlotCount(drivetrain.type);
 
@@ -2137,6 +2144,111 @@ function App() {
                     }}
                   >
                     Analytical static equilibrium estimates (flat ground, rigid body). Component positions represent geometric centroids. Not simulated dynamic rollover.
+                  </small>
+                </div>
+
+                <div className="section-label">ROTATIONAL MASS &amp; INERTIA</div>
+                <div className="motor-spec-card">
+                  <div className="property-row">
+                    <span>Inertia validity</span>
+                    <span
+                      style={{
+                        padding: "2px 8px",
+                        borderRadius: "4px",
+                        fontSize: "11px",
+                        fontWeight: 600,
+                        textTransform: "uppercase",
+                        backgroundColor:
+                          inertiaProfile.validity === "valid"
+                            ? "rgba(22, 101, 52, 0.25)"
+                            : inertiaProfile.validity === "marginal"
+                            ? "rgba(133, 77, 14, 0.25)"
+                            : "rgba(185, 28, 28, 0.25)",
+                        color:
+                          inertiaProfile.validity === "valid"
+                            ? "#86efac"
+                            : inertiaProfile.validity === "marginal"
+                            ? "#fcd34d"
+                            : "#fca5a5",
+                        border: `1px solid ${
+                          inertiaProfile.validity === "valid"
+                            ? "#166534"
+                            : inertiaProfile.validity === "marginal"
+                            ? "#854d0e"
+                            : "#7f1d1d"
+                        }`,
+                      }}
+                    >
+                      {inertiaProfile.validity}
+                    </span>
+                  </div>
+
+                  <div className="property-row">
+                    <span>Total mass used</span>
+                    <span>{formatMass(inertiaProfile.totalMassKg)}</span>
+                  </div>
+
+                  <div style={{ marginTop: "6px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
+                    PRINCIPAL MOMENTS OF INERTIA (CoM)
+                  </div>
+                  <div className="property-row">
+                    <span>Ixx (Roll inertia)</span>
+                    <span>{formatInertia(inertiaProfile.principalMoments.ixx)}</span>
+                  </div>
+                  <div className="property-row">
+                    <span>Iyy (Yaw inertia)</span>
+                    <span>{formatInertia(inertiaProfile.principalMoments.iyy)}</span>
+                  </div>
+                  <div className="property-row">
+                    <span>Izz (Pitch inertia)</span>
+                    <span>{formatInertia(inertiaProfile.principalMoments.izz)}</span>
+                  </div>
+
+                  <div style={{ marginTop: "6px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
+                    RADII OF GYRATION
+                  </div>
+                  <div className="property-row">
+                    <span>kx · ky · kz</span>
+                    <span>
+                      {formatLength(inertiaProfile.radiiOfGyration.kx, "m")} ·{" "}
+                      {formatLength(inertiaProfile.radiiOfGyration.ky, "m")} ·{" "}
+                      {formatLength(inertiaProfile.radiiOfGyration.kz, "m")}
+                    </span>
+                  </div>
+
+                  <div style={{ marginTop: "6px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
+                    INERTIA TENSOR CROSS-TERMS
+                  </div>
+                  <div className="property-row">
+                    <span>Ixy · Ixz · Iyz</span>
+                    <span>
+                      {formatInertia(inertiaProfile.tensor[0][1], "kg·m²", { decimals: 3 })} ·{" "}
+                      {formatInertia(inertiaProfile.tensor[0][2], "kg·m²", { decimals: 3 })} ·{" "}
+                      {formatInertia(inertiaProfile.tensor[1][2], "kg·m²", { decimals: 3 })}
+                    </span>
+                  </div>
+
+                  {inertiaProfile.warnings.length > 0 && (
+                    <div style={{ margin: "6px 0", padding: "6px 8px", background: "rgba(15, 23, 42, 0.4)", borderRadius: "4px" }}>
+                      <div style={{ fontSize: "10px", color: "#fcd34d", marginBottom: "2px" }}>Approximation Notes:</div>
+                      {inertiaProfile.warnings.slice(0, 3).map((w, idx) => (
+                        <div key={idx} style={{ fontSize: "10px", color: "#94a3b8", lineHeight: "1.3" }}>
+                          • {w}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  <small
+                    style={{
+                      display: "block",
+                      padding: "8px 10px",
+                      color: "#64748b",
+                      fontSize: "10px",
+                      lineHeight: "1.4",
+                    }}
+                  >
+                    Analytical rigid-body inertia tensor relative to assembly CoM. Components modeled as uniform homogeneous solids. Not dynamic simulation.
                   </small>
                 </div>
                 <button

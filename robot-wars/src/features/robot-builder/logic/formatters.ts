@@ -354,3 +354,27 @@ export function formatPercentage(
   const formatted = formatNumber(value, decimals, trimTrailingZeros);
   return includeUnit ? `${formatted}%` : formatted;
 }
+
+export type InertiaUnit = "kg·m²" | "kg*m^2";
+
+export type FormatInertiaOptions = {
+  decimals?: number;
+  includeUnit?: boolean;
+  trimTrailingZeros?: boolean;
+};
+
+/**
+ * Format moment of inertia from canonical kilogram-square-meters (kg·m²).
+ */
+export function formatInertia(
+  kgM2?: number | null,
+  unit: InertiaUnit = "kg·m²",
+  options: FormatInertiaOptions = {}
+): string {
+  if (kgM2 === undefined || kgM2 === null || !Number.isFinite(kgM2)) return "-";
+  const { includeUnit = true, trimTrailingZeros = false } = options;
+
+  const decimals = options.decimals ?? 4;
+  const formatted = formatNumber(kgM2, decimals, trimTrailingZeros);
+  return includeUnit ? `${formatted} ${unit}` : formatted;
+}
