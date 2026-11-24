@@ -40,12 +40,17 @@ import type {
   DrivetrainDynamicsDiagnostics,
   DrivetrainInput,
   DynamicsStepResult,
+  GroundSurface,
   MotorSimulationConfig,
   SimulationRobotConfig,
   SimulationState,
   WheelDynamicsDiagnostic,
   WheelSimulationConfig,
 } from "../types/simulation.types";
+import {
+  DEFAULT_GROUND_SURFACE,
+  resolveEffectiveStaticFriction,
+} from "./surfaceModel";
 
 /**
  * Standard gravitational acceleration in m/s².
@@ -54,8 +59,9 @@ export const STANDARD_GRAVITY_MPS2 = 9.80665;
 
 /**
  * Default friction coefficient when unspecified in wheel engineering specs.
+ * Corresponds to standard arena steel floor (μs = 0.85).
  */
-export const DEFAULT_FRICTION_COEFF = 0.85;
+export const DEFAULT_FRICTION_COEFF = DEFAULT_GROUND_SURFACE.staticFrictionCoeff;
 
 /**
  * Result of motor torque calculation.
@@ -300,7 +306,8 @@ export function stepDrivetrainDynamics(
   input: DrivetrainInput,
   dt: number,
   operatingVoltageV?: number,
-  totalCurrentDrawA?: number
+  totalCurrentDrawA?: number,
+  surface?: GroundSurface
 ): DynamicsStepResult {
   // 1. Validation & Safety
   if (!Number.isFinite(dt) || dt <= 0) {
@@ -418,7 +425,10 @@ export function stepDrivetrainDynamics(
 
     // Normal force and traction limit: F_trac_max = μ * F_N
     const normalForceN = resolveWheelNormalForce(wheel, config, totalDrivenWheels);
-    const frictionCoeff = wheel.staticFrictionCoeff ?? DEFAULT_FRICTION_COEFF;
+    const frictionCoeff = resolveEffectiveStaticFriction(
+      wheel.staticFrictionCoeff,
+      surface
+    );
     const tractionLimitN = calculateWheelTractionLimit(frictionCoeff, normalForceN);
 
     // Clamping to Coulomb static traction limit
@@ -519,7 +529,10 @@ export function stepDrivetrainDynamics(
       const effectiveNoLoadOmega = motor.noLoadAngularVelocityRadPerSec * voltageRatio;
 
       const normalForceN = resolveWheelNormalForce(wheel, config, totalDrivenWheels);
-      const frictionCoeff = wheel.staticFrictionCoeff ?? DEFAULT_FRICTION_COEFF;
+      const frictionCoeff = resolveEffectiveStaticFriction(
+        wheel.staticFrictionCoeff,
+        surface
+      );
       const tractionLimitN = calculateWheelTractionLimit(frictionCoeff, normalForceN);
       const maxDriveForceN = effectiveStallTorqueNm / wheel.radiusM;
 

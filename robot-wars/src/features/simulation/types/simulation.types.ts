@@ -10,6 +10,11 @@ import type {
   DrivetrainSide,
   DrivetrainType,
 } from "../../robot-builder/types/robot.types";
+import type { GroundSurface } from "./surface.types";
+
+export * from "./surface.types";
+export * from "./arena.types";
+export * from "./collision.types";
 
 /**
  * Origin classification for an engineering assumption used in simulation.
@@ -346,6 +351,11 @@ export interface SimulationRunnerOptions {
    * Battery simulation options.
    */
   readonly battery?: BatterySimulationOptions;
+  /**
+   * Environmental ground surface for simulation.
+   * Defaults to DEFAULT_GROUND_SURFACE (Standard Arena Steel Floor, μs = 0.85).
+   */
+  readonly surface?: GroundSurface;
 }
 
 /**

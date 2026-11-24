@@ -135,14 +135,15 @@ export function stepSimulationFixed(
   const operatingVoltageV = isCutoff ? 0 : batteryDiag.terminalVoltageV;
   const currentDrawA = isCutoff ? 0 : batteryDiag.currentDrawA;
 
-  // 3. Step mechanical dynamics with voltage-scaled motor capabilities
+  // 3. Step mechanical dynamics with voltage-scaled motor capabilities and surface friction
   const dynamicsRes = stepDrivetrainDynamics(
     config,
     currentState,
     effectiveInput,
     fixedTimestepSeconds,
     operatingVoltageV,
-    currentDrawA
+    currentDrawA,
+    options?.surface
   );
 
   // 4. Attach battery status to the updated state

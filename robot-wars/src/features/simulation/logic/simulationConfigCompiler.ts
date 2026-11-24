@@ -42,6 +42,7 @@ import type {
   SimulationRobotConfig,
   WheelSimulationConfig,
 } from "../types/simulation.types";
+import { DEFAULT_GROUND_SURFACE } from "./surfaceModel";
 
 export interface CompileSimulationConfigOptions {
   readonly parts: readonly RobotPart[];
@@ -418,10 +419,10 @@ export function compileSimulationConfig(
         assumptions.push({
           id: `wheel-${wheel.id}-friction-default`,
           parameter: `wheel.${wheel.id}.staticFrictionCoeff`,
-          value: 0.85,
+          value: DEFAULT_GROUND_SURFACE.staticFrictionCoeff,
           unit: "dimensionless",
           source: "standard-default",
-          description: `Static friction coefficient for "${wheel.name}" was unspecified; simulation assumes nominal rubber-on-steel default (0.85).`,
+          description: `Static friction coefficient for "${wheel.name}" was unspecified; simulation assumes nominal rubber-on-steel default (${DEFAULT_GROUND_SURFACE.staticFrictionCoeff}).`,
         });
       }
 
