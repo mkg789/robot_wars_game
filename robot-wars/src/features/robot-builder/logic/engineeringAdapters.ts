@@ -657,7 +657,10 @@ export function resolveStructuralEngineeringSpec(
   const catItem =
     catalogueStructural ??
     foundationModels.find(
-      (f) => f.id === part.id || f.name.toLowerCase() === part.name.toLowerCase()
+      (f) =>
+        (part.foundationModelId && f.id === part.foundationModelId) ||
+        f.id === part.id ||
+        f.name.toLowerCase() === part.name.toLowerCase()
     );
 
   const runtimeSpec =

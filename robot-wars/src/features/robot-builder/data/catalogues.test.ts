@@ -132,6 +132,37 @@ describe("Catalogue Migration: Canonical Dimensional & Physical Types", () => {
         }
       }
     });
+
+    it("resolves foundation model chassis engineering specification using foundationModelId even when part name is customized", () => {
+      const part: RobotPart = {
+        id: "foundation-chassis",
+        name: "Renamed Battle Bot Frame",
+        type: "Structural Block",
+        foundationModelId: "long-frame",
+        position: [0, 0.16, 0],
+        rotation: [0, 0, 0],
+        size: [2.6, 0.32, 1.25],
+        color: "#475569",
+        mass: 3.12,
+        geometry: {
+          shape: "box",
+          length: 2.6,
+          height: 0.32,
+          width: 1.25,
+        },
+        massKg: 3.12,
+      };
+
+      const resolved = resolveComponentEngineeringSpec(part);
+      expect(resolved).toBeDefined();
+      expect(resolved?.category).toBe("structural");
+      if (resolved?.category === "structural") {
+        expect(resolved.role).toBe("chassis-frame");
+        if (resolved.generalProvenance?.method === "datasheet") {
+          expect(resolved.generalProvenance.source).toBe("catalogue:foundation:long-frame");
+        }
+      }
+    });
   });
 
   describe("motorCatalogue", () => {

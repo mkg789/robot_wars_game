@@ -284,11 +284,11 @@ function syncAssemblyTransforms(
 }
 
 function createFoundationParts(config: FoundationConfig): RobotPart[] {
+  const model = foundationModels.find((m) => m.id === config.modelId);
   const chassisMass = Math.max(0.5, config.length * config.width * config.height * 3);
   const chassis: RobotPart = {
     id: "foundation-chassis",
-    name: foundationModels.find((model) => model.id === config.modelId)?.name ??
-      "Robot Foundation",
+    name: model?.name ?? "Robot Foundation",
     type: "Structural Block",
     position: [0, config.height * 0.5, 0],
     rotation: [0, 0, 0],
@@ -302,6 +302,10 @@ function createFoundationParts(config: FoundationConfig): RobotPart[] {
       width: config.width,
     },
     massKg: chassisMass,
+    foundationModelId: config.modelId,
+    engineeringSpec: model?.engineeringSpec
+      ? structuredClone(model.engineeringSpec)
+      : undefined,
   };
 
   const parts: RobotPart[] = [chassis];
@@ -443,9 +447,14 @@ function createBatteryPart(
     color: definition.color,
     mass: definition.weight,
     parentAttachmentId: connectionId,
-    geometry: definition.geometry,
+    geometry: structuredClone(definition.geometry),
     massKg: definition.massKg,
-    electrical: definition.electrical,
+    electrical: definition.electrical
+      ? structuredClone(definition.electrical)
+      : undefined,
+    engineeringSpec: definition.engineeringSpec
+      ? structuredClone(definition.engineeringSpec)
+      : undefined,
   };
 }
 
@@ -471,9 +480,14 @@ function createControllerPart(
     color: definition.color,
     mass: definition.weight,
     parentAttachmentId: connectionId,
-    geometry: definition.geometry,
+    geometry: structuredClone(definition.geometry),
     massKg: definition.massKg,
-    electrical: definition.electrical,
+    electrical: definition.electrical
+      ? structuredClone(definition.electrical)
+      : undefined,
+    engineeringSpec: definition.engineeringSpec
+      ? structuredClone(definition.engineeringSpec)
+      : undefined,
   };
 }
 
@@ -1169,14 +1183,19 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         type: "Motor",
         motorCatalogueId: definition.id,
         mountingZoneId: zone.id,
-        position: zone.position,
-        rotation: zone.rotation,
-        size: definition.dimensions,
+        position: [...zone.position] as [number, number, number],
+        rotation: [...zone.rotation] as [number, number, number],
+        size: [...definition.dimensions] as [number, number, number],
         color: definition.color,
         mass: definition.weight,
-        geometry: definition.geometry,
+        geometry: structuredClone(definition.geometry),
         massKg: definition.massKg,
-        mechanical: definition.mechanical,
+        mechanical: definition.mechanical
+          ? structuredClone(definition.mechanical)
+          : undefined,
+        engineeringSpec: definition.engineeringSpec
+          ? structuredClone(definition.engineeringSpec)
+          : undefined,
       };
 
       const mechanicalConnection: RobotConnection = {
@@ -1250,14 +1269,19 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
                 ...part,
                 name: definition.name,
                 motorCatalogueId: definition.id,
-                position: zone.position,
-                rotation: zone.rotation,
-                size: definition.dimensions,
+                position: [...zone.position] as [number, number, number],
+                rotation: [...zone.rotation] as [number, number, number],
+                size: [...definition.dimensions] as [number, number, number],
                 color: definition.color,
                 mass: definition.weight,
-                geometry: definition.geometry,
+                geometry: structuredClone(definition.geometry),
                 massKg: definition.massKg,
-                mechanical: definition.mechanical,
+                mechanical: definition.mechanical
+                  ? structuredClone(definition.mechanical)
+                  : undefined,
+                engineeringSpec: definition.engineeringSpec
+                  ? structuredClone(definition.engineeringSpec)
+                  : undefined,
               }
             : part
         );
@@ -2014,6 +2038,9 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
           axis: "x",
         },
         massKg: definition.massKg,
+        engineeringSpec: definition.engineeringSpec
+          ? structuredClone(definition.engineeringSpec)
+          : undefined,
       };
       const nextParts = state.parts
         .filter((part) => !discardedWheelIds.has(part.id))

@@ -30,6 +30,7 @@ export type RobotPart = {
   wheelWidth?: number;
   batteryCatalogueId?: BatteryCatalogueId;
   controllerCatalogueId?: ControllerCatalogueId;
+  foundationModelId?: FoundationModelId;
   geometry?: ComponentGeometry;
   massKg?: number;
   electrical?: ElectricalSpecs;
