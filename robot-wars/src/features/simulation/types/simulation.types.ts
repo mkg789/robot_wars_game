@@ -91,6 +91,11 @@ export interface WheelSimulationConfig {
   readonly staticFrictionCoeff?: number;
   /** Estimated baseline static normal load in Newtons (N) from stability analysis */
   readonly normalLoadN?: number;
+  /** Optional robot-frame planar position (x = forward, z = left) in canonical meters */
+  readonly localPosition?: {
+    readonly x: number;
+    readonly z: number;
+  };
   /** Provenance metadata describing geometric resolution source */
   readonly provenance: ComponentSimulationProvenance;
 }
@@ -275,6 +280,15 @@ export interface WheelDynamicsDiagnostic {
   readonly tractionLimitN: number;
   readonly groundForceN: number;
   readonly isTractionLimited: boolean;
+  /** Resolved ground surface ID sampled at the wheel contact point */
+  readonly surfaceId?: string;
+  /** Effective static friction coefficient applied for this wheel */
+  readonly effectiveFrictionCoeff?: number;
+  /** World X-Z coordinates of the wheel contact point used for surface sampling */
+  readonly contactWorldPosition?: {
+    readonly x: number;
+    readonly z: number;
+  };
 }
 
 /**

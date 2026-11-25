@@ -37,6 +37,7 @@
  */
 
 import type {
+  ArenaConfig,
   DrivetrainDynamicsDiagnostics,
   DrivetrainInput,
   DynamicsStepResult,
@@ -47,6 +48,7 @@ import type {
   WheelDynamicsDiagnostic,
   WheelSimulationConfig,
 } from "../types/simulation.types";
+import { resolveSurfaceAtPoint } from "./arenaModel";
 import {
   DEFAULT_GROUND_SURFACE,
   resolveEffectiveStaticFriction,
@@ -286,6 +288,86 @@ function resolveWheelNormalForce(
 }
 
 /**
+ * Computes the body-fixed (x = forward, z = left) contact point offset for a wheel.
+ * Uses compiled localPosition when available, falling back to trackWidthM / wheelbaseM geometry.
+ */
+export function resolveWheelLocalPosition(
+  config: SimulationRobotConfig,
+  wheel: WheelSimulationConfig
+): { readonly x: number; readonly z: number } {
+  if (
+    wheel.localPosition &&
+    Number.isFinite(wheel.localPosition.x) &&
+    Number.isFinite(wheel.localPosition.z)
+  ) {
+    return wheel.localPosition;
+  }
+
+  const sideCount = config.wheels.filter((w) => w.side === wheel.side).length;
+  const localX =
+    sideCount >= 2 &&
+    config.wheelbaseM !== null &&
+    Number.isFinite(config.wheelbaseM) &&
+    config.wheelbaseM > 0
+      ? wheel.slotIndex === 0
+        ? config.wheelbaseM / 2
+        : -config.wheelbaseM / 2
+      : 0;
+  const localZ =
+    wheel.side === "left" ? config.trackWidthM / 2 : -config.trackWidthM / 2;
+
+  return { x: localX, z: localZ };
+}
+
+/**
+ * Transforms a wheel's body-frame contact point into arena world X-Z coordinates.
+ */
+export function resolveWheelContactWorldPosition(
+  config: SimulationRobotConfig,
+  state: SimulationState,
+  wheel: WheelSimulationConfig
+): { readonly x: number; readonly z: number } {
+  const local = resolveWheelLocalPosition(config, wheel);
+  const cos = Math.cos(state.headingRadians);
+  const sin = Math.sin(state.headingRadians);
+  return {
+    x: state.xMeters + local.x * cos - local.z * sin,
+    z: state.zMeters + local.x * sin + local.z * cos,
+  };
+}
+
+/**
+ * Resolves the effective GroundSurface beneath a specific wheel contact point.
+ * Explicit global surface overrides take precedence; otherwise queries ArenaConfig spatially.
+ */
+export function resolveWheelGroundSurface(
+  config: SimulationRobotConfig,
+  state: SimulationState,
+  wheel: WheelSimulationConfig,
+  explicitSurface?: GroundSurface,
+  arena?: ArenaConfig
+): {
+  readonly surface: GroundSurface;
+  readonly contactWorldPosition: { readonly x: number; readonly z: number };
+} {
+  const contactWorldPosition = resolveWheelContactWorldPosition(config, state, wheel);
+  if (explicitSurface !== undefined) {
+    return { surface: explicitSurface, contactWorldPosition };
+  }
+  if (arena !== undefined) {
+    return {
+      surface: resolveSurfaceAtPoint(
+        arena,
+        contactWorldPosition.x,
+        contactWorldPosition.z
+      ),
+      contactWorldPosition,
+    };
+  }
+  return { surface: DEFAULT_GROUND_SURFACE, contactWorldPosition };
+}
+
+/**
  * Pure, deterministic timestep-based 2D differential-drive dynamics engine.
  *
  * Accepts:
@@ -293,6 +375,9 @@ function resolveWheelNormalForce(
  * - currentState: SimulationState (current pose, velocities, accelerations, wheel speeds)
  * - input: DrivetrainInput (left and right throttle [-1.0, 1.0])
  * - dt: timestep in seconds (dt > 0)
+ * - operatingVoltageV / totalCurrentDrawA: optional coupled battery electrical point
+ * - surface: optional explicit global ground surface override
+ * - arena: optional arena configuration for per-wheel spatial surface zone sampling
  *
  * Returns:
  * - updatedState: SimulationState
@@ -307,7 +392,8 @@ export function stepDrivetrainDynamics(
   dt: number,
   operatingVoltageV?: number,
   totalCurrentDrawA?: number,
-  surface?: GroundSurface
+  surface?: GroundSurface,
+  arena?: ArenaConfig
 ): DynamicsStepResult {
   // 1. Validation & Safety
   if (!Number.isFinite(dt) || dt <= 0) {
@@ -366,8 +452,16 @@ export function stepDrivetrainDynamics(
   let rightTotalGroundForceN = 0;
   let anyTractionLimited = false;
 
-  const leftWheels: { wheel: WheelSimulationConfig; motor: MotorSimulationConfig }[] = [];
-  const rightWheels: { wheel: WheelSimulationConfig; motor: MotorSimulationConfig }[] = [];
+  const leftWheels: {
+    wheel: WheelSimulationConfig;
+    motor: MotorSimulationConfig;
+    tractionLimitN: number;
+  }[] = [];
+  const rightWheels: {
+    wheel: WheelSimulationConfig;
+    motor: MotorSimulationConfig;
+    tractionLimitN: number;
+  }[] = [];
 
   for (const wheel of config.wheels) {
     if (wheel.radiusM <= 0 || !Number.isFinite(wheel.radiusM)) {
@@ -398,12 +492,6 @@ export function stepDrivetrainDynamics(
     const throttle = isLeft ? leftThrottle : rightThrottle;
     const contactSpeed = isLeft ? leftContactSpeed : rightContactSpeed;
 
-    if (isLeft) {
-      leftWheels.push({ wheel, motor });
-    } else {
-      rightWheels.push({ wheel, motor });
-    }
-
     // Operating angular velocity from previous state
     const currentWheelOmega = isLeft
       ? currentState.leftWheelAngularVelocityRadPerSec
@@ -433,13 +521,23 @@ export function stepDrivetrainDynamics(
     // Longitudinal drive force transmitted to the wheel rim: F = τ / r
     const wheelDriveForceN = motorRes.torqueNm / wheel.radiusM;
 
+    // Resolve spatial ground surface at this wheel's world contact point
+    const { surface: resolvedSurface, contactWorldPosition } =
+      resolveWheelGroundSurface(config, currentState, wheel, surface, arena);
+
     // Normal force and traction limit: F_trac_max = μ * F_N
     const normalForceN = resolveWheelNormalForce(wheel, config, totalDrivenWheels);
     const frictionCoeff = resolveEffectiveStaticFriction(
       wheel.staticFrictionCoeff,
-      surface
+      resolvedSurface
     );
     const tractionLimitN = calculateWheelTractionLimit(frictionCoeff, normalForceN);
+
+    if (isLeft) {
+      leftWheels.push({ wheel, motor, tractionLimitN });
+    } else {
+      rightWheels.push({ wheel, motor, tractionLimitN });
+    }
 
     // Clamping to Coulomb static traction limit
     const isTractionLimited = Math.abs(wheelDriveForceN) > tractionLimitN + 1e-6;
@@ -478,6 +576,9 @@ export function stepDrivetrainDynamics(
       tractionLimitN,
       groundForceN,
       isTractionLimited,
+      surfaceId: resolvedSurface.id,
+      effectiveFrictionCoeff: frictionCoeff,
+      contactWorldPosition,
     });
   }
 
@@ -521,7 +622,11 @@ export function stepDrivetrainDynamics(
   const newRightContactSpeed = newVx + halfTrackWidthM * newOmegaYaw;
 
   function computeUpdatedWheelSpeed(
-    wheels: { wheel: WheelSimulationConfig; motor: MotorSimulationConfig }[],
+    wheels: {
+      wheel: WheelSimulationConfig;
+      motor: MotorSimulationConfig;
+      tractionLimitN: number;
+    }[],
     contactSpeed: number,
     throttle: number
   ): { angularVelocity: number; surfaceSpeed: number; slipRatio: number } {
@@ -533,7 +638,7 @@ export function stepDrivetrainDynamics(
     let sumSurface = 0;
     let sumSlip = 0;
 
-    for (const { wheel, motor } of wheels) {
+    for (const { wheel, motor, tractionLimitN } of wheels) {
       const nominalVoltageV =
         motor.nominalVoltageV ?? config.battery?.nominalVoltageV ?? 12.0;
       const voltageRatio =
@@ -545,12 +650,6 @@ export function stepDrivetrainDynamics(
       const effectiveStallTorqueNm = motor.stallTorqueNm * voltageRatio;
       const effectiveNoLoadOmega = motor.noLoadAngularVelocityRadPerSec * voltageRatio;
 
-      const normalForceN = resolveWheelNormalForce(wheel, config, totalDrivenWheels);
-      const frictionCoeff = resolveEffectiveStaticFriction(
-        wheel.staticFrictionCoeff,
-        surface
-      );
-      const tractionLimitN = calculateWheelTractionLimit(frictionCoeff, normalForceN);
       const maxDriveForceN = effectiveStallTorqueNm / wheel.radiusM;
 
       let wheelOmega: number;
@@ -559,15 +658,18 @@ export function stepDrivetrainDynamics(
         // Zero throttle or unpowered: wheels roll synchronously with contact velocity (no slip)
         wheelOmega = contactSpeed / wheel.radiusM;
       } else if (maxDriveForceN > tractionLimitN + 1e-6) {
-        // Traction saturated: wheel spins at equilibrium where motor torque matches traction limit
+        // Traction saturated only while slip equilibrium spins faster in commanded direction than ground contact
         // τ_stall * (u - ω / ω_noLoad) = sign(u) * F_traction_max * r
         const u = Math.max(-1.0, Math.min(1.0, throttle));
         const sign = u >= 0 ? 1 : -1;
         const slipOmega =
           effectiveNoLoadOmega *
           (u - (sign * tractionLimitN * wheel.radiusM) / effectiveStallTorqueNm);
+        const rollingOmega = contactSpeed / wheel.radiusM;
 
-        wheelOmega = slipOmega;
+        const isForwardSlip = u > 0 && slipOmega > rollingOmega;
+        const isReverseSlip = u < 0 && slipOmega < rollingOmega;
+        wheelOmega = isForwardSlip || isReverseSlip ? slipOmega : rollingOmega;
       } else {
         // Wheel rolls with ground contact without gross slip
         wheelOmega = contactSpeed / wheel.radiusM;

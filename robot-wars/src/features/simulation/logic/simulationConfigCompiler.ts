@@ -440,6 +440,10 @@ export function compileSimulationConfig(
         widthM: wheelRes.widthM,
         staticFrictionCoeff,
         normalLoadN: perWheelLoad?.normalForceN,
+        localPosition:
+          Number.isFinite(wheel.position[0]) && Number.isFinite(wheel.position[2])
+            ? { x: wheel.position[0], z: wheel.position[2] }
+            : undefined,
         provenance: {
           source: wheelRes.source,
           verified: wheelRes.source === "canonical-cylinder",
