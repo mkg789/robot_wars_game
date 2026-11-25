@@ -373,7 +373,7 @@ export function testObbAabbCollision(
   const penetrationDepth = Math.max(0, minOverlap);
 
   // Representative contact point:
-  // Find the OBB corner vertex penetrating deepest into the barrier (most negative dot with normal)
+  // Find the OBB corner vertex or edge penetrating deepest into the barrier (most negative dot with normal)
   const vertices = [
     obb.vertices.frontLeft,
     obb.vertices.frontRight,
@@ -381,22 +381,56 @@ export function testObbAabbCollision(
     obb.vertices.rearLeft,
   ];
 
-  let deepestVertex = vertices[0];
   let minProj = Number.POSITIVE_INFINITY;
-
   for (const v of vertices) {
     const proj = v.x * normal.x + v.z * normal.z;
     if (proj < minProj) {
       minProj = proj;
-      deepestVertex = v;
     }
   }
 
-  // Contact point on barrier boundary
-  const contactPoint: Vector2D = {
-    x: deepestVertex.x + (penetrationDepth / 2) * normal.x,
-    z: deepestVertex.z + (penetrationDepth / 2) * normal.z,
-  };
+  // Collect all vertices tied at minimum normal projection (2 vertices for a face-on edge contact)
+  const tiedVertices = vertices.filter(
+    (v) => v.x * normal.x + v.z * normal.z <= minProj + 1e-6
+  );
+
+  let contactPoint: Vector2D;
+  if (tiedVertices.length <= 1) {
+    const deepestVertex = tiedVertices[0] ?? vertices[0];
+    contactPoint = {
+      x: deepestVertex.x + (penetrationDepth / 2) * normal.x,
+      z: deepestVertex.z + (penetrationDepth / 2) * normal.z,
+    };
+  } else {
+    // Tangent unit vector perpendicular to normal
+    const tx = -normal.z;
+    const tz = normal.x;
+
+    let obbTMin = Number.POSITIVE_INFINITY;
+    let obbTMax = Number.NEGATIVE_INFINITY;
+    for (const v of tiedVertices) {
+      const projT = v.x * tx + v.z * tz;
+      if (projT < obbTMin) obbTMin = projT;
+      if (projT > obbTMax) obbTMax = projT;
+    }
+
+    // Clip incident OBB face against barrier tangent span so partial face overlaps preserve torque arm
+    const barrierCenterT = barrier.position.x * tx + barrier.position.z * tz;
+    const barrierHalfT = halfBx * Math.abs(tx) + halfBz * Math.abs(tz);
+    const clipMin = Math.max(obbTMin, barrierCenterT - barrierHalfT);
+    const clipMax = Math.min(obbTMax, barrierCenterT + barrierHalfT);
+
+    const contactT =
+      clipMin <= clipMax + 1e-9
+        ? 0.5 * (clipMin + clipMax)
+        : 0.5 * (obbTMin + obbTMax);
+    const contactN = minProj + penetrationDepth / 2;
+
+    contactPoint = {
+      x: contactN * normal.x + contactT * tx,
+      z: contactN * normal.z + contactT * tz,
+    };
+  }
 
   const classification = barrier.isPerimeter
     ? "perimeter-wall"

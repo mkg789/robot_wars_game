@@ -551,5 +551,36 @@ describe("Phase 4.1.3: Planar Collision Detection Foundation", () => {
       expect(originalEnvelope.vertices).toEqual(cloneEnvelope.vertices);
       expect(originalEnvelope.aabb).toEqual(cloneEnvelope.aabb);
     });
+
+    it("computes centered contactPoint for flat-face wall hit and offset contactPoint for partial face overlap", () => {
+      // Centered flat-face hit against North wall (X = 5.0)
+      const robotFlat = createRobotCollisionEnvelope(
+        { x: 4.6, z: 0, headingRadians: 0 },
+        { lengthM: 1.0, widthM: 0.8 }
+      );
+      const flatRes = testObbAabbCollision(robotFlat, {
+        id: "wall-north",
+        isPerimeter: true,
+        geometryType: "rectangle",
+        position: { x: 5.1, z: 0 },
+        sizeX: 0.2,
+        sizeZ: 10,
+      });
+      expect(flatRes).not.toBeNull();
+      expect(flatRes!.contactPoint.z).toBeCloseTo(0, 6);
+
+      // Partial face overlap against small off-center barrier (barrier Z in [0.2, 0.6], robot Z in [-0.4, 0.4])
+      // Overlap along Z is [0.2, 0.4] -> midpoint Z = 0.3
+      const partialRes = testObbAabbCollision(robotFlat, {
+        id: "partial-block",
+        isPerimeter: false,
+        geometryType: "rectangle",
+        position: { x: 5.5, z: 0.4 },
+        sizeX: 1.0, // X in [5.0, 6.0]
+        sizeZ: 0.4, // Z in [0.2, 0.6]
+      });
+      expect(partialRes).not.toBeNull();
+      expect(partialRes!.contactPoint.z).toBeCloseTo(0.3, 6);
+    });
   });
 });

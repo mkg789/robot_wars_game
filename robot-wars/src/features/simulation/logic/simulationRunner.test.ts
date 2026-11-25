@@ -20,6 +20,8 @@ import type {
   DrivetrainInput,
   SimulationRobotConfig,
 } from "../types/simulation.types";
+import { createRectangularArena } from "./arenaModel";
+import { deriveRobotFootprintDimensions } from "./collisionModel";
 
 function createMock2WDRobotConfig(
   overrides?: Partial<SimulationRobotConfig>
@@ -727,6 +729,205 @@ describe("simulationRunner & batteryDynamics", () => {
       expect(current.simulationState.xMeters).toBeGreaterThan(0);
       expect(Number.isFinite(current.simulationState.xMeters)).toBe(true);
       expect(Number.isFinite(current.simulationState.longitudinalVelocityMps)).toBe(true);
+    });
+  });
+
+  describe("4. Arena Collision Response Integration (Phase 4.1.4)", () => {
+    const config2WD = createMock2WDRobotConfig();
+    const footprint = deriveRobotFootprintDimensions(config2WD);
+    // 4m x 4m arena: bounds X in [-2, 2], Z in [-2, 2]
+    const smallArena = createRectangularArena({
+      id: "arena-4x4",
+      name: "4x4 Test Arena",
+      lengthM: 4.0,
+      widthM: 4.0,
+      wallThicknessM: 0.2,
+    });
+
+    it("preserves identical open-arena behavior when no collision occurs", () => {
+      const runnerNoArena = createInitialRunnerState(config2WD, { x: 0, z: 0, heading: 0 });
+      const runnerWithArena = createInitialRunnerState(config2WD, { x: 0, z: 0, heading: 0 });
+      const input: DrivetrainInput = { leftThrottle: 0.5, rightThrottle: 0.5 };
+
+      const resNoArena = advanceSimulation(config2WD, runnerNoArena, input, 0.1);
+      const resWithArena = advanceSimulation(config2WD, runnerWithArena, input, 0.1, {
+        arena: smallArena,
+      });
+
+      expect(resWithArena.runnerState).toEqual(resNoArena.runnerState);
+      expect(resWithArena.stepDiagnostics.every((d) => !d.collisionResponse?.hasCollisions)).toBe(true);
+    });
+
+    it("prevents robot from passing through North (+X), South (-X), West (+Z), and East (-Z) walls", () => {
+      const halfL = footprint.lengthM / 2;
+      const directions = [
+        { heading: 0, axis: "x" as const, sign: 1, limit: 2.0 - halfL },
+        { heading: Math.PI, axis: "x" as const, sign: -1, limit: -2.0 + halfL },
+        { heading: Math.PI / 2, axis: "z" as const, sign: 1, limit: 2.0 - halfL },
+        { heading: -Math.PI / 2, axis: "z" as const, sign: -1, limit: -2.0 + halfL },
+      ];
+
+      const input: DrivetrainInput = { leftThrottle: 1.0, rightThrottle: 1.0 };
+
+      for (const dir of directions) {
+        let runner = createInitialRunnerState(config2WD, {
+          x: 0,
+          z: 0,
+          heading: dir.heading,
+        });
+
+        // Drive for 2.0 seconds straight into the wall
+        for (let i = 0; i < 20; i++) {
+          const res = advanceSimulation(config2WD, runner, input, 0.1, {
+            arena: smallArena,
+          });
+          runner = res.runnerState;
+        }
+
+        const pos =
+          dir.axis === "x"
+            ? runner.simulationState.xMeters
+            : runner.simulationState.zMeters;
+
+        if (dir.sign > 0) {
+          expect(pos).toBeLessThanOrEqual(dir.limit + 0.005);
+          expect(pos).toBeGreaterThan(dir.limit - 0.05);
+        } else {
+          expect(pos).toBeGreaterThanOrEqual(dir.limit - 0.005);
+          expect(pos).toBeLessThan(dir.limit + 0.05);
+        }
+        // Zero spurious yaw on centered flat-face wall hit
+        expect(Math.abs(runner.simulationState.yawRateRadPerSec)).toBeLessThan(1e-4);
+      }
+    });
+
+    it("collides with interior barriers and alters linear and angular velocities on angled/offset impacts", () => {
+      const arenaWithBarrier = createRectangularArena({
+        id: "arena-barrier",
+        name: "Barrier Test Arena",
+        lengthM: 8.0,
+        widthM: 8.0,
+        wallThicknessM: 0.2,
+        barriers: [
+          {
+            id: "offset-pillar",
+            name: "Offset Pillar",
+            isPerimeter: false,
+            geometryType: "rectangle",
+            // Offset in +Z so only left front corner strikes it when driving along +X from (0, 0)
+            position: { x: 1.4, z: 0.35 },
+            sizeX: 0.6, // X in [1.1, 1.7]
+            sizeZ: 0.4, // Z in [0.15, 0.55]
+          },
+        ],
+      });
+
+      let runner = createInitialRunnerState(config2WD, { x: 0, z: 0, heading: 0 });
+      const input: DrivetrainInput = { leftThrottle: 1.0, rightThrottle: 1.0 };
+
+      let sawCollision = false;
+      let sawYawChange = false;
+      let prevVx = 0;
+      let sawVelocityDrop = false;
+
+      for (let i = 0; i < 20; i++) {
+        const res = advanceSimulation(config2WD, runner, input, 0.05, {
+          arena: arenaWithBarrier,
+          collisionResponse: { restitution: 0.4, contactFrictionCoeff: 0.3 },
+        });
+        for (const step of res.stepDiagnostics) {
+          if (step.collisionResponse?.hasCollisions) {
+            sawCollision = true;
+            if (Math.abs(step.state.yawRateRadPerSec) > 0.05) {
+              sawYawChange = true;
+            }
+            if (step.state.longitudinalVelocityMps < prevVx) {
+              sawVelocityDrop = true;
+            }
+          }
+          prevVx = step.state.longitudinalVelocityMps;
+        }
+        runner = res.runnerState;
+      }
+
+      expect(sawCollision).toBe(true);
+      expect(sawYawChange).toBe(true);
+      expect(sawVelocityDrop).toBe(true);
+    });
+
+    it("handles angled wall slide and corner collision without oscillation or NaN", () => {
+      // Start near corner heading 45 deg toward (+X, +Z) corner
+      let runner = createInitialRunnerState(config2WD, {
+        x: 1.0,
+        z: 1.0,
+        heading: Math.PI / 4,
+      });
+      const input: DrivetrainInput = { leftThrottle: 1.0, rightThrottle: 1.0 };
+
+      for (let i = 0; i < 20; i++) {
+        const res = advanceSimulation(config2WD, runner, input, 0.05, {
+          arena: smallArena,
+          collisionResponse: { restitution: 0.2, contactFrictionCoeff: 0.3 },
+        });
+        runner = res.runnerState;
+        expect(Number.isFinite(runner.simulationState.xMeters)).toBe(true);
+        expect(Number.isFinite(runner.simulationState.zMeters)).toBe(true);
+        expect(Number.isFinite(runner.simulationState.yawRateRadPerSec)).toBe(true);
+      }
+
+      // Robot remains confined inside arena bounds [-2, 2] x [-2, 2]
+      expect(runner.simulationState.xMeters).toBeLessThan(2.0);
+      expect(runner.simulationState.zMeters).toBeLessThan(2.0);
+    });
+
+    it("preserves battery state, drivetrain state, fixed timestep, and determinism across collisions", () => {
+      const input: DrivetrainInput = { leftThrottle: 1.0, rightThrottle: 1.0 };
+      const runnerOptions = {
+        arena: smallArena,
+        collisionResponse: { restitution: 0.3, contactFrictionCoeff: 0.25 },
+      };
+
+      let r1 = createInitialRunnerState(config2WD, { x: 1.2, z: 0, heading: 0 });
+      let r2 = createInitialRunnerState(config2WD, { x: 1.2, z: 0, heading: 0 });
+
+      // Non-exact frame duration (0.01s) to exercise accumulator remainder alongside collision
+      const stepDurations = [0.01, 0.01, 0.05, 0.03, 0.05, 0.05];
+      let latestBattery = 0;
+
+      for (const dtReq of stepDurations) {
+        const res1 = advanceSimulation(config2WD, r1, input, dtReq, runnerOptions);
+        const res2 = advanceSimulation(config2WD, r2, input, dtReq, runnerOptions);
+
+        expect(res1.runnerState).toEqual(res2.runnerState);
+        expect(res1.stepDiagnostics).toEqual(res2.stepDiagnostics);
+        expect(res1.fixedTimestepSeconds).toBe(DEFAULT_FIXED_TIMESTEP_SECONDS);
+
+        for (const step of res1.stepDiagnostics) {
+          expect(step.state.batteryTerminalVoltageV).toBeGreaterThan(0);
+          expect(step.state.totalCurrentDrawA).toBeGreaterThan(0);
+          expect(step.diagnostics.netLongitudinalForceN).toBeGreaterThan(0);
+          latestBattery = step.state.batteryTerminalVoltageV;
+        }
+
+        r1 = res1.runnerState;
+        r2 = res2.runnerState;
+      }
+
+      expect(latestBattery).toBeGreaterThan(0);
+      expect(r1.totalPhysicsSteps).toBe(24); // total 0.20 s / (1/120 s) = 24 steps
+      expect(r1.accumulatorSeconds).toBeCloseTo(0, 6);
+    });
+
+    it("rejects invalid collisionResponse options deterministically even before contact", () => {
+      const runner = createInitialRunnerState(config2WD);
+      const input: DrivetrainInput = { leftThrottle: 0, rightThrottle: 0 };
+
+      expect(() =>
+        advanceSimulation(config2WD, runner, input, 0.05, {
+          arena: smallArena,
+          collisionResponse: { restitution: 1.5 },
+        })
+      ).toThrow(/Invalid CollisionResponseOptions/);
     });
   });
 });

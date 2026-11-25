@@ -35,11 +35,20 @@ import {
   resolveBatteryOpenCircuitVoltage,
 } from "./batteryDynamics";
 import {
+  deriveRobotCollisionEnvelope,
+  detectArenaCollisions,
+} from "./collisionModel";
+import {
+  resolveArenaCollisions,
+  resolveCollisionResponseConfig,
+} from "./collisionResponse";
+import {
   createInitialSimulationState,
   stepDrivetrainDynamics,
 } from "./drivetrainDynamics";
 import type {
   BatteryDynamicsDiagnostics,
+  CollisionResponseResult,
   DrivetrainInput,
   DynamicsStepResult,
   SimulationAdvanceResult,
@@ -117,6 +126,10 @@ export function stepSimulationFixed(
   batteryDiagnostics: BatteryDynamicsDiagnostics;
 } {
   // 1. Calculate battery operating point for this step
+  if (options?.collisionResponse !== undefined) {
+    resolveCollisionResponseConfig(options.collisionResponse);
+  }
+
   const batteryDiag = calculateBatteryOperatingPoint(
     config,
     currentState,
@@ -146,20 +159,57 @@ export function stepSimulationFixed(
     options?.surface
   );
 
-  // 4. Attach battery status to the updated state
-  const updatedState: SimulationState = {
+  // 4. Attach battery status to the post-drivetrain state
+  const postDriveState: SimulationState = {
     ...dynamicsRes.state,
     batteryTerminalVoltageV: operatingVoltageV,
     totalCurrentDrawA: currentDrawA,
     isBatteryCutoff: isCutoff,
   };
 
+  // 5. Optional planar collision detection & contact resolution against arena geometry
+  let updatedState = postDriveState;
+  let collisionResponse: CollisionResponseResult | undefined;
+
+  if (options?.arena) {
+    const envelope = deriveRobotCollisionEnvelope(
+      config,
+      {
+        x: postDriveState.xMeters,
+        z: postDriveState.zMeters,
+        headingRadians: postDriveState.headingRadians,
+      },
+      options.robotFootprint
+    );
+
+    const collisionQuery = detectArenaCollisions(
+      envelope,
+      options.arena,
+      options.collisionDetection
+    );
+
+    collisionResponse = resolveArenaCollisions(
+      config,
+      postDriveState,
+      collisionQuery.collisions,
+      options.collisionResponse
+    );
+    updatedState = collisionResponse.state;
+  }
+
   return {
     state: updatedState,
-    diagnostics: {
-      state: updatedState,
-      diagnostics: dynamicsRes.diagnostics,
-    },
+    diagnostics:
+      collisionResponse !== undefined
+        ? {
+            state: updatedState,
+            diagnostics: dynamicsRes.diagnostics,
+            collisionResponse,
+          }
+        : {
+            state: updatedState,
+            diagnostics: dynamicsRes.diagnostics,
+          },
     isCutoff,
     batteryDiagnostics: batteryDiag,
   };
@@ -210,6 +260,18 @@ export function advanceSimulation(
 
   if (!currentRunnerState || !currentRunnerState.simulationState) {
     throw new Error("Invalid currentRunnerState: runnerState must contain a valid simulationState.");
+  }
+  if (
+    !Number.isFinite(currentRunnerState.accumulatorSeconds) ||
+    currentRunnerState.accumulatorSeconds < 0
+  ) {
+    throw new Error(
+      `Invalid currentRunnerState: accumulatorSeconds must be a non-negative finite number, received: ${currentRunnerState.accumulatorSeconds}`
+    );
+  }
+
+  if (options?.collisionResponse !== undefined) {
+    resolveCollisionResponseConfig(options.collisionResponse);
   }
 
   // 2. Fast-path: Zero duration request

@@ -316,7 +316,17 @@ export function stepDrivetrainDynamics(
   if (!input || !Number.isFinite(input.leftThrottle) || !Number.isFinite(input.rightThrottle)) {
     throw new Error("Invalid drivetrain input: leftThrottle and rightThrottle must be finite numbers.");
   }
-  if (!currentState || !Number.isFinite(currentState.xMeters) || !Number.isFinite(currentState.zMeters)) {
+  if (
+    !currentState ||
+    !Number.isFinite(currentState.xMeters) ||
+    !Number.isFinite(currentState.zMeters) ||
+    !Number.isFinite(currentState.headingRadians) ||
+    !Number.isFinite(currentState.longitudinalVelocityMps) ||
+    !Number.isFinite(currentState.lateralVelocityMps) ||
+    !Number.isFinite(currentState.yawRateRadPerSec) ||
+    !Number.isFinite(currentState.leftWheelAngularVelocityRadPerSec) ||
+    !Number.isFinite(currentState.rightWheelAngularVelocityRadPerSec)
+  ) {
     throw new Error("Invalid currentState: state must contain finite numbers.");
   }
   if (!config || !Number.isFinite(config.totalMassKg) || config.totalMassKg <= 0) {
@@ -493,10 +503,17 @@ export function stepDrivetrainDynamics(
   // Update heading using new angular velocity
   const newHeading = normalizeAngle(currentState.headingRadians + newOmegaYaw * dt);
 
+  // Preserve body-fixed lateral velocity (e.g., induced by planar collision impulses)
+  const newVz = currentState.lateralVelocityMps;
+
   // Update arena world positions using new velocities and updated heading
   // Arena world frame: +X = forward, +Z = left
-  const newX = currentState.xMeters + newVx * Math.cos(newHeading) * dt;
-  const newZ = currentState.zMeters + newVx * Math.sin(newHeading) * dt;
+  const cosHeading = Math.cos(newHeading);
+  const sinHeading = Math.sin(newHeading);
+  const newX =
+    currentState.xMeters + (newVx * cosHeading - newVz * sinHeading) * dt;
+  const newZ =
+    currentState.zMeters + (newVx * sinHeading + newVz * cosHeading) * dt;
 
   // 5. Update Wheel States
   // Kinematic contact speeds after acceleration
@@ -584,7 +601,7 @@ export function stepDrivetrainDynamics(
     zMeters: newZ,
     headingRadians: newHeading,
     longitudinalVelocityMps: newVx,
-    lateralVelocityMps: 0,
+    lateralVelocityMps: newVz,
     yawRateRadPerSec: newOmegaYaw,
     longitudinalAccelerationMps2,
     angularAccelerationRadPerSec2,

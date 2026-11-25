@@ -10,11 +10,18 @@ import type {
   DrivetrainSide,
   DrivetrainType,
 } from "../../robot-builder/types/robot.types";
+import type { ArenaConfig } from "./arena.types";
+import type { CollisionDetectionOptions } from "./collision.types";
+import type {
+  CollisionResponseOptions,
+  CollisionResponseResult,
+} from "./collisionResponse.types";
 import type { GroundSurface } from "./surface.types";
 
 export * from "./surface.types";
 export * from "./arena.types";
 export * from "./collision.types";
+export * from "./collisionResponse.types";
 
 /**
  * Origin classification for an engineering assumption used in simulation.
@@ -293,6 +300,7 @@ export interface DrivetrainDynamicsDiagnostics {
 export interface DynamicsStepResult {
   readonly state: SimulationState;
   readonly diagnostics: DrivetrainDynamicsDiagnostics;
+  readonly collisionResponse?: CollisionResponseResult;
 }
 
 /**
@@ -356,6 +364,26 @@ export interface SimulationRunnerOptions {
    * Defaults to DEFAULT_GROUND_SURFACE (Standard Arena Steel Floor, μs = 0.85).
    */
   readonly surface?: GroundSurface;
+  /**
+   * Optional arena geometry for planar collision detection and contact resolution.
+   * When omitted, collision detection and response are skipped.
+   */
+  readonly arena?: ArenaConfig;
+  /**
+   * Optional robot OBB collision footprint dimension overrides in meters.
+   */
+  readonly robotFootprint?: {
+    readonly lengthM?: number;
+    readonly widthM?: number;
+  };
+  /**
+   * Optional collision detection query configuration.
+   */
+  readonly collisionDetection?: CollisionDetectionOptions;
+  /**
+   * Optional planar collision response and contact resolution configuration.
+   */
+  readonly collisionResponse?: CollisionResponseOptions;
 }
 
 /**
