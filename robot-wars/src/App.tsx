@@ -4,7 +4,10 @@ import { useRobotStore } from "./store/robotStore";
 
 import RobotScene from "./components/viewport/RobotScene";
 import SimulationView from "./components/simulation/SimulationView";
+import StructureStagePanel from "./components/workshop/StructureStagePanel";
+import PartInspectorPanel from "./components/workshop/PartInspectorPanel";
 import type { MountCandidate } from "./features/robot-builder/logic/mounting";
+import { validateRobotAssembly } from "./features/robot-builder/logic/assemblyValidation";
 import { foundationModels } from "./features/robot-builder/data/foundationModels";
 import { motorCatalogue } from "./features/robot-builder/data/motorCatalogue";
 import { wheelCatalogue } from "./features/robot-builder/data/wheelCatalogue";
@@ -141,12 +144,21 @@ function App() {
   const [confirmAutoMap, setConfirmAutoMap] = useState(false);
   const [pendingDrivetrainType, setPendingDrivetrainType] =
     useState<DrivetrainType | null>(null);
+  const [rightPanelTab, setRightPanelTab] = useState<
+    "stage" | "inspector" | "validation"
+  >("stage");
   const parts = useRobotStore((state) => state.parts);
   const hiddenPartIds = useRobotStore((state) => state.hiddenPartIds);
   const selectedId = useRobotStore((state) => state.selectedId);
   const transformMode = useRobotStore((state) => state.transformMode);
+  const historyPast = useRobotStore((state) => state.historyPast);
+  const historyFuture = useRobotStore((state) => state.historyFuture);
 
   const setSelectedId = useRobotStore((state) => state.setSelectedId);
+  const setTransformMode = useRobotStore((state) => state.setTransformMode);
+  const undo = useRobotStore((state) => state.undo);
+  const redo = useRobotStore((state) => state.redo);
+  const deletePartById = useRobotStore((state) => state.deletePartById);
   const togglePartVisibility = useRobotStore(
     (state) => state.togglePartVisibility
   );
@@ -236,6 +248,25 @@ function App() {
   const assignWheel = useRobotStore((state) => state.assignWheel);
   const removeWheel = useRobotStore((state) => state.removeWheel);
   const finishBuild = useRobotStore((state) => state.finishBuild);
+  const selectedStructuralCatalogueId = useRobotStore(
+    (state) => state.selectedStructuralCatalogueId
+  );
+  const selectStructuralCatalogueItem = useRobotStore(
+    (state) => state.selectStructuralCatalogueItem
+  );
+  const addStructuralPart = useRobotStore((state) => state.addStructuralPart);
+  const replaceStructuralPart = useRobotStore(
+    (state) => state.replaceStructuralPart
+  );
+  const duplicatePart = useRobotStore((state) => state.duplicatePart);
+  const attachPart = useRobotStore((state) => state.attachPart);
+  const detachPart = useRobotStore((state) => state.detachPart);
+  const previewPartTransform = useRobotStore(
+    (state) => state.previewPartTransform
+  );
+  const updatePartTransform = useRobotStore(
+    (state) => state.updatePartTransform
+  );
 
   const hiddenPartIdSet = new Set(hiddenPartIds);
   const visibleParts = parts.filter((part) => !hiddenPartIdSet.has(part.id));
@@ -274,13 +305,16 @@ function App() {
     const hasChildren = children.length > 0;
     const expanded = hasChildren && !collapsedPartIds.has(part.id);
     const visible = !hiddenPartIdSet.has(part.id);
+    const partDiags = validationReport.diagnosticsByPartId[part.id] ?? [];
+    const hasError = partDiags.some((d) => d.severity === "error");
+    const hasWarning = partDiags.some((d) => d.severity === "warning");
 
     return (
       <div key={part.id}>
         <div
           className={`tree-item ${
             selectedId === part.id ? "selected" : ""
-          }`}
+          } ${hasError ? "has-error" : hasWarning ? "has-warning" : ""}`}
           style={{ paddingLeft: `${10 + depth * 14}px` }}
         >
           {hasChildren ? (
@@ -308,11 +342,24 @@ function App() {
             className="tree-select"
             aria-label={`Select ${part.name}`}
             aria-pressed={selectedId === part.id}
-            onClick={() => setSelectedId(part.id)}
+            onClick={() => {
+              setSelectedId(part.id);
+              if (part.id !== "foundation-chassis") {
+                setRightPanelTab("inspector");
+              }
+            }}
           >
             <span className="tree-icon" aria-hidden="true">▣</span>
             <span className="tree-label">{part.name}</span>
           </button>
+          {(hasError || hasWarning) && (
+            <span
+              className={`tree-diag-badge ${hasError ? "error" : "warning"}`}
+              title={partDiags.map((d) => d.message).join("\n")}
+            >
+              {hasError ? "✕" : "!"}
+            </span>
+          )}
           <button
             type="button"
             className={`tree-visibility ${visible ? "visible" : "hidden"}`}
@@ -323,6 +370,17 @@ function App() {
           >
             <VisibilityIcon visible={visible} />
           </button>
+          {part.id !== "foundation-chassis" && (
+            <button
+              type="button"
+              className="tree-remove-btn"
+              aria-label={`Remove ${part.name}`}
+              title={`Remove ${part.name}`}
+              onClick={() => deletePartById(part.id)}
+            >
+              ×
+            </button>
+          )}
         </div>
         {expanded &&
           children.map((child) => renderHierarchy(child.id, depth + 1))}
@@ -415,6 +473,15 @@ function App() {
     drivetrain,
     stabilityProfile.centerOfMass
   );
+  const validationReport = validateRobotAssembly({
+    parts,
+    connections,
+    foundation,
+    drivetrain,
+  });
+  const selectedPartDiagnostics = selectedPart
+    ? (validationReport.diagnosticsByPartId[selectedPart.id] ?? [])
+    : [];
   const drivetrainSlotCount = getDrivetrainSlotCount(drivetrain.type);
 
   if (workspaceMode === "simulation") {
@@ -522,8 +589,50 @@ function App() {
         </div>
 
         <div className="topbar-actions">
-          <button className="top-button">Save</button>
-          <button className="top-button">Export</button>
+          <button
+            type="button"
+            className="top-button"
+            disabled={historyPast.length === 0}
+            onClick={() => undo()}
+            title="Undo last assembly edit"
+          >
+            ↶ Undo
+          </button>
+          <button
+            type="button"
+            className="top-button"
+            disabled={historyFuture.length === 0}
+            onClick={() => redo()}
+            title="Redo undone assembly edit"
+          >
+            ↷ Redo
+          </button>
+          <button
+            type="button"
+            className={`top-button workshop-health-btn ${
+              validationReport.errors.length > 0
+                ? "error"
+                : validationReport.warnings.length > 0
+                  ? "warning"
+                  : "valid"
+            }`}
+            onClick={() => setRightPanelTab("validation")}
+            title="Inspect placement and assembly diagnostics"
+          >
+            {validationReport.errors.length > 0
+              ? `✕ ${validationReport.errors.length} Errors`
+              : validationReport.warnings.length > 0
+                ? `⚠ ${validationReport.warnings.length} Warnings`
+                : "✓ Valid"}
+          </button>
+          <button
+            type="button"
+            className="top-button"
+            onClick={startNewBuild}
+            title="Reset robot build and clear edit history"
+          >
+            Reset
+          </button>
           <button
             type="button"
             className="primary-button"
@@ -541,71 +650,50 @@ function App() {
         <aside className="left-panel">
           <div className="panel-content">
             <div className="builder-steps">
-              <div className={`builder-step ${
-                stage === "foundation" ? "active" : "complete"
-              }`}>
-                <span>1</span>
-                Foundation
-              </div>
-              <div className={`builder-step ${
-                stage === "battery"
-                  ? "active"
-                  : stage === "controller" ||
-                      stage === "motors" ||
-                      stage === "wheels" ||
-                      stage === "drivetrain" ||
-                      stage === "completed"
-                    ? "complete"
-                    : ""
-              }`}>
-                <span>2</span>
-                Battery
-              </div>
-              <div className={`builder-step ${
-                stage === "controller"
-                  ? "active"
-                  : stage === "motors" ||
-                      stage === "wheels" ||
-                      stage === "drivetrain" ||
-                      stage === "completed"
-                    ? "complete"
-                    : ""
-              }`}>
-                <span>3</span>
-                Controller
-              </div>
-              <div className={`builder-step ${
-                stage === "motors"
-                  ? "active"
-                  : stage === "wheels" ||
-                      stage === "drivetrain" ||
-                      stage === "completed"
-                    ? "complete"
-                    : ""
-              }`}>
-                <span>4</span>
-                Motors
-              </div>
-              <div className={`builder-step ${
-                stage === "wheels"
-                  ? "active"
-                  : stage === "drivetrain" || stage === "completed"
-                    ? "complete"
-                    : ""
-              }`}>
-                <span>5</span>
-                Wheels
-              </div>
-              <div className={`builder-step ${
-                stage === "drivetrain"
-                  ? "active"
-                  : stage === "completed"
-                    ? "complete"
-                    : ""
-              }`}>
-                <span>6</span>
-                Drivetrain
-              </div>
+              {(
+                [
+                  { id: "foundation", label: "Foundation", num: 1 },
+                  { id: "structure", label: "Structure", num: 2 },
+                  { id: "battery", label: "Battery", num: 3 },
+                  { id: "controller", label: "Controller", num: 4 },
+                  { id: "motors", label: "Motors", num: 5 },
+                  { id: "wheels", label: "Wheels", num: 6 },
+                  { id: "drivetrain", label: "Drivetrain", num: 7 },
+                ] as const
+              ).map((step) => {
+                const order = [
+                  "foundation",
+                  "structure",
+                  "battery",
+                  "controller",
+                  "motors",
+                  "wheels",
+                  "drivetrain",
+                  "completed",
+                ];
+                const currentIdx = order.indexOf(stage);
+                const stepIdx = order.indexOf(step.id);
+                const isComplete = stepIdx < currentIdx;
+                const isClickable =
+                  step.id === "foundation" || Boolean(foundation?.confirmed);
+                return (
+                  <button
+                    key={step.id}
+                    type="button"
+                    disabled={!isClickable}
+                    className={`builder-step ${stage === step.id ? "active" : isComplete ? "complete" : ""}`}
+                    onClick={() => {
+                      if (isClickable) {
+                        setStage(step.id);
+                        setRightPanelTab("stage");
+                      }
+                    }}
+                  >
+                    <span>{step.num}</span>
+                    {step.label}
+                  </button>
+                );
+              })}
             </div>
 
             {stage === "foundation" && foundation ? (
@@ -631,6 +719,19 @@ function App() {
                   ))}
                 </div>
               </>
+            ) : stage === "structure" ? (
+              <StructureStagePanel
+                parts={parts}
+                foundation={foundation}
+                selectedPart={selectedPart}
+                selectedCatalogueId={selectedStructuralCatalogueId}
+                onSelectCatalogueItem={selectStructuralCatalogueItem}
+                onAddStructuralPart={addStructuralPart}
+                onReplaceStructuralPart={replaceStructuralPart}
+                onDuplicatePart={duplicatePart}
+                onContinueToBattery={() => setStage("battery")}
+                onBackToFoundation={() => setStage("foundation")}
+              />
             ) : stage === "battery" ? (
               <>
                 <div className="section-label">BATTERY CATALOGUE</div>
@@ -846,6 +947,12 @@ function App() {
                 </button>
                 <button
                   className="stage-back-button"
+                  onClick={() => setStage("structure")}
+                >
+                  ← Edit Structure
+                </button>
+                <button
+                  className="stage-back-button"
                   onClick={() => setStage("battery")}
                 >
                   ← Edit Battery
@@ -872,12 +979,12 @@ function App() {
             )}
           </div>
           <div className="panel-heading">
-            ROBOT STRUCTURE
+            ROBOT STRUCTURE ({parts.length})
           </div>
 
           <div className="panel-content">
             <div className="section-label">
-              ASSEMBLY
+              ASSEMBLY HIERARCHY
             </div>
 
             {independentParts.map((part) => renderHierarchy(part.id))}
@@ -980,6 +1087,27 @@ function App() {
               )}
           </div>
 
+          <div className="view-controls workshop-gizmo-bar" role="group" aria-label="Transform gizmo mode">
+            {(
+              [
+                { id: "select", label: "Select" },
+                { id: "translate", label: "Move" },
+                { id: "rotate", label: "Rotate" },
+                { id: "scale", label: "Scale" },
+              ] as const
+            ).map((mode) => (
+              <button
+                key={mode.id}
+                type="button"
+                className={transformMode === mode.id ? "tool-active" : ""}
+                onClick={() => setTransformMode(mode.id)}
+                title={`Set viewport gizmo to ${mode.label}`}
+              >
+                {mode.label}
+              </button>
+            ))}
+          </div>
+
           {!foundation && (
             <div className="foundation-start">
               <span className="foundation-start-icon">▣</span>
@@ -1018,11 +1146,136 @@ function App() {
         {/* RIGHT PANEL */}
         <aside className="right-panel">
           <div className="panel-heading">
-            PROPERTIES
+            PROPERTIES &amp; DIAGNOSTICS
+          </div>
+
+          <div className="workshop-right-tabs" role="tablist" aria-label="Right inspector tabs">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rightPanelTab === "stage"}
+              className={`sim-tab-btn ${rightPanelTab === "stage" ? "active" : ""}`}
+              onClick={() => setRightPanelTab("stage")}
+            >
+              Build Step
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rightPanelTab === "inspector"}
+              className={`sim-tab-btn ${rightPanelTab === "inspector" ? "active" : ""}`}
+              onClick={() => setRightPanelTab("inspector")}
+            >
+              Part
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={rightPanelTab === "validation"}
+              className={`sim-tab-btn ${rightPanelTab === "validation" ? "active" : ""}`}
+              onClick={() => setRightPanelTab("validation")}
+            >
+              Validate ({validationReport.diagnostics.length})
+            </button>
           </div>
 
           <div className="panel-content">
-            {stage === "drivetrain" && foundation ? (
+            {rightPanelTab === "inspector" ? (
+              selectedPart ? (
+                <PartInspectorPanel
+                  key={`${selectedPart.id}-${selectedPart.position.join(",")}-${selectedPart.rotation.join(",")}-${selectedPart.size.join(",")}`}
+                  part={selectedPart}
+                  parts={parts}
+                  connections={connections}
+                  foundation={foundation}
+                  diagnostics={selectedPartDiagnostics}
+                  onPreviewTransform={previewPartTransform}
+                  onApplyTransform={updatePartTransform}
+                  onReplaceStructuralPart={replaceStructuralPart}
+                  onDuplicatePart={duplicatePart}
+                  onAttachPart={attachPart}
+                  onDetachPart={detachPart}
+                  onDeletePart={deletePartById}
+                />
+              ) : (
+                <div className="placeholder-content">
+                  <div className="placeholder-icon">⊞</div>
+                  <p>Select any installed component in the Assembly Tree or 3D Viewport to adjust Position, Rotation, Dimensions, or Mounting.</p>
+                </div>
+              )
+            ) : rightPanelTab === "validation" ? (
+              <div className="workshop-validation-panel">
+                <div className="section-label">ASSEMBLY VALIDATION</div>
+                <div
+                  className={`drivetrain-status ${
+                    validationReport.errors.length === 0
+                      ? validationReport.warnings.length === 0
+                        ? "valid"
+                        : "warning"
+                      : "invalid"
+                  }`}
+                  role="status"
+                >
+                  {validationReport.errors.length > 0
+                    ? `${validationReport.errors.length} error(s), ${validationReport.warnings.length} warning(s)`
+                    : validationReport.warnings.length > 0
+                      ? `${validationReport.warnings.length} warning(s), ${validationReport.infos.length} notice(s)`
+                      : "No placement or attachment issues detected"}
+                </div>
+
+                {validationReport.diagnostics.length === 0 ? (
+                  <p className="builder-intro">
+                    All installed components pass bounds, dimension, attachment, and simplified overlap checks.
+                  </p>
+                ) : (
+                  <div className="workshop-diag-list">
+                    {validationReport.diagnostics.map((diag) => (
+                      <button
+                        key={diag.id}
+                        type="button"
+                        className={`workshop-diag-item ${diag.severity}`}
+                        onClick={() => {
+                          if (diag.partId) {
+                            setSelectedId(diag.partId);
+                            setRightPanelTab("inspector");
+                          }
+                        }}
+                      >
+                        <strong>{diag.severity.toUpperCase()}</strong>
+                        <span>{diag.message}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+
+                <p className="builder-intro" style={{ marginTop: 12 }}>
+                  Simplified AABB overlap detection ignores direct parent-child attachments and symmetric motor zones. Unknown interface metadata is flagged explicitly as unverified.
+                </p>
+              </div>
+            ) : stage === "structure" && foundation ? (
+              <>
+                <div className="section-label">STRUCTURAL ASSEMBLY TIPS</div>
+                <p className="builder-intro">
+                  Add brackets, rails, plates, crossbars, beams, standoffs, spacers, or bumpers on the left, then select any component to fine-tune transforms or attach children.
+                </p>
+                {selectedPart && (
+                  <button
+                    type="button"
+                    className="primary-button foundation-confirm"
+                    onClick={() => setRightPanelTab("inspector")}
+                  >
+                    Edit Selected: {selectedPart.name}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => setStage("battery")}
+                >
+                  Continue to Battery
+                </button>
+              </>
+            ) : stage === "drivetrain" && foundation ? (
               <>
                 <div className="section-label">DRIVETRAIN TYPE</div>
                 <label className="drivetrain-type-control">

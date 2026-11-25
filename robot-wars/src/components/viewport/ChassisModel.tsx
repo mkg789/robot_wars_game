@@ -201,8 +201,8 @@ export function ChassisModel({
       >
         <meshStandardMaterial
           color={color}
-          metalness={0.72}
-          roughness={0.34}
+          metalness={0.76}
+          roughness={0.31}
           emissive={selected ? "#754b1b" : "#000000"}
           emissiveIntensity={selected ? 0.12 : 0}
           {...materialProps}
@@ -430,6 +430,29 @@ export function TopPlateModel({
           />
         </RoundedBox>
       ))}
+
+      {/* Corner mounting standoffs anchoring top deck to lower foundation chassis */}
+      {[-1, 1].flatMap((xSide) =>
+        [-1, 1].map((zSide) => (
+          <mesh
+            key={`deck-standoff-${xSide}-${zSide}`}
+            position={[
+              xSide * length * 0.42,
+              -thickness * 0.5 - 0.015,
+              zSide * width * 0.4,
+            ]}
+            castShadow
+          >
+            <cylinderGeometry args={[0.022, 0.026, 0.032, 16]} />
+            <meshStandardMaterial
+              color="#94a3b8"
+              metalness={0.86}
+              roughness={0.28}
+              {...materialProps}
+            />
+          </mesh>
+        ))
+      )}
     </group>
   );
 }

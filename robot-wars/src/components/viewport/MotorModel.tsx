@@ -1,4 +1,5 @@
 
+import { useMemo } from "react";
 import { RoundedBox } from "@react-three/drei";
 import { CatmullRomCurve3, Vector3 } from "three";
 
@@ -26,11 +27,12 @@ export default function MotorModel({
 
   const motorLength = length * 0.43;
   const gearboxLength = length * 0.37;
-  const shaftLength = length * 0.48;
+  // Extended output shaft so it cleanly engages the wheel hub at 1.05 * length
+  const shaftLength = length * 0.58;
 
   const metallic = "#b9c2ca";
-  const darkMetal = "#78838c";
-  const yellow = housingColor || "#e6d28c";
+  const darkMetal = "#6b7783";
+  const yellow = housingColor || "#d4a64a";
 
   const materialProps = {
     transparent: preview,
@@ -40,26 +42,34 @@ export default function MotorModel({
   // All motor components are arranged along the X axis.
   // The output shaft points in the positive X direction.
 
-  const wires = [
-    {
-      color: "#c92727",
-      points: [
-        [-length * 0.39, radius * 0.10, 0],
-        [-length * 0.49, radius * 0.24, 0],
-        [-length * 0.54, radius * 0.42, 0],
-        [-length * 0.61, radius * 0.49, 0],
-      ],
-    },
-    {
-      color: "#252525",
-      points: [
-        [-length * 0.39, -radius * 0.10, 0],
-        [-length * 0.48, -radius * 0.20, 0],
-        [-length * 0.55, -radius * 0.38, 0],
-        [-length * 0.62, -radius * 0.43, 0],
-      ],
-    },
-  ];
+  const wireDefs = useMemo(() => {
+    const specs = [
+      {
+        color: "#b91c1c",
+        points: [
+          [-length * 0.39, radius * 0.1, 0],
+          [-length * 0.46, radius * 0.2, 0],
+          [-length * 0.5, radius * 0.3, 0],
+          [-length * 0.54, radius * 0.34, 0],
+        ],
+      },
+      {
+        color: "#1e293b",
+        points: [
+          [-length * 0.39, -radius * 0.1, 0],
+          [-length * 0.46, -radius * 0.18, 0],
+          [-length * 0.5, -radius * 0.28, 0],
+          [-length * 0.54, -radius * 0.32, 0],
+        ],
+      },
+    ];
+    return specs.map((wire) => ({
+      color: wire.color,
+      curve: new CatmullRomCurve3(
+        wire.points.map(([x, y, z]) => new Vector3(x, y, z))
+      ),
+    }));
+  }, [length, radius]);
 
   return (
     <group>
@@ -128,8 +138,25 @@ export default function MotorModel({
         />
         <meshStandardMaterial
           color={yellow}
-          metalness={0.12}
-          roughness={0.58}
+          metalness={0.28}
+          roughness={0.42}
+          {...materialProps}
+        />
+      </mesh>
+
+      {/* Chassis mounting clamp collar around motor-gearbox junction */}
+      <mesh
+        position={[-length * 0.02, 0, 0]}
+        rotation={[0, 0, Math.PI / 2]}
+        castShadow
+      >
+        <cylinderGeometry
+          args={[gearboxRadius * 1.07, gearboxRadius * 1.07, length * 0.06, 36]}
+        />
+        <meshStandardMaterial
+          color="#3b4754"
+          metalness={0.86}
+          roughness={0.3}
           {...materialProps}
         />
       </mesh>
@@ -260,6 +287,23 @@ export default function MotorModel({
         />
       </mesh>
 
+      {/* Shaft hub coupler collar engaging wheel bore */}
+      <mesh
+        position={[length * 0.99, 0, 0]}
+        rotation={[0, 0, Math.PI / 2]}
+        castShadow
+      >
+        <cylinderGeometry
+          args={[shaftRadius * 1.65, shaftRadius * 1.65, length * 0.08, 24]}
+        />
+        <meshStandardMaterial
+          color="#4b5563"
+          metalness={0.88}
+          roughness={0.25}
+          {...materialProps}
+        />
+      </mesh>
+
       {/* Shaft tip */}
       <mesh
         position={[
@@ -328,24 +372,16 @@ export default function MotorModel({
       ))}
 
       {/* 8. Red and black electrical wires */}
-      {wires.map((wire, index) => {
-        const curve = new CatmullRomCurve3(
-          wire.points.map(
-            ([x, y, z]) => new Vector3(x, y, z)
-          )
-        );
-
-        return (
-          <mesh key={`wire-${index}`} castShadow>
-            <tubeGeometry args={[curve, 24, radius * 0.025, 8, false]} />
-            <meshStandardMaterial
-              color={wire.color}
-              roughness={0.65}
-              {...materialProps}
-            />
-          </mesh>
-        );
-      })}
+      {wireDefs.map((wire, index) => (
+        <mesh key={`wire-${index}`} castShadow>
+          <tubeGeometry args={[wire.curve, 20, radius * 0.022, 8, false]} />
+          <meshStandardMaterial
+            color={wire.color}
+            roughness={0.62}
+            {...materialProps}
+          />
+        </mesh>
+      ))}
     </group>
   );
 }

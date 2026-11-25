@@ -8,6 +8,7 @@ import ControllerModel, {
 } from "./ControllerModel";
 import MotorModel from "./MotorModel";
 import { ChassisModel, TopPlateModel } from "./ChassisModel";
+import StructuralModel from "./StructuralModel";
 import WheelModel from "./WheelModel";
 import { batteryCatalogue } from "../../features/robot-builder/data/batteryCatalogue";
 import { controllerCatalogue } from "../../features/robot-builder/data/controllerCatalogue";
@@ -134,7 +135,18 @@ export default function RobotObject({
           selected={selected || highlighted}
         />
       ) : part.id === "foundation-top-plate" ? (
-        <TopPlateModel size={boxExtents} color={materialColor} />
+        <TopPlateModel
+          size={boxExtents}
+          color={materialColor}
+          selected={selected || highlighted}
+        />
+      ) : part.structuralVisualShape ? (
+        <StructuralModel
+          size={boxExtents}
+          shape={part.structuralVisualShape}
+          color={part.color}
+          selected={selected || highlighted}
+        />
       ) : part.type === "Motor" ? (
         <MotorModel
           size={boxExtents}
@@ -211,7 +223,13 @@ export default function RobotObject({
     </group>
   );
 
-  if (!selected || attached || transformMode === "select") {
+  const allowGizmo =
+    selected &&
+    transformMode !== "select" &&
+    part.id !== "foundation-chassis" &&
+    !(attached && (part.type === "Wheel" || part.type === "Motor"));
+
+  if (!allowGizmo) {
     return robotMesh;
   }
 

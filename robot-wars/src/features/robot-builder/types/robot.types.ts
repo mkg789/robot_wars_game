@@ -8,10 +8,61 @@ import type {
 import type {
   ComponentEngineeringSpec,
   MotorEngineeringSpec,
+  StructuralEngineeringSpec,
   WheelEngineeringSpec,
   BatteryEngineeringSpec,
   ControllerEngineeringSpec,
 } from "./engineering.types";
+
+export type StructuralCatalogueId =
+  | "l-bracket"
+  | "mounting-bracket"
+  | "flat-plate"
+  | "crossbar"
+  | "structural-rail"
+  | "hex-standoff"
+  | "spacer"
+  | "box-beam"
+  | "adjustable-bar"
+  | "reinforced-bumper";
+
+export type StructuralCategory =
+  | "bracket"
+  | "plate"
+  | "rail"
+  | "crossbar"
+  | "spacer"
+  | "beam"
+  | "bumper";
+
+export type StructuralVisualShape = StructuralCatalogueId;
+
+export type AttachmentInterfaceKind =
+  | "foundation-deck"
+  | "foundation-rail"
+  | "foundation-bumper"
+  | "rail-slot"
+  | "bracket-face"
+  | "plate-mount"
+  | "motor-mount"
+  | "wheel-hub"
+  | "generic-structural"
+  | "unknown";
+
+export type AttachmentCompatibilityStatus =
+  | "compatible"
+  | "incompatible"
+  | "unknown";
+
+export type AttachmentInterface = {
+  id: string;
+  label: string;
+  kind: AttachmentInterfaceKind;
+  position: Vector3Data;
+  rotation: EulerData;
+  compatibleWith: AttachmentInterfaceKind[];
+  compatibilityStatus: AttachmentCompatibilityStatus;
+};
 
 export type RobotPart = {
   id: string;
@@ -31,6 +82,9 @@ export type RobotPart = {
   batteryCatalogueId?: BatteryCatalogueId;
   controllerCatalogueId?: ControllerCatalogueId;
   foundationModelId?: FoundationModelId;
+  structuralCatalogueId?: StructuralCatalogueId;
+  structuralCategory?: StructuralCategory;
+  structuralVisualShape?: StructuralVisualShape;
   geometry?: ComponentGeometry;
   massKg?: number;
   electrical?: ElectricalSpecs;
@@ -90,12 +144,41 @@ export type FoundationConfig = {
 
 export type BuildStage =
   | "foundation"
+  | "structure"
   | "battery"
   | "controller"
   | "motors"
   | "wheels"
   | "drivetrain"
   | "completed";
+
+export type StructuralDefinition = {
+  id: StructuralCatalogueId;
+  name: string;
+  category: StructuralCategory;
+  description: string;
+  componentType: "Armor Plate" | "Structural Block" | "Front Bumper";
+  visualShape: StructuralVisualShape;
+  dimensions: {
+    length: number;
+    height: number;
+    width: number;
+  };
+  minDimensions: {
+    length: number;
+    height: number;
+    width: number;
+  };
+  maxDimensions: {
+    length: number;
+    height: number;
+    width: number;
+  };
+  color: string;
+  massKg: number;
+  geometry: BoxGeometry | CylinderGeometry;
+  engineeringSpec: StructuralEngineeringSpec;
+};
 
 export type DrivetrainType = "differential-2" | "differential-4";
 export type DrivetrainSide = "left" | "right";

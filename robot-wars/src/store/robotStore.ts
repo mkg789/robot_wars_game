@@ -22,6 +22,8 @@ import type {
   DrivetrainConfiguration,
   DrivetrainSide,
   DrivetrainType,
+  StructuralCatalogueId,
+  StructuralDefinition,
 } from "../features/robot-builder/types/robot.types";
 
 import {
@@ -33,10 +35,18 @@ import { motorCatalogue } from "../features/robot-builder/data/motorCatalogue";
 import { wheelCatalogue } from "../features/robot-builder/data/wheelCatalogue";
 import { batteryCatalogue } from "../features/robot-builder/data/batteryCatalogue";
 import { controllerCatalogue } from "../features/robot-builder/data/controllerCatalogue";
+import { structuralCatalogue } from "../features/robot-builder/data/structuralCatalogue";
 import { generateMotorMountZones } from "../features/robot-builder/logic/mountingZones";
 import { getWheelWorldMountTransform } from "../features/robot-builder/logic/wheelMounting";
 import { getBatteryMountingTransform } from "../features/robot-builder/logic/batteryMounting";
 import { getControllerMountingTransform } from "../features/robot-builder/logic/controllerMounting";
+import {
+  computeAttachedChildTransform,
+  computeRelativeTransformBetweenParts,
+  getFoundationMountingInterfaces,
+  hasAttachmentCycle,
+  resolvePartMountingInterfaces,
+} from "../features/robot-builder/logic/mountingInterfaces";
 import {
   clampWheelDimension,
   getWheelDimensionsInMeters,
@@ -51,19 +61,41 @@ import {
   validateDrivetrain,
 } from "../features/robot-builder/logic/drivetrain";
 
+export type AssemblyHistorySnapshot = {
+  parts: RobotPart[];
+  connections: RobotConnection[];
+  foundation: FoundationConfig | null;
+  foundationId: string | null;
+  drivetrain: DrivetrainConfiguration;
+  hiddenPartIds: string[];
+};
+
+const MAX_ASSEMBLY_HISTORY = 40;
+
 type RobotStore = {
   parts: RobotPart[];
   connections: RobotConnection[];
   hiddenPartIds: string[];
   selectedId: string | null;
   transformMode: TransformMode;
+  historyPast: AssemblyHistorySnapshot[];
+  historyFuture: AssemblyHistorySnapshot[];
 
   setSelectedId: (id: string | null) => void;
   togglePartVisibility: (id: string) => void;
   setTransformMode: (mode: TransformMode) => void;
   deleteSelected: () => void;
+  deletePartById: (id: string) => void;
+  undo: () => boolean;
+  redo: () => boolean;
 
   updatePartTransform: (
+    id: string,
+    position: [number, number, number],
+    rotation: [number, number, number],
+    size?: [number, number, number]
+  ) => void;
+  previewPartTransform: (
     id: string,
     position: [number, number, number],
     rotation: [number, number, number],
@@ -134,7 +166,29 @@ type RobotStore = {
   selectedWheelWidthCm: number;
   selectedBatteryCatalogueId: BatteryCatalogueId | null;
   selectedControllerCatalogueId: ControllerCatalogueId | null;
+  selectedStructuralCatalogueId: StructuralCatalogueId | null;
   setStage: (stage: BuildStage) => void;
+  selectStructuralCatalogueItem: (structuralId: StructuralCatalogueId) => void;
+  addStructuralPart: (
+    structuralId: StructuralCatalogueId,
+    options?: {
+      parentId?: string;
+      parentInterfaceId?: string;
+      childInterfaceId?: string;
+    }
+  ) => string | null;
+  replaceStructuralPart: (
+    partId: string,
+    structuralId: StructuralCatalogueId
+  ) => void;
+  duplicatePart: (partId: string) => string | null;
+  attachPart: (
+    childId: string,
+    parentId: string,
+    parentInterfaceId?: string,
+    childInterfaceId?: string
+  ) => boolean;
+  detachPart: (childId: string) => void;
   selectBatteryCatalogueItem: (batteryId: BatteryCatalogueId) => void;
   installBattery: (batteryId: BatteryCatalogueId) => void;
   removeBattery: () => void;
@@ -639,12 +693,21 @@ function preserveMountedComponents(
         : freshPart.engineeringSpec,
     };
   }
+  const existingCustomStructural = existingParts.filter(
+    (part) =>
+      !part.id.startsWith("foundation-") &&
+      part.type !== "Motor" &&
+      part.type !== "Wheel" &&
+      part.type !== "Battery" &&
+      part.type !== "Controller"
+  );
   const rebuiltParts = [
     ...foundationParts,
     ...positionedMotors,
     ...wheels,
     ...(positionedBattery ? [positionedBattery] : []),
     ...(positionedController ? [positionedController] : []),
+    ...existingCustomStructural,
   ];
   const existingBatteryIds = new Set(existingBatteries.map((part) => part.id));
   const existingControllerIds = new Set(
@@ -680,11 +743,43 @@ function remapFoundationConnections(
   foundation: FoundationConfig
 ): RobotConnection[] {
   const zones = generateMotorMountZones(foundation);
+  const foundationInterfaces = getFoundationMountingInterfaces(foundation);
 
   return connections.map((connection) => {
     if (connection.type !== "Mechanical") return connection;
     const childId = connection.childId;
     const childPart = parts.find((part) => part.id === childId);
+    if (
+      connection.parentId === "foundation-chassis" &&
+      childPart &&
+      childPart.type !== "Battery" &&
+      childPart.type !== "Controller" &&
+      childPart.type !== "Motor"
+    ) {
+      const foundationPart = parts.find((p) => p.id === "foundation-chassis");
+      const matchedFoundationIface = foundationInterfaces.find(
+        (iface) => iface.id === connection.parentMountPointId
+      );
+      if (foundationPart && matchedFoundationIface) {
+        const childInterfaces = resolvePartMountingInterfaces(childPart, foundation);
+        const matchedChildIface =
+          childInterfaces.find((iface) => iface.id === connection.childMountPointId) ??
+          childInterfaces[0];
+        if (matchedChildIface) {
+          const attachedTransform = computeAttachedChildTransform(
+            foundationPart,
+            matchedFoundationIface,
+            childPart,
+            matchedChildIface
+          );
+          return {
+            ...connection,
+            relativePosition: attachedTransform.relativePosition,
+            relativeRotation: attachedTransform.relativeRotation,
+          };
+        }
+      }
+    }
     if (childPart?.type === "Battery") {
       const definition = batteryCatalogue.find(
         (battery) => battery.id === childPart.batteryCatalogueId
@@ -734,12 +829,90 @@ function remapFoundationConnections(
   });
 }
 
-export const useRobotStore = create<RobotStore>((set, get) => ({
+function captureAssemblySnapshot(state: RobotStore): AssemblyHistorySnapshot {
+  return {
+    parts: structuredClone(state.parts),
+    connections: structuredClone(state.connections),
+    foundation: state.foundation ? structuredClone(state.foundation) : null,
+    foundationId: state.foundationId,
+    drivetrain: structuredClone(state.drivetrain),
+    hiddenPartIds: [...state.hiddenPartIds],
+  };
+}
+
+function createStructuralPartFromDefinition(
+  definition: StructuralDefinition,
+  id: string,
+  position: [number, number, number],
+  rotation: [number, number, number] = [0, 0, 0],
+  parentAttachmentId?: string
+): RobotPart {
+  return {
+    id,
+    name: definition.name,
+    type: definition.componentType,
+    structuralCatalogueId: definition.id,
+    structuralCategory: definition.category,
+    structuralVisualShape: definition.visualShape,
+    position,
+    rotation,
+    size: [
+      definition.dimensions.length,
+      definition.dimensions.height,
+      definition.dimensions.width,
+    ],
+    color: definition.color,
+    mass: definition.massKg,
+    massKg: definition.massKg,
+    parentAttachmentId,
+    geometry: structuredClone(definition.geometry),
+    engineeringSpec: structuredClone(definition.engineeringSpec),
+  };
+}
+
+export const useRobotStore = create<RobotStore>((rawSet, get) => {
+  const set = (
+    partialOrUpdater:
+      | Partial<RobotStore>
+      | ((state: RobotStore) => Partial<RobotStore> | RobotStore)
+  ) => {
+    if (typeof partialOrUpdater !== "function") {
+      rawSet(partialOrUpdater);
+      return;
+    }
+
+    rawSet((state) => {
+      const patch = partialOrUpdater(state);
+      if (patch === state) return state;
+
+      const modifiesAssembly =
+        "parts" in patch ||
+        "connections" in patch ||
+        "foundation" in patch ||
+        "foundationId" in patch ||
+        "drivetrain" in patch;
+
+      if (!modifiesAssembly) return patch;
+
+      return {
+        ...patch,
+        historyPast: [
+          ...(state.historyPast ?? []),
+          captureAssemblySnapshot(state),
+        ].slice(-MAX_ASSEMBLY_HISTORY),
+        historyFuture: [],
+      };
+    });
+  };
+
+  return {
   parts: [],
   connections: [],
   hiddenPartIds: [],
   selectedId: null,
   transformMode: "select",
+  historyPast: [],
+  historyFuture: [],
   foundation: null,
   foundationId: null,
   stage: "foundation",
@@ -752,6 +925,69 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
   selectedWheelWidthCm: 7,
   selectedBatteryCatalogueId: "standard-lipo",
   selectedControllerCatalogueId: "arduino-uno",
+  selectedStructuralCatalogueId: "structural-rail",
+
+  undo: () => {
+    let restored = false;
+    rawSet((state) => {
+      const past = state.historyPast ?? [];
+      if (past.length === 0) return state;
+      const previous = past[past.length - 1];
+      const nextPast = past.slice(0, -1);
+      const nextFuture = [
+        captureAssemblySnapshot(state),
+        ...(state.historyFuture ?? []),
+      ].slice(0, MAX_ASSEMBLY_HISTORY);
+      restored = true;
+      const validSelected =
+        state.selectedId && previous.parts.some((p) => p.id === state.selectedId)
+          ? state.selectedId
+          : previous.foundationId;
+      return {
+        parts: structuredClone(previous.parts),
+        connections: structuredClone(previous.connections),
+        foundation: previous.foundation ? structuredClone(previous.foundation) : null,
+        foundationId: previous.foundationId,
+        drivetrain: structuredClone(previous.drivetrain),
+        hiddenPartIds: [...previous.hiddenPartIds],
+        selectedId: validSelected,
+        historyPast: nextPast,
+        historyFuture: nextFuture,
+      };
+    });
+    return restored;
+  },
+
+  redo: () => {
+    let restored = false;
+    rawSet((state) => {
+      const future = state.historyFuture ?? [];
+      if (future.length === 0) return state;
+      const next = future[0];
+      const nextFuture = future.slice(1);
+      const nextPast = [
+        ...(state.historyPast ?? []),
+        captureAssemblySnapshot(state),
+      ].slice(-MAX_ASSEMBLY_HISTORY);
+      restored = true;
+      const validSelected =
+        state.selectedId && next.parts.some((p) => p.id === state.selectedId)
+          ? state.selectedId
+          : next.foundationId;
+      return {
+        parts: structuredClone(next.parts),
+        connections: structuredClone(next.connections),
+        foundation: next.foundation ? structuredClone(next.foundation) : null,
+        foundationId: next.foundationId,
+        drivetrain: structuredClone(next.drivetrain),
+        hiddenPartIds: [...next.hiddenPartIds],
+        selectedId: validSelected,
+        historyPast: nextPast,
+        historyFuture: nextFuture,
+      };
+    });
+    return restored;
+  },
 
   setSelectedId: (id) => set({ selectedId: id }),
 
@@ -1565,6 +1801,9 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
       selectedWheelWidthCm: 7,
       selectedBatteryCatalogueId: "standard-lipo",
       selectedControllerCatalogueId: "arduino-uno",
+      selectedStructuralCatalogueId: "structural-rail",
+      historyPast: [],
+      historyFuture: [],
     });
   },
 
@@ -1711,15 +1950,14 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
     });
   },
 
-  deleteSelected: () => {
-    const selectedId = get().selectedId;
-
-    if (!selectedId) return;
+  deletePartById: (targetId) => {
+    if (!targetId) return;
 
     set((state) => {
-      const selectedPart = state.parts.find((part) => part.id === selectedId);
-      const deletingFoundation = selectedId === state.foundationId;
-      const removedIds = new Set([selectedId]);
+      const selectedPart = state.parts.find((part) => part.id === targetId);
+      if (!selectedPart) return state;
+      const deletingFoundation = targetId === state.foundationId;
+      const removedIds = new Set([targetId]);
       if (deletingFoundation) {
         for (const part of state.parts) {
           if (
@@ -1748,11 +1986,11 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
             }
           }
         }
-      } else if (selectedPart?.type === "Motor") {
+      } else if (selectedPart.type === "Motor") {
         state.connections.forEach((connection) => {
           if (
             connection.type === "Motor-Wheel" &&
-            (connection.parentId ?? connection.sourceId) === selectedId
+            (connection.parentId ?? connection.sourceId) === targetId
           ) {
             removedIds.add(connection.childId ?? connection.targetId);
           }
@@ -1767,7 +2005,7 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         state.connections
           .filter(
             (connection) =>
-              (connection.parentId ?? connection.sourceId) === selectedId &&
+              removedIds.has(connection.parentId ?? connection.sourceId) &&
               !removedIds.has(connection.childId ?? connection.targetId)
           )
           .map(
@@ -1814,7 +2052,7 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
               selectedBatteryCatalogueId: "standard-lipo",
               selectedControllerCatalogueId: "arduino-uno",
             }
-          : selectedId === "foundation-top-plate" && state.foundation
+          : targetId === "foundation-top-plate" && state.foundation
             ? {
                 foundation: {
                   ...state.foundation,
@@ -1822,7 +2060,7 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
                   confirmed: false,
                 },
               }
-            : selectedId === "foundation-front-cover" && state.foundation
+            : targetId === "foundation-front-cover" && state.foundation
               ? {
                   foundation: {
                     ...state.foundation,
@@ -1831,18 +2069,30 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
                   },
                 }
               : {}),
-        selectedId: null,
+        selectedId:
+          state.selectedId && removedIds.has(state.selectedId)
+            ? null
+            : state.selectedId,
         selectedWheelMotorId: deletingFoundation
           ? null
-          : state.selectedWheelMotorId === selectedId
+          : state.selectedWheelMotorId === targetId
             ? null
             : state.selectedWheelMotorId,
       };
     });
   },
 
+  deleteSelected: () => {
+    const selectedId = get().selectedId;
+    if (!selectedId) return;
+    get().deletePartById(selectedId);
+  },
+
   updatePartTransform: (id, position, rotation, size) =>
     set((state) => {
+      const targetPart = state.parts.find((p) => p.id === id);
+      if (!targetPart) return state;
+
       const updatedParts = state.parts.map((part) => {
         if (part.id !== id) return part;
         const synced = size ? syncGeometryFromSize(part, size) : {};
@@ -1854,19 +2104,102 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
         };
       });
 
+      const nextConnections = state.connections.map((conn) => {
+        const childId = conn.childId ?? conn.targetId;
+        if (childId !== id || conn.type === "Motor-Wheel") return conn;
+        const parentPart = updatedParts.find(
+          (p) => p.id === (conn.parentId ?? conn.sourceId)
+        );
+        if (!parentPart) return conn;
+        const rel = computeRelativeTransformBetweenParts(
+          parentPart,
+          position,
+          rotation
+        );
+        return {
+          ...conn,
+          relativePosition: rel.relativePosition,
+          relativeRotation: rel.relativeRotation,
+        };
+      });
+
       return {
-        parts: syncAssemblyTransforms(updatedParts, state.connections),
+        parts: syncAssemblyTransforms(updatedParts, nextConnections),
+        connections: nextConnections,
+      };
+    }),
+
+  previewPartTransform: (id, position, rotation, size) =>
+    rawSet((state) => {
+      const targetPart = state.parts.find((p) => p.id === id);
+      if (!targetPart) return state;
+
+      const updatedParts = state.parts.map((part) => {
+        if (part.id !== id) return part;
+        const synced = size ? syncGeometryFromSize(part, size) : {};
+        return {
+          ...part,
+          position,
+          rotation,
+          ...synced,
+        };
+      });
+
+      const nextConnections = state.connections.map((conn) => {
+        const childId = conn.childId ?? conn.targetId;
+        if (childId !== id || conn.type === "Motor-Wheel") return conn;
+        const parentPart = updatedParts.find(
+          (p) => p.id === (conn.parentId ?? conn.sourceId)
+        );
+        if (!parentPart) return conn;
+        const rel = computeRelativeTransformBetweenParts(
+          parentPart,
+          position,
+          rotation
+        );
+        return {
+          ...conn,
+          relativePosition: rel.relativePosition,
+          relativeRotation: rel.relativeRotation,
+        };
+      });
+
+      return {
+        parts: syncAssemblyTransforms(updatedParts, nextConnections),
+        connections: nextConnections,
       };
     }),
 
   updatePartPosition: (id, position) =>
     set((state) => {
+      const targetPart = state.parts.find((p) => p.id === id);
+      if (!targetPart) return state;
+
       const updatedParts = state.parts.map((part) =>
         part.id === id ? { ...part, position } : part
       );
 
+      const nextConnections = state.connections.map((conn) => {
+        const childId = conn.childId ?? conn.targetId;
+        if (childId !== id || conn.type === "Motor-Wheel") return conn;
+        const parentPart = updatedParts.find(
+          (p) => p.id === (conn.parentId ?? conn.sourceId)
+        );
+        if (!parentPart) return conn;
+        const rel = computeRelativeTransformBetweenParts(
+          parentPart,
+          position,
+          targetPart.rotation
+        );
+        return {
+          ...conn,
+          relativePosition: rel.relativePosition,
+        };
+      });
+
       return {
-        parts: syncAssemblyTransforms(updatedParts, state.connections),
+        parts: syncAssemblyTransforms(updatedParts, nextConnections),
+        connections: nextConnections,
       };
     }),
 
@@ -1885,12 +2218,34 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
 
   updatePartRotation: (id, rotation) =>
     set((state) => {
+      const targetPart = state.parts.find((p) => p.id === id);
+      if (!targetPart) return state;
+
       const updatedParts = state.parts.map((part) =>
         part.id === id ? { ...part, rotation } : part
       );
 
+      const nextConnections = state.connections.map((conn) => {
+        const childId = conn.childId ?? conn.targetId;
+        if (childId !== id || conn.type === "Motor-Wheel") return conn;
+        const parentPart = updatedParts.find(
+          (p) => p.id === (conn.parentId ?? conn.sourceId)
+        );
+        if (!parentPart) return conn;
+        const rel = computeRelativeTransformBetweenParts(
+          parentPart,
+          targetPart.position,
+          rotation
+        );
+        return {
+          ...conn,
+          relativeRotation: rel.relativeRotation,
+        };
+      });
+
       return {
-        parts: syncAssemblyTransforms(updatedParts, state.connections),
+        parts: syncAssemblyTransforms(updatedParts, nextConnections),
+        connections: nextConnections,
       };
     }),
 
@@ -2395,4 +2750,291 @@ export const useRobotStore = create<RobotStore>((set, get) => ({
       };
     });
   },
-}));
+
+  selectStructuralCatalogueItem: (structuralId) => {
+    if (!structuralCatalogue.some((item) => item.id === structuralId)) return;
+    set({ selectedStructuralCatalogueId: structuralId });
+  },
+
+  addStructuralPart: (structuralId, options) => {
+    const definition = structuralCatalogue.find(
+      (item) => item.id === structuralId
+    );
+    if (!definition) return null;
+
+    const newId = crypto.randomUUID();
+    set((state) => {
+      const existingSameCount = state.parts.filter(
+        (p) => p.structuralCatalogueId === structuralId
+      ).length;
+      const parentPart = options?.parentId
+        ? state.parts.find((p) => p.id === options.parentId)
+        : state.parts.find((p) => p.id === "foundation-chassis");
+
+      let position: [number, number, number] = [0, 0.5, 0];
+      let rotation: [number, number, number] = [0, 0, 0];
+      const nextConnections = [...state.connections];
+      let attachmentId: string | undefined;
+
+      const draftPart = createStructuralPartFromDefinition(
+        definition,
+        newId,
+        position,
+        rotation
+      );
+      draftPart.name =
+        existingSameCount > 0
+          ? `${definition.name} ${existingSameCount + 1}`
+          : definition.name;
+
+      if (parentPart) {
+        const parentInterfaces = resolvePartMountingInterfaces(
+          parentPart,
+          state.foundation
+        );
+        const childInterfaces = resolvePartMountingInterfaces(
+          draftPart,
+          state.foundation
+        );
+        const fallbackParentInterfaceId =
+          definition.category === "bumper"
+            ? "foundation-front-face"
+            : definition.category === "rail"
+              ? "foundation-left-rail"
+              : "foundation-top-center";
+        const parentIface =
+          parentInterfaces.find((i) => i.id === options?.parentInterfaceId) ??
+          parentInterfaces.find((i) => i.id === fallbackParentInterfaceId) ??
+          parentInterfaces[0];
+        const childIface =
+          childInterfaces.find((i) => i.id === options?.childInterfaceId) ??
+          childInterfaces[0];
+
+        if (parentIface && childIface) {
+          const attached = computeAttachedChildTransform(
+            parentPart,
+            parentIface,
+            draftPart,
+            childIface
+          );
+          position = attached.worldPosition;
+          rotation = attached.worldRotation;
+          attachmentId = crypto.randomUUID();
+          nextConnections.push({
+            id: attachmentId,
+            sourceId: parentPart.id,
+            targetId: newId,
+            parentId: parentPart.id,
+            childId: newId,
+            parentMountPointId: parentIface.id,
+            childMountPointId: childIface.id,
+            relativePosition: attached.relativePosition,
+            relativeRotation: attached.relativeRotation,
+            type: "Mechanical",
+          });
+        }
+      } else {
+        const topY = definition.dimensions.height * 0.5 + 0.1;
+        position = [(existingSameCount % 4) * 0.25, topY, 0];
+      }
+
+      const finalPart: RobotPart = {
+        ...draftPart,
+        position,
+        rotation,
+        parentAttachmentId: attachmentId,
+      };
+      const synchronizedParts = syncAssemblyTransforms(
+        [...state.parts, finalPart],
+        nextConnections
+      );
+
+      return {
+        parts: synchronizedParts,
+        connections: nextConnections,
+        selectedId: newId,
+        selectedStructuralCatalogueId: structuralId,
+      };
+    });
+
+    return newId;
+  },
+
+  replaceStructuralPart: (partId, structuralId) => {
+    const definition = structuralCatalogue.find(
+      (item) => item.id === structuralId
+    );
+    if (!definition) return;
+
+    set((state) => {
+      const existing = state.parts.find((p) => p.id === partId);
+      if (!existing) return state;
+
+      const updatedParts = state.parts.map((part) =>
+        part.id === partId
+          ? {
+              ...part,
+              name: definition.name,
+              type: definition.componentType,
+              structuralCatalogueId: definition.id,
+              structuralCategory: definition.category,
+              structuralVisualShape: definition.visualShape,
+              size: [
+                definition.dimensions.length,
+                definition.dimensions.height,
+                definition.dimensions.width,
+              ] as [number, number, number],
+              color: definition.color,
+              mass: definition.massKg,
+              massKg: definition.massKg,
+              geometry: structuredClone(definition.geometry),
+              engineeringSpec: structuredClone(definition.engineeringSpec),
+            }
+          : part
+      );
+
+      return {
+        parts: syncAssemblyTransforms(updatedParts, state.connections),
+        selectedStructuralCatalogueId: structuralId,
+      };
+    });
+  },
+
+  duplicatePart: (partId) => {
+    const source = get().parts.find((p) => p.id === partId);
+    if (!source || source.id.startsWith("foundation-")) return null;
+    if (source.type === "Battery" || source.type === "Controller") return null;
+    if (source.type === "Motor" || source.type === "Wheel") return null;
+
+    const newId = crypto.randomUUID();
+    set((state) => {
+      const target = state.parts.find((p) => p.id === partId);
+      if (!target) return state;
+
+      const duplicate: RobotPart = {
+        ...structuredClone(target),
+        id: newId,
+        name: `${target.name} Copy`,
+        position: [
+          target.position[0] + 0.18,
+          target.position[1],
+          target.position[2] + 0.18,
+        ],
+        parentAttachmentId: undefined,
+      };
+
+      return {
+        parts: [...state.parts, duplicate],
+        selectedId: newId,
+      };
+    });
+
+    return newId;
+  },
+
+  attachPart: (childId, parentId, parentInterfaceId, childInterfaceId) => {
+    if (!childId || !parentId || childId === parentId) return false;
+    if (childId === "foundation-chassis") return false;
+
+    let attached = false;
+    set((state) => {
+      const childPart = state.parts.find((p) => p.id === childId);
+      const parentPart = state.parts.find((p) => p.id === parentId);
+      if (!childPart || !parentPart) return state;
+
+      const filteredConnections = state.connections.filter(
+        (conn) => (conn.childId ?? conn.targetId) !== childId
+      );
+      if (hasAttachmentCycle(filteredConnections, parentId, childId)) {
+        return state;
+      }
+
+      const parentInterfaces = resolvePartMountingInterfaces(
+        parentPart,
+        state.foundation
+      );
+      const childInterfaces = resolvePartMountingInterfaces(
+        childPart,
+        state.foundation
+      );
+      const parentIface =
+        parentInterfaces.find((i) => i.id === parentInterfaceId) ??
+        parentInterfaces[0];
+      const childIface =
+        childInterfaces.find((i) => i.id === childInterfaceId) ??
+        childInterfaces[0];
+
+      const isMotorWheel =
+        parentPart.type === "Motor" && childPart.type === "Wheel";
+      const connectionType: RobotConnection["type"] = isMotorWheel
+        ? "Motor-Wheel"
+        : "Mechanical";
+
+      const attachmentId = crypto.randomUUID();
+      let relPos: [number, number, number];
+      let relRot: [number, number, number];
+
+      if (parentIface && childIface) {
+        const result = computeAttachedChildTransform(
+          parentPart,
+          parentIface,
+          childPart,
+          childIface
+        );
+        relPos = result.relativePosition;
+        relRot = result.relativeRotation;
+      } else {
+        const rel = computeRelativeTransformBetweenParts(
+          parentPart,
+          childPart.position,
+          childPart.rotation
+        );
+        relPos = [...rel.relativePosition];
+        relRot = [...rel.relativeRotation];
+      }
+
+      const newConnection: RobotConnection = {
+        id: attachmentId,
+        sourceId: parentId,
+        targetId: childId,
+        parentId,
+        childId,
+        parentMountPointId: parentIface?.id ?? "generic-mount",
+        childMountPointId: childIface?.id ?? "generic-mount",
+        relativePosition: relPos,
+        relativeRotation: relRot,
+        type: connectionType,
+      };
+
+      const nextConnections = [...filteredConnections, newConnection];
+      const updatedParts = state.parts.map((part) =>
+        part.id === childId
+          ? { ...part, parentAttachmentId: attachmentId }
+          : part
+      );
+      const synchronizedParts = syncAssemblyTransforms(
+        updatedParts,
+        nextConnections
+      );
+      attached = true;
+
+      return {
+        parts: synchronizedParts,
+        connections: nextConnections,
+        drivetrain: retainValidDrivetrainAssignments(
+          state.drivetrain,
+          synchronizedParts,
+          nextConnections,
+          state.foundation
+        ),
+      };
+    });
+
+    return attached;
+  },
+
+  detachPart: (childId) => {
+    get().unmountPart(childId);
+  },
+};
+});

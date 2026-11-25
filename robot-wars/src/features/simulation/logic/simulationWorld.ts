@@ -47,7 +47,13 @@ import {
   STANDARD_ROBOT_WARS_ARENA,
   validateArena,
 } from "./arenaModel";
+import { deriveRobotFootprintDimensions } from "./collisionModel";
 import { resolveCollisionResponseConfig } from "./collisionResponse";
+import {
+  resolveCompiledRobotFootprint,
+  resolveSafeSimulationSpawnPose,
+  type SimulationSpawnPose,
+} from "./simulationAssembly";
 import { compileSimulationConfig } from "./simulationConfigCompiler";
 import {
   advanceSimulation,
@@ -174,6 +180,30 @@ function clampThrottle(value: number): number {
 }
 
 /**
+ * Maps a keyboard key string (WASD or Arrow keys) to a SimulationDriveControls action.
+ */
+export function mapKeyboardKeyToDriveAction(
+  key: string
+): keyof SimulationDriveControls | null {
+  switch (key.toLowerCase()) {
+    case "w":
+    case "arrowup":
+      return "forward";
+    case "s":
+    case "arrowdown":
+      return "reverse";
+    case "a":
+    case "arrowleft":
+      return "left";
+    case "d":
+    case "arrowright":
+      return "right";
+    default:
+      return null;
+  }
+}
+
+/**
  * Maps directional keyboard/button controls into differential-drive left/right throttle commands.
  *
  * Coordinate sign convention:
@@ -290,7 +320,9 @@ export type SimulationWorldListener = (status: SimulationLifecycleStatus) => voi
  */
 export class SimulationWorld {
   private readonly robotConfig: SimulationRobotConfig;
-  private readonly initialPose: { readonly x?: number; readonly z?: number; readonly heading?: number };
+  private readonly preferredInitialPose?: SimulationWorldOptions["initialPose"];
+  private resolvedInitialPose: SimulationSpawnPose;
+  private readonly robotFootprint: { readonly lengthM: number; readonly widthM: number };
   private readonly maxFrameDeltaSeconds: number;
   private arena: ArenaConfig;
   private runnerOptions: SimulationRunnerOptions;
@@ -329,24 +361,43 @@ export class SimulationWorld {
       );
     }
 
+    const baseFootprint = deriveRobotFootprintDimensions(options.robotConfig);
+    this.robotFootprint = {
+      lengthM: options.runnerOptions?.robotFootprint?.lengthM ?? baseFootprint.lengthM,
+      widthM: options.runnerOptions?.robotFootprint?.widthM ?? baseFootprint.widthM,
+    };
+
+    const spawnResolution = resolveSafeSimulationSpawnPose(
+      options.arena,
+      this.robotFootprint,
+      options.initialPose
+    );
+    if (!spawnResolution.valid) {
+      throw new Error(spawnResolution.error);
+    }
+
     this.robotConfig = options.robotConfig;
     this.arena = options.arena;
-    this.initialPose = {
-      x: options.initialPose?.x ?? 0,
-      z: options.initialPose?.z ?? 0,
-      heading: options.initialPose?.heading ?? 0,
-    };
+    this.preferredInitialPose = options.initialPose
+      ? {
+          x: options.initialPose.x,
+          z: options.initialPose.z,
+          heading: options.initialPose.heading,
+        }
+      : undefined;
+    this.resolvedInitialPose = spawnResolution.pose;
     this.maxFrameDeltaSeconds = maxDelta;
     this.runnerOptions = {
       ...options.runnerOptions,
       fixedTimestepSeconds:
         options.runnerOptions?.fixedTimestepSeconds ?? DEFAULT_FIXED_TIMESTEP_SECONDS,
+      robotFootprint: this.robotFootprint,
       arena: options.arena,
       collisionResponse: options.collisionResponse,
     };
     this.runnerState = createInitialRunnerState(
       this.robotConfig,
-      this.initialPose,
+      this.resolvedInitialPose,
       this.runnerOptions
     );
   }
@@ -396,12 +447,19 @@ export class SimulationWorld {
     }
 
     try {
+      const assemblyFootprint = resolveCompiledRobotFootprint(
+        compilation.config,
+        params.parts
+      );
       const world = new SimulationWorld({
         robotConfig: compilation.config,
         arena: targetArena,
         initialPose: params.initialPose,
         collisionResponse: params.collisionResponse,
-        runnerOptions: params.runnerOptions,
+        runnerOptions: {
+          ...params.runnerOptions,
+          robotFootprint: params.runnerOptions?.robotFootprint ?? assemblyFootprint,
+        },
         maxFrameDeltaSeconds: params.maxFrameDeltaSeconds,
       });
 
@@ -444,6 +502,10 @@ export class SimulationWorld {
 
   getRobotConfig(): SimulationRobotConfig {
     return this.robotConfig;
+  }
+
+  getRobotFootprint(): { readonly lengthM: number; readonly widthM: number } {
+    return this.robotFootprint;
   }
 
   getArena(): ArenaConfig {
@@ -534,7 +596,7 @@ export class SimulationWorld {
     this.clearInputs();
     this.runnerState = createInitialRunnerState(
       this.robotConfig,
-      this.initialPose,
+      this.resolvedInitialPose,
       this.runnerOptions
     );
     this.latestCollision = EMPTY_COLLISION_SNAPSHOT;
@@ -552,7 +614,16 @@ export class SimulationWorld {
     if (!validation.isValid) {
       throw new Error(`Invalid arena configuration: ${validation.errors.join("; ")}`);
     }
+    const spawnResolution = resolveSafeSimulationSpawnPose(
+      arena,
+      this.robotFootprint,
+      this.preferredInitialPose
+    );
+    if (!spawnResolution.valid) {
+      throw new Error(spawnResolution.error);
+    }
     this.arena = arena;
+    this.resolvedInitialPose = spawnResolution.pose;
     this.runnerOptions = {
       ...this.runnerOptions,
       arena,

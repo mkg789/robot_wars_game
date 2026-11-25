@@ -9,11 +9,13 @@ export function generateMotorMountZones(
 ): MotorMountZone[] {
   const halfLength = foundation.length / 2;
   const halfWidth = foundation.width / 2;
-  const y = foundation.height + 0.16;
+  // Mount motors along the lower-mid side chassis frame so motor gearboxes sit flush
+  // at side-rail axle height without intersecting the top deck plate or floating high above ground.
+  const y = Math.min(foundation.height * 0.56, Math.max(0.14, foundation.height * 0.54));
   const xInset = Math.min(halfLength - 0.28, halfLength * 0.55);
   const zInset = Math.max(
     0.18,
-    Math.min(halfWidth - 0.24, halfWidth * 0.58)
+    Math.min(halfWidth - 0.08, halfWidth * 0.84)
   );
 
   const positions: Array<{

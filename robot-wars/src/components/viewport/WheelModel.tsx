@@ -9,6 +9,7 @@ type WheelModelProps = {
   width: number;
   color: string;
   preview?: boolean;
+  selected?: boolean;
   category?: WheelDefinition["category"];
 };
 
@@ -17,6 +18,7 @@ export default function WheelModel({
   width,
   color,
   preview = false,
+  selected = false,
   category = "Rubber",
 }: WheelModelProps) {
   const opacity = preview ? 0.48 : 1;
@@ -328,9 +330,11 @@ export default function WheelModel({
             />
 
             <meshStandardMaterial
-              color="#687783"
-              metalness={0.82}
-              roughness={0.32}
+              color="#768491"
+              metalness={0.86}
+              roughness={0.28}
+              emissive={selected ? "#0284c7" : "#000000"}
+              emissiveIntensity={selected ? 0.25 : 0}
               {...materialProps}
             />
           </mesh>

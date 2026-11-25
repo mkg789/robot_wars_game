@@ -40,24 +40,34 @@ function BarrierMesh({
   const baseColor = isCollided
     ? "#ef4444"
     : isPerimeter
-      ? "#334155"
-      : "#475569";
+      ? "#2b3749"
+      : "#5b6d82";
 
   return (
-    <mesh
-      position={[barrier.position.x, height / 2, barrier.position.z]}
-      castShadow
-      receiveShadow
-    >
-      <boxGeometry args={[barrier.sizeX, height, barrier.sizeZ]} />
-      <meshStandardMaterial
-        color={baseColor}
-        emissive={isCollided ? "#dc2626" : "#000000"}
-        emissiveIntensity={isCollided ? 0.55 : 0}
-        metalness={isPerimeter ? 0.65 : 0.45}
-        roughness={isPerimeter ? 0.45 : 0.5}
-      />
-    </mesh>
+    <group position={[barrier.position.x, height / 2, barrier.position.z]}>
+      <mesh castShadow receiveShadow>
+        <boxGeometry args={[barrier.sizeX, height, barrier.sizeZ]} />
+        <meshStandardMaterial
+          color={baseColor}
+          emissive={isCollided ? "#dc2626" : "#000000"}
+          emissiveIntensity={isCollided ? 0.55 : 0}
+          metalness={isPerimeter ? 0.65 : 0.45}
+          roughness={isPerimeter ? 0.48 : 0.45}
+        />
+      </mesh>
+      {/* Top hazard cap on interior barriers to distinguish obstacles from perimeter walls */}
+      {!isPerimeter && (
+        <mesh position={[0, height / 2 + 0.01, 0]}>
+          <boxGeometry args={[barrier.sizeX, 0.02, barrier.sizeZ]} />
+          <meshStandardMaterial
+            color={isCollided ? "#fca5a5" : "#d97706"}
+            emissive={isCollided ? "#ef4444" : "#78350f"}
+            emissiveIntensity={isCollided ? 0.45 : 0.2}
+            roughness={0.4}
+          />
+        </mesh>
+      )}
+    </group>
   );
 }
 
@@ -125,17 +135,38 @@ export default function SimulationArenaMesh({
         const sizeZ = zone.bounds.maxZ - zone.bounds.minZ;
         const zoneX = (zone.bounds.minX + zone.bounds.maxX) / 2;
         const zoneZ = (zone.bounds.minZ + zone.bounds.maxZ) / 2;
+        const zoneColor = getZoneColor(zone.surface);
+        const borderThickness = 0.04;
         return (
-          <mesh key={zone.id} position={[zoneX, 0.004, zoneZ]} receiveShadow>
-            <boxGeometry args={[sizeX, 0.008, sizeZ]} />
-            <meshStandardMaterial
-              color={getZoneColor(zone.surface)}
-              transparent
-              opacity={0.34}
-              roughness={0.35}
-              metalness={0.1}
-            />
-          </mesh>
+          <group key={zone.id} position={[zoneX, 0.004, zoneZ]}>
+            <mesh receiveShadow>
+              <boxGeometry args={[sizeX, 0.006, sizeZ]} />
+              <meshStandardMaterial
+                color={zoneColor}
+                transparent
+                opacity={0.3}
+                roughness={0.35}
+                metalness={0.1}
+              />
+            </mesh>
+            {/* Subtle zone perimeter border for clear surface boundary visibility */}
+            <mesh position={[sizeX / 2, 0.004, 0]}>
+              <boxGeometry args={[borderThickness, 0.004, sizeZ]} />
+              <meshBasicMaterial color={zoneColor} />
+            </mesh>
+            <mesh position={[-sizeX / 2, 0.004, 0]}>
+              <boxGeometry args={[borderThickness, 0.004, sizeZ]} />
+              <meshBasicMaterial color={zoneColor} />
+            </mesh>
+            <mesh position={[0, 0.004, sizeZ / 2]}>
+              <boxGeometry args={[sizeX, 0.004, borderThickness]} />
+              <meshBasicMaterial color={zoneColor} />
+            </mesh>
+            <mesh position={[0, 0.004, -sizeZ / 2]}>
+              <boxGeometry args={[sizeX, 0.004, borderThickness]} />
+              <meshBasicMaterial color={zoneColor} />
+            </mesh>
+          </group>
         );
       })}
 

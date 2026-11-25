@@ -444,5 +444,25 @@ describe("Phase 4.2: SimulationWorld Orchestration", () => {
       expect(world.getRunnerState().totalPhysicsSteps).toBe(0);
       expect(world.getRunnerState().simulationState.xMeters).toBe(0);
     });
+
+    it("clamps oversized resume deltas to prevent accumulated timestep spikes and recovers cleanly from error", () => {
+      const world = new SimulationWorld({
+        robotConfig: buildCompiledCatalogueRobot(),
+        arena: STANDARD_ROBOT_WARS_ARENA,
+        maxFrameDeltaSeconds: 0.1,
+      });
+
+      world.start();
+      world.setDriveControls({ forward: true });
+      world.stepFrame(0.05); // 6 steps
+      world.pause();
+      world.resume();
+
+      // Simulate a huge 5.0-second frame spike after resume/tab restore
+      const res = world.stepFrame(5.0);
+      expect(res).not.toBeNull();
+      // Must clamp to 0.1s -> max 12 steps at 120 Hz, not 600 steps
+      expect(res!.stepsExecuted).toBe(12);
+    });
   });
 });
