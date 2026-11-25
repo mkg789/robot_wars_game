@@ -268,6 +268,27 @@ export function calculateLocalComponentInertia(part: RobotPart): {
 
   const m = massRes.massKg;
 
+  // 0. Explicit user or calculated STL principal inertia tuple when specified
+  const customInertia =
+    part.customInertiaKgM2 ?? part.importedEngineering?.inertiaKgM2;
+  if (
+    customInertia &&
+    customInertia.every((val) => typeof val === "number" && Number.isFinite(val) && val > 0)
+  ) {
+    const isMeasured = part.importedEngineering?.inertiaMode === "user";
+    return {
+      tensor: [
+        [customInertia[0], 0, 0],
+        [0, customInertia[1], 0],
+        [0, 0, customInertia[2]],
+      ],
+      isApproximated: !isMeasured,
+      warnings: isMeasured
+        ? warnings
+        : [...warnings, `Component "${part.name}" uses estimated custom inertia.`],
+    };
+  }
+
   // 1. Canonical BoxGeometry: uniform solid rectangular cuboid
   if (part.geometry && part.geometry.shape === "box") {
     const { length: L, height: H, width: W } = part.geometry;

@@ -1,9 +1,8 @@
 import { useMemo, useState } from "react";
 import { structuralCatalogue } from "../../features/robot-builder/data/structuralCatalogue";
-import {
-  evaluateInterfaceCompatibility,
-  resolvePartMountingInterfaces,
-} from "../../features/robot-builder/logic/mountingInterfaces";
+import { evaluateComponentAttachmentCompatibility } from "../../features/robot-builder/logic/mechanicalCompatibility";
+import { resolvePartMountingInterfaces } from "../../features/robot-builder/logic/mountingInterfaces";
+import StlImportPanel from "./StlImportPanel";
 import type {
   FoundationConfig,
   RobotPart,
@@ -45,6 +44,12 @@ interface StructureStagePanelProps {
     catalogueId: StructuralCatalogueId
   ) => void;
   readonly onDuplicatePart: (partId: string) => void;
+  readonly onImportStructuralStl?: (
+    payload: Parameters<Parameters<typeof StlImportPanel>[0]["onConfirmImport"]>[0] & {
+      parentId?: string;
+      parentInterfaceId?: string;
+    }
+  ) => void;
   readonly onContinueToBattery: () => void;
   readonly onBackToFoundation: () => void;
 }
@@ -58,10 +63,12 @@ export default function StructureStagePanel({
   onAddStructuralPart,
   onReplaceStructuralPart,
   onDuplicatePart,
+  onImportStructuralStl,
   onContinueToBattery,
   onBackToFoundation,
 }: StructureStagePanelProps) {
   const [searchQuery, setSearchQuery] = useState("");
+  const [showStlImporter, setShowStlImporter] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState<CategoryFilter>("all");
   const [selectedParentId, setSelectedParentId] = useState<string>(
     "foundation-chassis"
@@ -104,7 +111,7 @@ export default function StructureStagePanel({
     null;
 
   const previewCompatibility = useMemo(() => {
-    if (!activeParentInterface || !selectedDefinition) return null;
+    if (!activeParent || !activeParentInterface || !selectedDefinition) return null;
     const dummyChild: RobotPart = {
       id: "preview",
       name: selectedDefinition.name,
@@ -121,17 +128,22 @@ export default function StructureStagePanel({
       ],
       color: selectedDefinition.color,
       mass: selectedDefinition.massKg,
+      massKg: selectedDefinition.massKg,
       geometry: selectedDefinition.geometry,
+      engineeringSpec: selectedDefinition.engineeringSpec,
     };
     const childInterfaces = resolvePartMountingInterfaces(
       dummyChild,
       foundation
     );
-    return evaluateInterfaceCompatibility(
-      activeParentInterface,
-      childInterfaces[0]
-    );
-  }, [activeParentInterface, selectedDefinition, foundation]);
+    return evaluateComponentAttachmentCompatibility({
+      childPart: dummyChild,
+      parentPart: activeParent,
+      parentInterface: activeParentInterface,
+      childInterface: childInterfaces[0],
+      foundation,
+    });
+  }, [activeParent, activeParentInterface, selectedDefinition, foundation]);
 
   const filteredItems = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -267,12 +279,18 @@ export default function StructureStagePanel({
             </label>
           )}
           {previewCompatibility && (
-            <div
-              className={`workshop-compat-pill ${previewCompatibility.status}`}
-              title={previewCompatibility.reason}
-            >
-              Interface: {previewCompatibility.status.toUpperCase()}
-            </div>
+            <>
+              <div
+                className={`workshop-compat-pill ${previewCompatibility.status}`}
+                title={previewCompatibility.summary}
+              >
+                Mount Check: {previewCompatibility.status.replace(/-/g, " ").toUpperCase()} ·{" "}
+                {previewCompatibility.provenanceState}
+              </div>
+              <p className="builder-intro" style={{ marginTop: 4, marginBottom: 0 }}>
+                {previewCompatibility.summary}
+              </p>
+            </>
           )}
         </div>
       )}
@@ -310,6 +328,34 @@ export default function StructureStagePanel({
           >
             Duplicate Selected
           </button>
+        </div>
+      )}
+
+      {onImportStructuralStl && (
+        <div className="workshop-mount-target">
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setShowStlImporter((v) => !v)}
+          >
+            {showStlImporter ? "Hide STL Importer" : "+ Import Custom STL Component"}
+          </button>
+          {showStlImporter && (
+            <div style={{ marginTop: 8 }}>
+              <StlImportPanel
+                targetKind="structural"
+                onConfirmImport={(payload) => {
+                  onImportStructuralStl({
+                    ...payload,
+                    parentId: activeParent?.id,
+                    parentInterfaceId: activeParentInterface?.id,
+                  });
+                  setShowStlImporter(false);
+                }}
+                onCancel={() => setShowStlImporter(false)}
+              />
+            </div>
+          )}
         </div>
       )}
 

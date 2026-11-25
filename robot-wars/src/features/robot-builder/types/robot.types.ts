@@ -8,11 +8,25 @@ import type {
 import type {
   ComponentEngineeringSpec,
   MotorEngineeringSpec,
+  ProvenanceMeta,
   StructuralEngineeringSpec,
   WheelEngineeringSpec,
   BatteryEngineeringSpec,
   ControllerEngineeringSpec,
 } from "./engineering.types";
+import type {
+  CustomCollisionConfig,
+  FoundationMemberRole,
+  FoundationWorkflowMode,
+  ImportedEngineeringProperties,
+  ImportedFoundationConfig,
+  ImportedMeshTransform,
+  MountingPatternConfig,
+  ProceduralFoundationConfig,
+} from "./foundation.types";
+import type { ElectricalComponentSpec } from "../../electrical/types/electrical.types";
+
+export * from "./foundation.types";
 
 export type StructuralCatalogueId =
   | "l-bracket"
@@ -51,8 +65,16 @@ export type AttachmentInterfaceKind =
 
 export type AttachmentCompatibilityStatus =
   | "compatible"
+  | "compatible-with-warnings"
   | "incompatible"
   | "unknown";
+
+export type AttachmentInterfaceConstraint = {
+  maxLengthM?: number;
+  maxWidthM?: number;
+  minClearanceM?: number;
+  maxPayloadKg?: number;
+};
 
 export type AttachmentInterface = {
   id: string;
@@ -62,6 +84,13 @@ export type AttachmentInterface = {
   rotation: EulerData;
   compatibleWith: AttachmentInterfaceKind[];
   compatibilityStatus: AttachmentCompatibilityStatus;
+  supportedTypes?: ComponentType[];
+  dimensionConstraint?: AttachmentInterfaceConstraint;
+  clearanceRadiusM?: number;
+  provenance?: ProvenanceMeta;
+  isCustom?: boolean;
+  interfaceCategory?: "point" | "plane" | "pattern" | "motor-mount" | "wheel-mount" | "generic";
+  mountingPattern?: MountingPatternConfig;
 };
 
 export type RobotPart = {
@@ -85,11 +114,21 @@ export type RobotPart = {
   structuralCatalogueId?: StructuralCatalogueId;
   structuralCategory?: StructuralCategory;
   structuralVisualShape?: StructuralVisualShape;
+  foundationMemberRole?: FoundationMemberRole;
+  foundationMemberEditable?: boolean;
+  mountingPatterns?: MountingPatternConfig[];
+  customMountingInterfaces?: AttachmentInterface[];
+  meshAssetId?: string;
+  meshTransform?: ImportedMeshTransform;
+  collisionConfig?: CustomCollisionConfig;
+  importedEngineering?: ImportedEngineeringProperties;
+  customInertiaKgM2?: [number, number, number];
   geometry?: ComponentGeometry;
   massKg?: number;
   electrical?: ElectricalSpecs;
   mechanical?: MechanicalSpecs;
   engineeringSpec?: ComponentEngineeringSpec;
+  electricalSpec?: ElectricalComponentSpec;
 };
 
 export type Vector3Data = [number, number, number];
@@ -140,6 +179,9 @@ export type FoundationConfig = {
   includeTopPlate: boolean;
   includeFrontCover: boolean;
   confirmed: boolean;
+  mode?: FoundationWorkflowMode;
+  procedural?: ProceduralFoundationConfig;
+  imported?: ImportedFoundationConfig;
 };
 
 export type BuildStage =

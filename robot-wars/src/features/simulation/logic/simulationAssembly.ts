@@ -9,6 +9,8 @@ import type {
   DrivetrainConfiguration,
   DrivetrainSide,
   FoundationConfig,
+  ImportedMeshTransform,
+  MountingPatternConfig,
   RobotConnection,
   RobotPart,
   StructuralVisualShape,
@@ -53,6 +55,10 @@ export interface ResolvedAssemblyVisualPart {
   readonly axleSpinSign: 1 | -1;
   readonly wheelCategory: WheelDefinition["category"];
   readonly structuralVisualShape?: StructuralVisualShape;
+  readonly meshAssetId?: string;
+  readonly meshTransform?: ImportedMeshTransform;
+  readonly mountingPatterns?: readonly MountingPatternConfig[];
+  readonly hideSolidChassisShell?: boolean;
   readonly geometryShape?: "box" | "cylinder";
   readonly cylinderAxis?: "x" | "y" | "z";
   readonly batteryMeta?: {
@@ -366,6 +372,9 @@ export function resolveAssemblySimulationVisualSpec(params: {
       : new Set(params.hiddenPartIds ?? []);
 
   const visibleParts = params.parts.filter((part) => !hiddenSet.has(part.id));
+  const hasProceduralMembers = visibleParts.some((part) =>
+    Boolean(part.foundationMemberRole)
+  );
   const wheelSideMap = resolveDrivetrainWheelSideMap(
     visibleParts,
     params.drivetrain,
@@ -430,6 +439,11 @@ export function resolveAssemblySimulationVisualSpec(params: {
       axleSpinSign,
       wheelCategory: kind === "wheel" ? resolveWheelCategory(part) : "Rubber",
       structuralVisualShape: part.structuralVisualShape,
+      meshAssetId: part.meshAssetId,
+      meshTransform: part.meshTransform,
+      mountingPatterns: part.mountingPatterns,
+      hideSolidChassisShell:
+        kind === "chassis" && hasProceduralMembers && !part.meshAssetId,
       geometryShape: part.geometry?.shape,
       cylinderAxis:
         part.geometry?.shape === "cylinder" ? part.geometry.axis : undefined,

@@ -3,12 +3,26 @@ import { structuralCatalogue } from "../../features/robot-builder/data/structura
 import type { AssemblyDiagnostic } from "../../features/robot-builder/logic/assemblyValidation";
 import { getPartBoxExtents } from "../../features/robot-builder/logic/geometryAdapters";
 import {
-  evaluateInterfaceCompatibility,
+  evaluateComponentAttachmentCompatibility,
+  evaluateMotorMountCompatibility,
+  evaluateMotorWheelCompatibility,
+} from "../../features/robot-builder/logic/mechanicalCompatibility";
+import {
   hasAttachmentCycle,
   resolvePartMountingInterfaces,
 } from "../../features/robot-builder/logic/mountingInterfaces";
+import { IMPORTED_MATERIAL_PRESETS } from "../../features/robot-builder/logic/customCollision";
+import type { ElectricalConnection } from "../../features/electrical/types/electrical.types";
+import ElectricalInspectorSection from "./ElectricalInspectorSection";
 import type {
+  AttachmentInterface,
+  CustomCollisionConfig,
+  CustomCollisionMode,
   FoundationConfig,
+  ImportedEngineeringProperties,
+  ImportedMassMode,
+  ImportedMaterialId,
+  ImportedMeshTransform,
   RobotConnection,
   RobotPart,
   StructuralCatalogueId,
@@ -48,6 +62,21 @@ interface PartInspectorPanelProps {
   ) => void;
   readonly onDetachPart: (childId: string) => void;
   readonly onDeletePart: (partId: string) => void;
+  readonly onUpdateImportedConfig?: (
+    partId: string,
+    patch: {
+      transform?: Partial<ImportedMeshTransform>;
+      engineering?: Partial<ImportedEngineeringProperties>;
+      collision?: CustomCollisionConfig;
+    }
+  ) => void;
+  readonly onAddCustomInterface?: (
+    partId: string,
+    iface: AttachmentInterface
+  ) => void;
+  readonly onRemoveCustomInterface?: (partId: string, ifaceId: string) => void;
+  readonly electricalConnections?: readonly ElectricalConnection[];
+  readonly onRemoveElectricalConnection?: (connectionId: string) => void;
 }
 
 function roundTo(val: number, decimals = 3): number {
@@ -68,7 +97,17 @@ export default function PartInspectorPanel({
   onAttachPart,
   onDetachPart,
   onDeletePart,
+  onUpdateImportedConfig,
+  onAddCustomInterface,
+  onRemoveCustomInterface,
+  electricalConnections = [],
+  onRemoveElectricalConnection,
 }: PartInspectorPanelProps) {
+  const [newIfaceLabel, setNewIfaceLabel] = useState("Custom Mount");
+  const [newIfaceCategory, setNewIfaceCategory] = useState<
+    NonNullable<AttachmentInterface["interfaceCategory"]>
+  >("generic");
+  const [newIfacePos, setNewIfacePos] = useState<[number, number, number]>([0, 0.1, 0]);
   const initialExtents = getPartBoxExtents(part);
   const [baseline, setBaseline] = useState<{
     position: [number, number, number];
@@ -153,10 +192,40 @@ export default function PartInspectorPanel({
     childInterfaces[0] ??
     null;
 
-  const compatibility = useMemo(
+  const compatibility = useMemo(() => {
+    if (!chosenParent) return null;
+    return evaluateComponentAttachmentCompatibility({
+      childPart: part,
+      parentPart: chosenParent,
+      parentInterface: selectedParentIface,
+      childInterface: selectedChildIface,
+      foundation,
+      existingConnections: connections,
+    });
+  }, [part, chosenParent, selectedParentIface, selectedChildIface, foundation, connections]);
+
+  const specializedEvaluation = useMemo(() => {
+    if (part.type === "Motor") {
+      return evaluateMotorMountCompatibility({
+        motor: part,
+        parentPart: currentParent,
+        foundation,
+      });
+    }
+    if (part.type === "Wheel") {
+      return evaluateMotorWheelCompatibility({
+        motor: currentParent,
+        wheel: part,
+        foundation,
+      });
+    }
+    return null;
+  }, [part, currentParent, foundation]);
+
+  const attachedChildrenCount = useMemo(
     () =>
-      evaluateInterfaceCompatibility(selectedParentIface, selectedChildIface),
-    [selectedParentIface, selectedChildIface]
+      connections.filter((c) => (c.parentId ?? c.sourceId) === part.id).length,
+    [connections, part.id]
   );
 
   const isFoundationRoot = part.id === "foundation-chassis";
@@ -525,12 +594,26 @@ export default function PartInspectorPanel({
                 </label>
               )}
 
-              <div
-                className={`workshop-compat-pill ${compatibility.status}`}
-                title={compatibility.reason}
-              >
-                Compatibility: {compatibility.status.toUpperCase()}
-              </div>
+              {compatibility && (
+                <>
+                  <div
+                    className={`workshop-compat-pill ${compatibility.status}`}
+                    title={compatibility.summary}
+                  >
+                    Compatibility: {compatibility.status.replace(/-/g, " ").toUpperCase()} ({compatibility.provenanceState})
+                  </div>
+                  <div className="workshop-compat-checks">
+                    {compatibility.checks.map((chk) => (
+                      <div key={chk.id} className={`workshop-compat-check-row ${chk.status}`}>
+                        <span>{chk.message}</span>
+                        {chk.correctiveAction && (
+                          <small className="workshop-compat-hint">{chk.correctiveAction}</small>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </>
+              )}
 
               <div className="workshop-inline-actions">
                 <button
@@ -564,27 +647,250 @@ export default function PartInspectorPanel({
         </div>
       )}
 
-      {canEditDimensions && part.structuralCatalogueId && (
-        <label className="sim-select-field">
-          <span>Replace Structural Variant</span>
-          <select
-            aria-label="Replace structural component"
-            value={part.structuralCatalogueId}
-            onChange={(e) =>
-              onReplaceStructuralPart(
-                part.id,
-                e.target.value as StructuralCatalogueId
-              )
-            }
-          >
-            {structuralCatalogue.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.name}
-              </option>
+      {specializedEvaluation && (
+        <div className="workshop-mount-target">
+          <div className="section-label">
+            {part.type === "Motor" ? "MOTOR MOUNT INTELLIGENCE" : "WHEEL-SHAFT COUPLING"}
+          </div>
+          <div className={`workshop-compat-pill ${specializedEvaluation.status}`}>
+            {specializedEvaluation.status.replace(/-/g, " ").toUpperCase()} ·{" "}
+            {specializedEvaluation.provenanceState}
+          </div>
+          <div className="workshop-compat-checks">
+            {specializedEvaluation.checks.map((chk) => (
+              <div key={chk.id} className={`workshop-compat-check-row ${chk.status}`}>
+                <span>{chk.message}</span>
+                {chk.assumption && (
+                  <small className="workshop-compat-hint">Assumption: {chk.assumption}</small>
+                )}
+                {chk.correctiveAction && (
+                  <small className="workshop-compat-hint">Hint: {chk.correctiveAction}</small>
+                )}
+              </div>
             ))}
-          </select>
-        </label>
+          </div>
+        </div>
       )}
+
+      {canEditDimensions && part.structuralCatalogueId && (
+        <div className="workshop-mount-target">
+          <label className="sim-select-field">
+            <span>Replace Structural Variant</span>
+            <select
+              aria-label="Replace structural component"
+              value={part.structuralCatalogueId}
+              onChange={(e) =>
+                onReplaceStructuralPart(
+                  part.id,
+                  e.target.value as StructuralCatalogueId
+                )
+              }
+            >
+              {structuralCatalogue.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          {attachedChildrenCount > 0 && (
+            <small className="builder-intro" style={{ display: "block", marginTop: 4 }}>
+              {attachedChildrenCount} mounted child component(s) will be re-evaluated &amp; re-aligned on replacement.
+            </small>
+          )}
+        </div>
+      )}
+
+      {part.meshAssetId && onUpdateImportedConfig && (
+        <div className="workshop-mount-target">
+          <div className="section-label">IMPORTED STL ENGINEERING</div>
+          <label className="sim-select-field">
+            <span>Material</span>
+            <select
+              aria-label="Part imported material"
+              value={part.importedEngineering?.materialId ?? "unknown"}
+              onChange={(e) =>
+                onUpdateImportedConfig(part.id, {
+                  engineering: { materialId: e.target.value as ImportedMaterialId },
+                })
+              }
+            >
+              {IMPORTED_MATERIAL_PRESETS.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="sim-select-field">
+            <span>Mass Mode</span>
+            <select
+              aria-label="Part imported mass mode"
+              value={part.importedEngineering?.massMode ?? "unknown"}
+              onChange={(e) =>
+                onUpdateImportedConfig(part.id, {
+                  engineering: { massMode: e.target.value as ImportedMassMode },
+                })
+              }
+            >
+              <option value="unknown">Unknown</option>
+              <option value="user">User-Entered (kg)</option>
+              <option value="estimated-density">Estimated (Volume × Density)</option>
+            </select>
+          </label>
+          {part.importedEngineering?.massMode === "user" && (
+            <div className="property-row">
+              <span>User Mass (kg)</span>
+              <input
+                type="number"
+                step={0.1}
+                min={0.01}
+                value={part.importedEngineering.massKg ?? 1}
+                onChange={(e) => {
+                  const v = Number(e.target.value);
+                  if (Number.isFinite(v) && v > 0) {
+                    onUpdateImportedConfig(part.id, {
+                      engineering: { massKg: v, massMode: "user" },
+                    });
+                  }
+                }}
+              />
+            </div>
+          )}
+          {part.collisionConfig && (
+            <label className="sim-select-field">
+              <span>Collision Proxy</span>
+              <select
+                aria-label="Part collision mode"
+                value={part.collisionConfig.mode}
+                onChange={(e) =>
+                  onUpdateImportedConfig(part.id, {
+                    collision: {
+                      ...part.collisionConfig!,
+                      mode: e.target.value as CustomCollisionMode,
+                    },
+                  })
+                }
+              >
+                <option value="bounding-box">Bounding Box</option>
+                <option value="single-box">Single Box</option>
+                <option value="multi-box">Multi-Box Quadrants</option>
+                <option value="convex-approx">Convex Approx</option>
+              </select>
+            </label>
+          )}
+        </div>
+      )}
+
+      {(part.meshAssetId || part.id === "foundation-chassis") &&
+        onAddCustomInterface && (
+          <div className="workshop-mount-target">
+            <div className="section-label">CUSTOM MOUNTING INTERFACES</div>
+            {(part.customMountingInterfaces ?? []).map((iface) => (
+              <div className="installed-motor" key={iface.id}>
+                <span>
+                  {iface.label} ({iface.interfaceCategory ?? iface.kind})
+                </span>
+                {onRemoveCustomInterface && (
+                  <button
+                    type="button"
+                    className="sim-clear-selection-btn"
+                    onClick={() => onRemoveCustomInterface(part.id, iface.id)}
+                  >
+                    Remove
+                  </button>
+                )}
+              </div>
+            ))}
+            <label className="sim-select-field">
+              <span>Interface Label</span>
+              <input
+                type="text"
+                className="workshop-search-input"
+                aria-label="Custom interface label"
+                value={newIfaceLabel}
+                onChange={(e) => setNewIfaceLabel(e.target.value)}
+              />
+            </label>
+            <label className="sim-select-field">
+              <span>Interface Role</span>
+              <select
+                aria-label="Custom interface role"
+                value={newIfaceCategory}
+                onChange={(e) =>
+                  setNewIfaceCategory(
+                    e.target.value as NonNullable<AttachmentInterface["interfaceCategory"]>
+                  )
+                }
+              >
+                <option value="point">Mounting Point</option>
+                <option value="plane">Mounting Plane</option>
+                <option value="pattern">Mounting Pattern Anchor</option>
+                <option value="motor-mount">Motor Mount</option>
+                <option value="wheel-mount">Wheel / Axle Mount</option>
+                <option value="generic">Generic Structural Interface</option>
+              </select>
+            </label>
+            <div className="workshop-inline-actions">
+              {(["X", "Y", "Z"] as const).map((axis, idx) => (
+                <label key={axis} className="sim-select-field">
+                  <span>{axis} (m)</span>
+                  <input
+                    type="number"
+                    step={0.05}
+                    value={newIfacePos[idx]}
+                    onChange={(e) => {
+                      const v = Number(e.target.value);
+                      if (!Number.isFinite(v)) return;
+                      const next: [number, number, number] = [...newIfacePos];
+                      next[idx] = v;
+                      setNewIfacePos(next);
+                    }}
+                  />
+                </label>
+              ))}
+            </div>
+            <button
+              type="button"
+              className="secondary-button"
+              style={{ marginTop: 6 }}
+              onClick={() => {
+                const kind =
+                  newIfaceCategory === "motor-mount"
+                    ? "motor-mount"
+                    : newIfaceCategory === "wheel-mount"
+                      ? "wheel-hub"
+                      : newIfaceCategory === "plane"
+                        ? "plate-mount"
+                        : "generic-structural";
+                const compatWith =
+                  kind === "motor-mount"
+                    ? (["wheel-hub", "foundation-rail", "rail-slot", "bracket-face"] as const)
+                    : kind === "wheel-hub"
+                      ? (["motor-mount"] as const)
+                      : (["plate-mount", "bracket-face", "rail-slot", "motor-mount", "generic-structural"] as const);
+                onAddCustomInterface(part.id, {
+                  id: `custom-${crypto.randomUUID().slice(0, 8)}`,
+                  label: newIfaceLabel.trim() || "Custom Interface",
+                  kind,
+                  interfaceCategory: newIfaceCategory,
+                  position: [...newIfacePos],
+                  rotation: [0, 0, 0],
+                  compatibleWith: [...compatWith],
+                  compatibilityStatus: "compatible",
+                  provenance: {
+                    method: "measured",
+                    verified: true,
+                    source: "user-interface-editor",
+                    notes: "User-defined mounting interface on component geometry.",
+                  },
+                });
+              }}
+            >
+              + Add Interface
+            </button>
+          </div>
+        )}
 
       <div className="workshop-inline-actions">
         {canDuplicate && (
@@ -605,6 +911,13 @@ export default function PartInspectorPanel({
           Remove Part
         </button>
       </div>
+
+      <ElectricalInspectorSection
+        part={part}
+        parts={parts}
+        electricalConnections={electricalConnections}
+        onRemoveElectricalConnection={onRemoveElectricalConnection}
+      />
 
       {diagnostics.length > 0 && (
         <div className="workshop-part-diagnostics">

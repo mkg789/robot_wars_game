@@ -1,11 +1,15 @@
 
 import { RoundedBox } from "@react-three/drei";
+import type { MountingPatternConfig } from "../../features/robot-builder/types/robot.types";
+import { MountingPatternOverlay } from "./CustomMeshModel";
 
 type ChassisModelProps = {
   size: [number, number, number];
   color: string;
   selected?: boolean;
   preview?: boolean;
+  proceduralDatumOnly?: boolean;
+  mountingPatterns?: readonly MountingPatternConfig[];
 };
 
 // Shared material settings
@@ -145,8 +149,26 @@ export function ChassisModel({
   color,
   selected = false,
   preview = false,
+  proceduralDatumOnly = false,
+  mountingPatterns,
 }: ChassisModelProps) {
   const [length, height, width] = size;
+
+  if (proceduralDatumOnly) {
+    // Procedural members render the real physical frame/plates/flanges as individual meshes;
+    // draw only a clean anchor datum outline when selected plus lightweight pattern grid markers.
+    return (
+      <group>
+        {selected && (
+          <mesh>
+            <boxGeometry args={size} />
+            <meshBasicMaterial color="#38bdf8" wireframe transparent opacity={0.35} />
+          </mesh>
+        )}
+        <MountingPatternOverlay patterns={mountingPatterns} />
+      </group>
+    );
+  }
 
   const materialProps = getMaterialProps(preview);
 

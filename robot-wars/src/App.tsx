@@ -4,8 +4,10 @@ import { useRobotStore } from "./store/robotStore";
 
 import RobotScene from "./components/viewport/RobotScene";
 import SimulationView from "./components/simulation/SimulationView";
+import FoundationStagePanel from "./components/workshop/FoundationStagePanel";
 import StructureStagePanel from "./components/workshop/StructureStagePanel";
 import PartInspectorPanel from "./components/workshop/PartInspectorPanel";
+import { PROCEDURAL_ARCHITECTURES } from "./features/robot-builder/logic/proceduralFoundation";
 import type { MountCandidate } from "./features/robot-builder/logic/mounting";
 import { validateRobotAssembly } from "./features/robot-builder/logic/assemblyValidation";
 import { foundationModels } from "./features/robot-builder/data/foundationModels";
@@ -18,8 +20,10 @@ import {
   getDrivetrainAssignmentKey,
   getDrivetrainSlotCount,
   getPoweredWheelAssemblies,
+  resolveMotorMechanicalSupport,
   validateDrivetrain,
 } from "./features/robot-builder/logic/drivetrain";
+import { resolvePartMountingInterfaces } from "./features/robot-builder/logic/mountingInterfaces";
 import type {
   DrivetrainSide,
   DrivetrainType,
@@ -147,6 +151,11 @@ function App() {
   const [rightPanelTab, setRightPanelTab] = useState<
     "stage" | "inspector" | "validation"
   >("stage");
+  const [diagFilter, setDiagFilter] = useState<"all" | "error" | "warning" | "info">(
+    "all"
+  );
+  const [structuralMotorParentId, setStructuralMotorParentId] = useState("");
+  const [structuralMotorIfaceId, setStructuralMotorIfaceId] = useState("");
   const parts = useRobotStore((state) => state.parts);
   const hiddenPartIds = useRobotStore((state) => state.hiddenPartIds);
   const selectedId = useRobotStore((state) => state.selectedId);
@@ -166,6 +175,12 @@ function App() {
     (state) => state.mountWheelToMotor
   );
   const connections = useRobotStore((state) => state.connections);
+  const electricalConnections = useRobotStore(
+    (state) => state.electricalConnections
+  );
+  const removeElectricalConnection = useRobotStore(
+    (state) => state.removeElectricalConnection
+  );
   const foundation = useRobotStore((state) => state.foundation);
   const startNewBuild = useRobotStore((state) => state.startNewBuild);
   const selectFoundationModel = useRobotStore(
@@ -223,9 +238,18 @@ function App() {
     (state) => state.selectMountZone
   );
   const placeMotor = useRobotStore((state) => state.placeMotor);
+  const mountMotorToParent = useRobotStore(
+    (state) => state.mountMotorToParent
+  );
   const replaceMotor = useRobotStore((state) => state.replaceMotor);
   const removeMotor = useRobotStore((state) => state.removeMotor);
   const rotateMotor = useRobotStore((state) => state.rotateMotor);
+  const lastReplacementWarning = useRobotStore(
+    (state) => state.lastReplacementWarning
+  );
+  const clearReplacementWarning = useRobotStore(
+    (state) => state.clearReplacementWarning
+  );
   const selectedWheelCatalogueId = useRobotStore(
     (state) => state.selectedWheelCatalogueId
   );
@@ -257,6 +281,27 @@ function App() {
   const addStructuralPart = useRobotStore((state) => state.addStructuralPart);
   const replaceStructuralPart = useRobotStore(
     (state) => state.replaceStructuralPart
+  );
+  const configureProceduralFoundation = useRobotStore(
+    (state) => state.configureProceduralFoundation
+  );
+  const resetProceduralFoundation = useRobotStore(
+    (state) => state.resetProceduralFoundation
+  );
+  const importFoundationStl = useRobotStore(
+    (state) => state.importFoundationStl
+  );
+  const importStructuralStl = useRobotStore(
+    (state) => state.importStructuralStl
+  );
+  const updateImportedPartConfiguration = useRobotStore(
+    (state) => state.updateImportedPartConfiguration
+  );
+  const addCustomMountingInterface = useRobotStore(
+    (state) => state.addCustomMountingInterface
+  );
+  const removeCustomMountingInterface = useRobotStore(
+    (state) => state.removeCustomMountingInterface
   );
   const duplicatePart = useRobotStore((state) => state.duplicatePart);
   const attachPart = useRobotStore((state) => state.attachPart);
@@ -298,6 +343,16 @@ function App() {
       child,
     ]);
   }
+  const getMotorLocationLabel = (motor: (typeof parts)[number]): string => {
+    const zoneName = motorMountZones.find(
+      (zone) => zone.id === motor.mountingZoneId
+    )?.name;
+    if (zoneName) return zoneName;
+    if (!foundation) return "Mounted";
+    return resolveMotorMechanicalSupport(motor, parts, connections, foundation)
+      .mountingLocation;
+  };
+
   const renderHierarchy = (partId: string, depth = 0): ReactNode => {
     const part = parts.find((item) => item.id === partId);
     if (!part) return null;
@@ -308,6 +363,42 @@ function App() {
     const partDiags = validationReport.diagnosticsByPartId[part.id] ?? [];
     const hasError = partDiags.some((d) => d.severity === "error");
     const hasWarning = partDiags.some((d) => d.severity === "warning");
+    const hasUnknown = partDiags.some((d) => d.isUnknownAssumption);
+
+    let roleBadge: string | null = null;
+    if (part.id === "foundation-chassis") {
+      roleBadge = part.meshAssetId ? "STL-Root" : "Root";
+    } else if (part.foundationMemberRole) {
+      roleBadge =
+        part.foundationMemberRole === "rail"
+          ? "Rail"
+          : part.foundationMemberRole === "crossmember"
+            ? "Cross"
+            : part.foundationMemberRole === "plate"
+              ? "Plate"
+              : part.foundationMemberRole === "flange"
+                ? "Flange"
+                : "Member";
+    } else if (part.meshAssetId) {
+      roleBadge = "STL";
+    } else if (part.type === "Motor") {
+      const inLeft = drivetrain.left.some((a) => a?.motorId === part.id);
+      const inRight = drivetrain.right.some((a) => a?.motorId === part.id);
+      roleBadge = inLeft ? "L-Drive" : inRight ? "R-Drive" : part.mountingZoneId ? "Zone" : "Struct";
+    } else if (part.type === "Wheel") {
+      const hasShaftLink = connections.some(
+        (c) => c.type === "Motor-Wheel" && (c.childId ?? c.targetId) === part.id
+      );
+      const inLeft = drivetrain.left.some((a) => a?.wheelId === part.id);
+      const inRight = drivetrain.right.some((a) => a?.wheelId === part.id);
+      roleBadge = inLeft ? "L-Wheel" : inRight ? "R-Wheel" : hasShaftLink ? "Shaft" : "Free";
+    } else if (
+      part.id !== "foundation-top-plate" &&
+      part.id !== "foundation-front-cover" &&
+      !connections.some((c) => (c.childId ?? c.targetId) === part.id)
+    ) {
+      roleBadge = "Unattached";
+    }
 
     return (
       <div key={part.id}>
@@ -351,13 +442,18 @@ function App() {
           >
             <span className="tree-icon" aria-hidden="true">▣</span>
             <span className="tree-label">{part.name}</span>
+            {roleBadge && (
+              <span className={`tree-role-tag ${roleBadge === "Unattached" || roleBadge === "Free" ? "free" : ""}`}>
+                {roleBadge}
+              </span>
+            )}
           </button>
-          {(hasError || hasWarning) && (
+          {(hasError || hasWarning || hasUnknown) && (
             <span
-              className={`tree-diag-badge ${hasError ? "error" : "warning"}`}
+              className={`tree-diag-badge ${hasError ? "error" : hasWarning ? "warning" : "unknown"}`}
               title={partDiags.map((d) => d.message).join("\n")}
             >
-              {hasError ? "✕" : "!"}
+              {hasError ? "✕" : hasWarning ? "!" : "?"}
             </span>
           )}
           <button
@@ -395,12 +491,49 @@ function App() {
   const independentParts = parts.filter(
     (part) => !attachedChildIds.has(part.id)
   );
+  const anchoredRootParts = independentParts.filter((part) =>
+    part.id.startsWith("foundation-")
+  );
+  const unattachedRootParts = independentParts.filter(
+    (part) => !part.id.startsWith("foundation-")
+  );
   const mountedMotors = parts.filter(
-    (part) => part.type === "Motor" && part.mountingZoneId
+    (part) =>
+      part.type === "Motor" &&
+      Boolean(
+        part.mountingZoneId ||
+          (foundation &&
+            resolveMotorMechanicalSupport(part, parts, connections, foundation)
+              .supported)
+      )
   );
   const motorMountZones = foundation
     ? generateMotorMountZones(foundation)
     : [];
+  const structuralMotorCarriers = parts.filter(
+    (part) =>
+      part.id !== "foundation-chassis" &&
+      (part.structuralCategory === "rail" ||
+        part.structuralCategory === "bracket" ||
+        part.structuralCategory === "beam" ||
+        part.structuralCategory === "crossbar" ||
+        part.structuralCategory === "plate" ||
+        part.type === "Structural Block" ||
+        part.type === "Armor Plate")
+  );
+  const activeMotorCarrier =
+    structuralMotorCarriers.find((p) => p.id === structuralMotorParentId) ??
+    structuralMotorCarriers[0] ??
+    null;
+  const activeMotorCarrierInterfaces = activeMotorCarrier
+    ? resolvePartMountingInterfaces(activeMotorCarrier, foundation).filter((i) =>
+        i.compatibleWith.includes("motor-mount")
+      )
+    : [];
+  const activeMotorCarrierIface =
+    activeMotorCarrierInterfaces.find((i) => i.id === structuralMotorIfaceId) ??
+    activeMotorCarrierInterfaces[0] ??
+    null;
   const selectedMotorDefinition = motorCatalogue.find(
     (motor) => motor.id === selectedMotorCatalogueId
   );
@@ -478,6 +611,7 @@ function App() {
     connections,
     foundation,
     drivetrain,
+    electricalConnections,
   });
   const selectedPartDiagnostics = selectedPart
     ? (validationReport.diagnosticsByPartId[selectedPart.id] ?? [])
@@ -697,28 +831,13 @@ function App() {
             </div>
 
             {stage === "foundation" && foundation ? (
-              <>
-                <div className="section-label">FOUNDATION MODEL</div>
-                <div className="foundation-list">
-                  {foundationModels.map((model) => (
-                    <button
-                      key={model.id}
-                      className={`foundation-card ${
-                        foundation.modelId === model.id ? "selected" : ""
-                      }`}
-                      onClick={() => selectFoundationModel(model.id)}
-                    >
-                      <span className="foundation-card-icon">
-                        {model.icon}
-                      </span>
-                      <span>
-                        <strong>{model.name}</strong>
-                        <small>{model.description}</small>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-              </>
+              <FoundationStagePanel
+                foundation={foundation}
+                onSelectFoundationModel={selectFoundationModel}
+                onConfigureProcedural={configureProceduralFoundation}
+                onResetProcedural={resetProceduralFoundation}
+                onImportFoundationStl={importFoundationStl}
+              />
             ) : stage === "structure" ? (
               <StructureStagePanel
                 parts={parts}
@@ -729,6 +848,7 @@ function App() {
                 onAddStructuralPart={addStructuralPart}
                 onReplaceStructuralPart={replaceStructuralPart}
                 onDuplicatePart={duplicatePart}
+                onImportStructuralStl={importStructuralStl}
                 onContinueToBattery={() => setStage("battery")}
                 onBackToFoundation={() => setStage("foundation")}
               />
@@ -987,7 +1107,16 @@ function App() {
               ASSEMBLY HIERARCHY
             </div>
 
-            {independentParts.map((part) => renderHierarchy(part.id))}
+            {anchoredRootParts.map((part) => renderHierarchy(part.id))}
+
+            {unattachedRootParts.length > 0 && (
+              <>
+                <div className="section-label" style={{ marginTop: 10 }}>
+                  UNATTACHED COMPONENTS ({unattachedRootParts.length})
+                </div>
+                {unattachedRootParts.map((part) => renderHierarchy(part.id))}
+              </>
+            )}
           </div>
 
           <div className="panel-footer">
@@ -1196,6 +1325,11 @@ function App() {
                   onAttachPart={attachPart}
                   onDetachPart={detachPart}
                   onDeletePart={deletePartById}
+                  onUpdateImportedConfig={updateImportedPartConfiguration}
+                  onAddCustomInterface={addCustomMountingInterface}
+                  onRemoveCustomInterface={removeCustomMountingInterface}
+                  electricalConnections={electricalConnections}
+                  onRemoveElectricalConnection={removeElectricalConnection}
                 />
               ) : (
                 <div className="placeholder-content">
@@ -1205,14 +1339,14 @@ function App() {
               )
             ) : rightPanelTab === "validation" ? (
               <div className="workshop-validation-panel">
-                <div className="section-label">ASSEMBLY VALIDATION</div>
+                <div className="section-label">ENGINEERING HEALTH &amp; DIAGNOSTICS</div>
                 <div
                   className={`drivetrain-status ${
-                    validationReport.errors.length === 0
-                      ? validationReport.warnings.length === 0
-                        ? "valid"
-                        : "warning"
-                      : "invalid"
+                    validationReport.healthStatus === "error"
+                      ? "invalid"
+                      : validationReport.healthStatus === "warning"
+                        ? "warning"
+                        : "valid"
                   }`}
                   role="status"
                 >
@@ -1220,37 +1354,155 @@ function App() {
                     ? `${validationReport.errors.length} error(s), ${validationReport.warnings.length} warning(s)`
                     : validationReport.warnings.length > 0
                       ? `${validationReport.warnings.length} warning(s), ${validationReport.infos.length} notice(s)`
-                      : "No placement or attachment issues detected"}
+                      : validationReport.infos.length > 0
+                        ? `Ready · ${validationReport.infos.length} advisory notice(s)`
+                        : "All mechanical checks passed"}
                 </div>
 
-                {validationReport.diagnostics.length === 0 ? (
-                  <p className="builder-intro">
-                    All installed components pass bounds, dimension, attachment, and simplified overlap checks.
-                  </p>
-                ) : (
-                  <div className="workshop-diag-list">
-                    {validationReport.diagnostics.map((diag) => (
-                      <button
-                        key={diag.id}
-                        type="button"
-                        className={`workshop-diag-item ${diag.severity}`}
-                        onClick={() => {
-                          if (diag.partId) {
-                            setSelectedId(diag.partId);
-                            setRightPanelTab("inspector");
-                          }
-                        }}
-                      >
-                        <strong>{diag.severity.toUpperCase()}</strong>
-                        <span>{diag.message}</span>
-                      </button>
-                    ))}
+                {lastReplacementWarning && (
+                  <div className="workshop-diag-item warning" role="alert">
+                    <strong>REPLACEMENT IMPACT</strong>
+                    <span>{lastReplacementWarning}</span>
+                    <button
+                      type="button"
+                      className="sim-clear-selection-btn"
+                      onClick={clearReplacementWarning}
+                    >
+                      Dismiss
+                    </button>
                   </div>
                 )}
 
-                <p className="builder-intro" style={{ marginTop: 12 }}>
-                  Simplified AABB overlap detection ignores direct parent-child attachments and symmetric motor zones. Unknown interface metadata is flagged explicitly as unverified.
-                </p>
+                <div className="workshop-subsystems-grid">
+                  {validationReport.subsystems.map((sub) => (
+                    <div
+                      key={sub.key}
+                      className={`workshop-subsystem-card ${sub.status}`}
+                      title={sub.summary}
+                    >
+                      <strong>{sub.label}</strong>
+                      <small>
+                        {sub.errorCount > 0
+                          ? `${sub.errorCount} err`
+                          : sub.warningCount > 0
+                            ? `${sub.warningCount} warn`
+                            : sub.unknownCount > 0
+                              ? `${sub.unknownCount} unverified`
+                              : "OK"}
+                      </small>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="workshop-filter-chips" role="group" aria-label="Filter diagnostics severity">
+                  {(
+                    [
+                      { id: "all", label: `All (${validationReport.diagnostics.length})` },
+                      { id: "error", label: `Errors (${validationReport.errors.length})` },
+                      { id: "warning", label: `Warnings (${validationReport.warnings.length})` },
+                      { id: "info", label: `Info (${validationReport.infos.length})` },
+                    ] as const
+                  ).map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      className={`workshop-chip ${diagFilter === item.id ? "active" : ""}`}
+                      onClick={() => setDiagFilter(item.id)}
+                    >
+                      {item.label}
+                    </button>
+                  ))}
+                </div>
+
+                {validationReport.diagnostics.filter(
+                  (d) => diagFilter === "all" || d.severity === diagFilter
+                ).length === 0 ? (
+                  <p className="builder-intro">
+                    No diagnostics in this category. Assembly uses 3D OBB SAT checks and explicit interface provenance.
+                  </p>
+                ) : (
+                  <div className="workshop-diag-list">
+                    {validationReport.diagnostics
+                      .filter((d) => diagFilter === "all" || d.severity === diagFilter)
+                      .map((diag) => (
+                        <button
+                          key={diag.id}
+                          type="button"
+                          className={`workshop-diag-item ${diag.severity}`}
+                          onClick={() => {
+                            if (diag.partId) {
+                              setSelectedId(diag.partId);
+                              setRightPanelTab("inspector");
+                            }
+                          }}
+                        >
+                          <strong>
+                            {diag.title ?? diag.severity.toUpperCase()} ·{" "}
+                            {diag.severity.toUpperCase()}
+                            {diag.isUnknownAssumption ? " · UNVERIFIED" : ""}
+                          </strong>
+                          <span>{diag.message}</span>
+                          {diag.reason && diag.reason !== diag.message && (
+                            <small className="workshop-diag-meta">{diag.reason}</small>
+                          )}
+                          {diag.correctiveAction && (
+                            <small className="workshop-diag-action">
+                              Fix: {diag.correctiveAction}
+                            </small>
+                          )}
+                        </button>
+                      ))}
+                  </div>
+                )}
+
+                {validationReport.electricalReport && (
+                  <div className="workshop-mount-target" style={{ marginTop: 12 }}>
+                    <div className="section-label">
+                      ELECTRICAL ARCHITECTURE HEALTH ({electricalConnections.length} CONNECTIONS)
+                    </div>
+                    <div
+                      className={`workshop-subsystem-card ${validationReport.electricalReport.healthStatus}`}
+                    >
+                      <strong>
+                        Electrical Subsystem: {validationReport.electricalReport.healthStatus.toUpperCase()}
+                      </strong>
+                      <small>
+                        {validationReport.electricalReport.errorCount} err ·{" "}
+                        {validationReport.electricalReport.warningCount} warn ·{" "}
+                        {validationReport.electricalReport.unknownCount} unverified specs
+                      </small>
+                    </div>
+                    {validationReport.electricalReport.diagnostics.length > 0 && (
+                      <div className="workshop-diag-list" style={{ marginTop: 6 }}>
+                        {validationReport.electricalReport.diagnostics.map((eDiag) => (
+                          <button
+                            key={eDiag.id}
+                            type="button"
+                            className={`workshop-diag-item ${
+                              eDiag.severity === "unknown" ? "info" : eDiag.severity
+                            }`}
+                            onClick={() => {
+                              if (eDiag.partId) {
+                                setSelectedId(eDiag.partId);
+                                setRightPanelTab("inspector");
+                              }
+                            }}
+                          >
+                            <strong>
+                              [ELECTRICAL] {eDiag.title} · {eDiag.severity.toUpperCase()}
+                            </strong>
+                            <span>{eDiag.reason}</span>
+                            {eDiag.correctiveAction && (
+                              <small className="workshop-diag-action">
+                                Fix: {eDiag.correctiveAction}
+                              </small>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             ) : stage === "structure" && foundation ? (
               <>
@@ -1458,73 +1710,201 @@ function App() {
                   <div className="object-icon">▣</div>
                   <div>
                     <div className="object-name">
-                      {foundationModels.find(
-                        (model) => model.id === foundation.modelId
-                      )?.name}
+                      {foundation.mode === "imported" && foundation.imported
+                        ? foundation.imported.fileName
+                        : foundation.procedural
+                          ? PROCEDURAL_ARCHITECTURES.find(
+                              (a) => a.id === foundation.procedural?.architecture
+                            )?.name ?? "Procedural Chassis"
+                          : foundationModels.find(
+                              (model) => model.id === foundation.modelId
+                            )?.name}
                     </div>
-                    <div className="object-type">Primary robot structure</div>
+                    <div className="object-type">
+                      {foundation.mode === "imported"
+                        ? "Imported STL Foundation"
+                        : foundation.procedural
+                          ? `Procedural · ${parts.filter((p) => Boolean(p.foundationMemberRole)).length} structural members`
+                          : "Preset Primary Structure"}
+                    </div>
                   </div>
                 </div>
 
-                <div className="property-row">
-                  <span>Length</span>
-                  <NumericInput
-                    value={foundation.length}
-                    min={0.8}
-                    step={0.1}
-                    onValidChange={(length) =>
-                      updateFoundationDimensions({ length })
-                    }
-                  />
-                </div>
-                <div className="property-row">
-                  <span>Width</span>
-                  <NumericInput
-                    value={foundation.width}
-                    min={0.8}
-                    step={0.1}
-                    onValidChange={(width) =>
-                      updateFoundationDimensions({ width })
-                    }
-                  />
-                </div>
-                <div className="property-row">
-                  <span>Thickness</span>
-                  <NumericInput
-                    value={foundation.height}
-                    min={0.12}
-                    step={0.05}
-                    onValidChange={(height) =>
-                      updateFoundationDimensions({ height })
-                    }
-                  />
-                </div>
+                {foundation.mode === "imported" && foundation.imported ? (
+                  <div className="workshop-mount-target">
+                    <div className="property-row">
+                      <span>Dimensions (L × W × H)</span>
+                      <span>
+                        {foundation.length.toFixed(2)} × {foundation.width.toFixed(2)} ×{" "}
+                        {foundation.height.toFixed(2)} m
+                      </span>
+                    </div>
+                    <div className="property-row">
+                      <span>Mesh / Triangles</span>
+                      <span>
+                        {foundation.imported.inspection.format.toUpperCase()} ·{" "}
+                        {foundation.imported.inspection.triangleCount}
+                      </span>
+                    </div>
+                    <div className="property-row">
+                      <span>Mass</span>
+                      <span>
+                        {foundation.imported.engineering.massKg !== undefined
+                          ? `${foundation.imported.engineering.massKg.toFixed(2)} kg (${foundation.imported.engineering.provenance.method})`
+                          : "Unknown"}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      style={{ marginTop: 8 }}
+                      onClick={() => {
+                        setSelectedId("foundation-chassis");
+                        setRightPanelTab("inspector");
+                      }}
+                    >
+                      Edit Imported Properties &amp; Interfaces
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <div className="property-row">
+                      <span>Length</span>
+                      <NumericInput
+                        value={foundation.length}
+                        min={foundation.mode === "procedural" ? 0.35 : 0.8}
+                        step={0.1}
+                        onValidChange={(length) =>
+                          updateFoundationDimensions({ length })
+                        }
+                      />
+                    </div>
+                    <div className="property-row">
+                      <span>Width</span>
+                      <NumericInput
+                        value={foundation.width}
+                        min={foundation.mode === "procedural" ? 0.35 : 0.8}
+                        step={0.1}
+                        onValidChange={(width) =>
+                          updateFoundationDimensions({ width })
+                        }
+                      />
+                    </div>
+                    <div className="property-row">
+                      <span>Height / Envelope</span>
+                      <NumericInput
+                        value={foundation.height}
+                        min={foundation.mode === "procedural" ? 0.04 : 0.12}
+                        step={0.05}
+                        onValidChange={(height) =>
+                          updateFoundationDimensions({ height })
+                        }
+                      />
+                    </div>
 
-                <div className="section-label">STRUCTURAL DETAILS</div>
-                <label className="foundation-option">
-                  <input
-                    type="checkbox"
-                    checked={foundation.includeTopPlate}
-                    onChange={(event) =>
-                      setFoundationOptions({
-                        includeTopPlate: event.target.checked,
-                      })
-                    }
-                  />
-                  Top structural plate
-                </label>
-                <label className="foundation-option">
-                  <input
-                    type="checkbox"
-                    checked={foundation.includeFrontCover}
-                    onChange={(event) =>
-                      setFoundationOptions({
-                        includeFrontCover: event.target.checked,
-                      })
-                    }
-                  />
-                  Front protective cover
-                </label>
+                    {foundation.procedural && (
+                      <div className="workshop-mount-target">
+                        <div className="section-label">MEMBER OPTIONS</div>
+                        <div className="property-row">
+                          <span>Base Thickness</span>
+                          <NumericInput
+                            value={foundation.procedural.thickness}
+                            min={0.008}
+                            step={0.005}
+                            onValidChange={(thickness) =>
+                              configureProceduralFoundation({ thickness })
+                            }
+                          />
+                        </div>
+                        {(foundation.procedural.architecture === "perimeter-frame" ||
+                          foundation.procedural.architecture === "t-slot-frame" ||
+                          foundation.procedural.architecture === "patterned-frame" ||
+                          foundation.procedural.architecture === "hybrid") && (
+                          <>
+                            <div className="property-row">
+                              <span>Rail Width</span>
+                              <NumericInput
+                                value={foundation.procedural.railWidth}
+                                min={0.02}
+                                step={0.01}
+                                onValidChange={(railWidth) =>
+                                  configureProceduralFoundation({ railWidth })
+                                }
+                              />
+                            </div>
+                            <div className="property-row">
+                              <span>Rail Height</span>
+                              <NumericInput
+                                value={foundation.procedural.railHeight}
+                                min={0.02}
+                                step={0.01}
+                                onValidChange={(railHeight) =>
+                                  configureProceduralFoundation({ railHeight })
+                                }
+                              />
+                            </div>
+                            <label className="foundation-option">
+                              <input
+                                type="checkbox"
+                                checked={foundation.procedural.includeCornerBrackets}
+                                onChange={(e) =>
+                                  configureProceduralFoundation({
+                                    includeCornerBrackets: e.target.checked,
+                                  })
+                                }
+                              />
+                              Corner gusset brackets
+                            </label>
+                          </>
+                        )}
+                        {foundation.procedural.architecture === "sheet-metal-tray" && (
+                          <div className="property-row">
+                            <span>Flange Height</span>
+                            <NumericInput
+                              value={foundation.procedural.flanges.heightM}
+                              min={0.03}
+                              step={0.02}
+                              onValidChange={(heightM) =>
+                                configureProceduralFoundation({
+                                  flanges: {
+                                    ...foundation.procedural!.flanges,
+                                    heightM,
+                                  },
+                                })
+                              }
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    <div className="section-label">STRUCTURAL DETAILS</div>
+                    <label className="foundation-option">
+                      <input
+                        type="checkbox"
+                        checked={foundation.includeTopPlate}
+                        onChange={(event) =>
+                          setFoundationOptions({
+                            includeTopPlate: event.target.checked,
+                          })
+                        }
+                      />
+                      Top structural plate
+                    </label>
+                    <label className="foundation-option">
+                      <input
+                        type="checkbox"
+                        checked={foundation.includeFrontCover}
+                        onChange={(event) =>
+                          setFoundationOptions({
+                            includeFrontCover: event.target.checked,
+                          })
+                        }
+                      />
+                      Front protective cover
+                    </label>
+                  </>
+                )}
 
                 {foundation.confirmed ? (
                   <div className="foundation-confirmed">
@@ -1829,6 +2209,65 @@ function App() {
                   </div>
                 )}
 
+                {structuralMotorCarriers.length > 0 && (
+                  <div className="workshop-mount-target">
+                    <div className="section-label">STRUCTURAL CARRIER MOUNTING</div>
+                    <label className="sim-select-field">
+                      <span>Structural Carrier</span>
+                      <select
+                        aria-label="Structural motor parent"
+                        value={activeMotorCarrier?.id ?? ""}
+                        onChange={(e) => {
+                          setStructuralMotorParentId(e.target.value);
+                          setStructuralMotorIfaceId("");
+                        }}
+                      >
+                        {structuralMotorCarriers.map((carrier) => (
+                          <option key={carrier.id} value={carrier.id}>
+                            {carrier.name}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                    {activeMotorCarrierInterfaces.length > 0 && (
+                      <label className="sim-select-field">
+                        <span>Mount Interface</span>
+                        <select
+                          aria-label="Structural motor interface"
+                          value={activeMotorCarrierIface?.id ?? ""}
+                          onChange={(e) =>
+                            setStructuralMotorIfaceId(e.target.value)
+                          }
+                        >
+                          {activeMotorCarrierInterfaces.map((iface) => (
+                            <option key={iface.id} value={iface.id}>
+                              {iface.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    )}
+                    <button
+                      type="button"
+                      className="secondary-button"
+                      disabled={
+                        !selectedMotorDefinition ||
+                        !activeMotorCarrier ||
+                        mountedMotors.length >= 4
+                      }
+                      onClick={() => {
+                        if (!activeMotorCarrier) return;
+                        mountMotorToParent(
+                          activeMotorCarrier.id,
+                          activeMotorCarrierIface?.id
+                        );
+                      }}
+                    >
+                      Mount {selectedMotorDefinition?.name ?? "Motor"} on Structure
+                    </button>
+                  </div>
+                )}
+
                 <div className="section-label">
                   INSTALLED MOTORS ({mountedMotors.length}/4)
                 </div>
@@ -1836,11 +2275,7 @@ function App() {
                   mountedMotors.map((motor) => (
                     <div className="installed-motor" key={motor.id}>
                       <span>{motor.name}</span>
-                      <small>
-                        {motorMountZones.find(
-                          (zone) => zone.id === motor.mountingZoneId
-                        )?.name}
-                      </small>
+                      <small>{getMotorLocationLabel(motor)}</small>
                     </div>
                   ))
                 ) : (
@@ -2016,11 +2451,7 @@ function App() {
                         >
                           <span>
                             <strong>{motorDefinition?.name ?? motor.name}</strong>
-                            <small>
-                              {motorMountZones.find(
-                                (zone) => zone.id === motor.mountingZoneId
-                              )?.name}
-                            </small>
+                            <small>{getMotorLocationLabel(motor)}</small>
                           </span>
                           <small className={assignment ? "assignment-installed" : ""}>
                             {assignment
@@ -2088,11 +2519,7 @@ function App() {
                   return (
                     <div className="installed-motor" key={motor.id}>
                       <span>{wheel?.name ?? "No wheel assigned"}</span>
-                      <small>
-                        {motorMountZones.find(
-                          (zone) => zone.id === motor.mountingZoneId
-                        )?.name}
-                      </small>
+                      <small>{getMotorLocationLabel(motor)}</small>
                     </div>
                   );
                 })}
@@ -2152,9 +2579,7 @@ function App() {
                   <div className="installed-motor" key={motor.id}>
                     <span>{motor.name}</span>
                     <small>
-                      {motorMountZones.find(
-                        (zone) => zone.id === motor.mountingZoneId
-                      )?.name}
+                      {getMotorLocationLabel(motor)}
                       {" · "}
                       {wheelByMotorId.get(motor.id)?.name ?? "No wheel"}
                     </small>

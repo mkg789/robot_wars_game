@@ -43,34 +43,142 @@ function getConnectionPartIds(connection: RobotConnection) {
   };
 }
 
-function hasFoundationMount(
+export type MotorMechanicalSupport = {
+  supported: boolean;
+  mountKind: "foundation-zone" | "structural" | "unmounted";
+  mountingZoneId: string;
+  mountingLocation: string;
+  ancestorChain: string[];
+};
+
+export function resolveMotorMechanicalSupport(
   motor: RobotPart,
-  connections: RobotConnection[],
+  parts: readonly RobotPart[],
+  connections: readonly RobotConnection[],
   foundation: FoundationConfig
-): boolean {
-  if (!motor.mountingZoneId) return false;
-  const validZone = generateMotorMountZones(foundation).some(
-    (zone) => zone.id === motor.mountingZoneId
+): MotorMechanicalSupport {
+  const zones = new Map(
+    generateMotorMountZones(foundation).map((zone) => [zone.id, zone])
   );
-  const foundationConnection = connections.some((connection) => {
-    if (connection.type !== "Mechanical") return false;
-    const { parentId, childId } = getConnectionPartIds(connection);
-    return parentId === "foundation-chassis" && childId === motor.id;
-  });
-  return validZone && foundationConnection;
+  const partsById = new Map(parts.map((part) => [part.id, part]));
+  const mechanicalByChildId = new Map<string, RobotConnection>();
+  for (const connection of connections) {
+    if (connection.type !== "Mechanical") continue;
+    const { childId } = getConnectionPartIds(connection);
+    if (!mechanicalByChildId.has(childId)) {
+      mechanicalByChildId.set(childId, connection);
+    }
+  }
+
+  const directConnection = mechanicalByChildId.get(motor.id);
+  if (!directConnection) {
+    return {
+      supported: false,
+      mountKind: "unmounted",
+      mountingZoneId: motor.mountingZoneId ?? "",
+      mountingLocation: "Unmounted",
+      ancestorChain: [motor.id],
+    };
+  }
+
+  const { parentId: directParentId } = getConnectionPartIds(directConnection);
+  const zone = motor.mountingZoneId ? zones.get(motor.mountingZoneId) : undefined;
+
+  if (directParentId === "foundation-chassis") {
+    const parentIfaceId = directConnection.parentMountPointId;
+    const isZoneAttachment =
+      !parentIfaceId ||
+      parentIfaceId === "foundation-zone" ||
+      parentIfaceId === "foundation-chassis";
+    if (isZoneAttachment) {
+      if (!zone) {
+        return {
+          supported: false,
+          mountKind: "unmounted",
+          mountingZoneId: motor.mountingZoneId ?? "",
+          mountingLocation: "Invalid Mount Zone",
+          ancestorChain: [motor.id, "foundation-chassis"],
+        };
+      }
+      return {
+        supported: true,
+        mountKind: "foundation-zone",
+        mountingZoneId: zone.id,
+        mountingLocation: zone.name,
+        ancestorChain: [motor.id, "foundation-chassis"],
+      };
+    }
+
+    const side: DrivetrainSide = motor.position[2] >= 0 ? "left" : "right";
+    return {
+      supported: true,
+      mountKind: "structural",
+      mountingZoneId: motor.mountingZoneId ?? `structural-${side}`,
+      mountingLocation: `Chassis (${parentIfaceId})`,
+      ancestorChain: [motor.id, "foundation-chassis"],
+    };
+  }
+
+  const directParent = partsById.get(directParentId);
+  const visited = new Set<string>([motor.id]);
+  const ancestorChain: string[] = [motor.id];
+  let currentId: string | undefined = directParentId;
+
+  while (currentId) {
+    if (visited.has(currentId)) {
+      return {
+        supported: false,
+        mountKind: "unmounted",
+        mountingZoneId: motor.mountingZoneId ?? "",
+        mountingLocation: "Circular Mount",
+        ancestorChain,
+      };
+    }
+    visited.add(currentId);
+    const currentPart = partsById.get(currentId);
+    if (!currentPart || currentPart.type === "Wheel" || currentPart.type === "Motor") {
+      return {
+        supported: false,
+        mountKind: "unmounted",
+        mountingZoneId: motor.mountingZoneId ?? "",
+        mountingLocation: "Unsupported Parent",
+        ancestorChain,
+      };
+    }
+    ancestorChain.push(currentId);
+
+    if (currentId === "foundation-chassis") {
+      const side: DrivetrainSide = motor.position[2] >= 0 ? "left" : "right";
+      return {
+        supported: true,
+        mountKind: "structural",
+        mountingZoneId: zone?.id ?? motor.mountingZoneId ?? `structural-${side}`,
+        mountingLocation: `Structural (${directParent?.name ?? "Frame"})`,
+        ancestorChain,
+      };
+    }
+
+    const nextConn = mechanicalByChildId.get(currentId);
+    currentId = nextConn ? getConnectionPartIds(nextConn).parentId : undefined;
+  }
+
+  return {
+    supported: false,
+    mountKind: "unmounted",
+    mountingZoneId: motor.mountingZoneId ?? "",
+    mountingLocation: directParent ? `Unanchored (${directParent.name})` : "Unmounted",
+    ancestorChain,
+  };
 }
 
 export function getPoweredWheelAssemblies(
-  parts: RobotPart[],
-  connections: RobotConnection[],
+  parts: readonly RobotPart[],
+  connections: readonly RobotConnection[],
   foundation: FoundationConfig | null
 ): PoweredWheelAssembly[] {
   if (!foundation) return [];
 
   const partById = new Map(parts.map((part) => [part.id, part]));
-  const zones = new Map(
-    generateMotorMountZones(foundation).map((zone) => [zone.id, zone])
-  );
   const motorWheelConnections = connections.filter(
     (connection) => connection.type === "Motor-Wheel"
   );
@@ -80,34 +188,39 @@ export function getPoweredWheelAssemblies(
       getConnectionPartIds(connection);
     const motor = partById.get(motorId);
     const wheel = partById.get(wheelId);
-    const zone = motor?.mountingZoneId
-      ? zones.get(motor.mountingZoneId)
-      : undefined;
     const wheelConnections = motorWheelConnections.filter(
       (item) => getConnectionPartIds(item).childId === wheelId
     );
 
+    if (!motor || motor.type !== "Motor" || !wheel || wheel.type !== "Wheel") {
+      return [];
+    }
+
+    const support = resolveMotorMechanicalSupport(
+      motor,
+      parts,
+      connections,
+      foundation
+    );
+
     if (
-      !motor ||
-      motor.type !== "Motor" ||
-      !wheel ||
-      wheel.type !== "Wheel" ||
-      !zone ||
-      !hasFoundationMount(motor, connections, foundation) ||
+      !support.supported ||
       wheel.parentAttachmentId !== connection.id ||
       wheelConnections.length !== 1
     ) {
       return [];
     }
 
-    return [{
-      motorId,
-      wheelId,
-      motor,
-      wheel,
-      mountingZoneId: zone.id,
-      mountingLocation: zone.name,
-    }];
+    return [
+      {
+        motorId,
+        wheelId,
+        motor,
+        wheel,
+        mountingZoneId: support.mountingZoneId,
+        mountingLocation: support.mountingLocation,
+      },
+    ];
   });
 }
 
@@ -131,8 +244,8 @@ function isValidAssignment(
 
 export function validateDrivetrain(
   configuration: DrivetrainConfiguration,
-  parts: RobotPart[],
-  connections: RobotConnection[],
+  parts: readonly RobotPart[],
+  connections: readonly RobotConnection[],
   foundation: FoundationConfig | null
 ): DrivetrainValidation {
   const errors = new Set<string>();
@@ -187,7 +300,8 @@ export function validateDrivetrain(
       errors.add("The selected motor is no longer installed.");
     } else if (
       !foundation ||
-      !hasFoundationMount(motor, connections, foundation)
+      !resolveMotorMechanicalSupport(motor, parts, connections, foundation)
+        .supported
     ) {
       errors.add(`${motor.name} is not mounted to the foundation.`);
     }
@@ -295,6 +409,29 @@ export function suggestDrivetrainMapping(
       if (!assembly) continue;
 
       assignments[side][assignments[side].findIndex((item) => item === null)] = {
+        motorId: assembly.motorId,
+        wheelId: assembly.wheelId,
+      };
+      usedMotorIds.add(assembly.motorId);
+      usedWheelIds.add(assembly.wheelId);
+    }
+
+    // Fill any remaining slots with structurally-mounted motors matching side (+Z = left, -Z = right)
+    const remainingSideAssemblies = assemblies
+      .filter(
+        (candidate) =>
+          !usedMotorIds.has(candidate.motorId) &&
+          !usedWheelIds.has(candidate.wheelId) &&
+          (side === "left"
+            ? candidate.motor.position[2] >= 0
+            : candidate.motor.position[2] < 0)
+      )
+      .sort((a, b) => b.motor.position[0] - a.motor.position[0]);
+
+    for (const assembly of remainingSideAssemblies) {
+      const nextEmptyIndex = assignments[side].findIndex((item) => item === null);
+      if (nextEmptyIndex === -1) break;
+      assignments[side][nextEmptyIndex] = {
         motorId: assembly.motorId,
         wheelId: assembly.wheelId,
       };

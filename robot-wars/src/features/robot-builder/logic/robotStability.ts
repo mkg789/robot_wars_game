@@ -280,9 +280,21 @@ export function calculateCenterOfMass(
     }
 
     const pos = part.position ?? [0, 0, 0];
-    const px = Number.isFinite(pos[0]) ? pos[0] : 0;
-    const py = Number.isFinite(pos[1]) ? pos[1] : 0;
-    const pz = Number.isFinite(pos[2]) ? pos[2] : 0;
+    let px = Number.isFinite(pos[0]) ? pos[0] : 0;
+    let py = Number.isFinite(pos[1]) ? pos[1] : 0;
+    let pz = Number.isFinite(pos[2]) ? pos[2] : 0;
+
+    // Incorporate user-entered or calculated local CoM offset for imported STL parts
+    const localCom = part.importedEngineering?.centerOfMassLocal;
+    if (
+      localCom &&
+      part.importedEngineering?.centerOfMassMode !== "unknown" &&
+      localCom.every((v) => typeof v === "number" && Number.isFinite(v))
+    ) {
+      px += localCom[0];
+      py += localCom[1];
+      pz += localCom[2];
+    }
 
     totalMass += massRes.massKg;
     momentX += massRes.massKg * px;

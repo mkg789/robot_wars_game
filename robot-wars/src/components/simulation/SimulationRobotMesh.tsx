@@ -16,6 +16,7 @@ import type { SimulationRobotConfig } from "../../features/simulation/types/simu
 import BatteryModel from "../viewport/BatteryModel";
 import { ChassisModel, TopPlateModel } from "../viewport/ChassisModel";
 import ControllerModel from "../viewport/ControllerModel";
+import CustomMeshModel from "../viewport/CustomMeshModel";
 import MotorModel from "../viewport/MotorModel";
 import StructuralModel from "../viewport/StructuralModel";
 import WheelModel from "../viewport/WheelModel";
@@ -43,6 +44,18 @@ function renderNonWheelAssemblyPart(
     part.boxExtents[2],
   ];
 
+  if (part.meshAssetId) {
+    return (
+      <CustomMeshModel
+        assetId={part.meshAssetId}
+        meshTransform={part.meshTransform}
+        color={part.color}
+        selected={isSelected}
+        mountingPatterns={part.mountingPatterns}
+      />
+    );
+  }
+
   switch (part.kind) {
     case "chassis":
       return (
@@ -50,6 +63,8 @@ function renderNonWheelAssemblyPart(
           size={boxExtents}
           color={part.color}
           selected={isSelected}
+          proceduralDatumOnly={part.hideSolidChassisShell}
+          mountingPatterns={part.mountingPatterns}
         />
       );
     case "top-plate":

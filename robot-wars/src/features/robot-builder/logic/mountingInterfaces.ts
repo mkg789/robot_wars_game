@@ -3,6 +3,8 @@ import {
   getPartBoundingExtents,
   getPartBoxExtents,
 } from "./geometryAdapters";
+import { patternToAttachmentInterfaces } from "./mountingPatterns";
+import type { ProvenanceMeta } from "../types/engineering.types";
 import type {
   AttachmentCompatibilityStatus,
   AttachmentInterface,
@@ -11,6 +13,17 @@ import type {
   RobotConnection,
   RobotPart,
 } from "../types/robot.types";
+
+const ESTIMATED_INTERFACE_PROVENANCE: ProvenanceMeta = {
+  method: "estimated",
+  basis: "Derived parametrically from Workshop component bounding geometry",
+  notes: "Nominal envelope constraint; physical fastener patterns are unverified.",
+};
+
+const UNKNOWN_INTERFACE_PROVENANCE: ProvenanceMeta = {
+  method: "unknown",
+  notes: "Interface specifications are absent or unverified for this component.",
+};
 
 export interface InterfaceCompatibilityResult {
   readonly status: AttachmentCompatibilityStatus;
@@ -63,8 +76,16 @@ const KNOWN_COMPATIBILITY: Readonly<
     "bracket-face",
     "plate-mount",
     "generic-structural",
+    "motor-mount",
   ],
-  "motor-mount": ["wheel-hub", "foundation-rail", "rail-slot", "bracket-face"],
+  "motor-mount": [
+    "wheel-hub",
+    "foundation-rail",
+    "rail-slot",
+    "bracket-face",
+    "plate-mount",
+    "generic-structural",
+  ],
   "wheel-hub": ["motor-mount"],
   "generic-structural": [
     "foundation-deck",
@@ -74,6 +95,7 @@ const KNOWN_COMPATIBILITY: Readonly<
     "bracket-face",
     "plate-mount",
     "generic-structural",
+    "motor-mount",
   ],
   unknown: [],
 };
@@ -147,6 +169,12 @@ export function getFoundationMountingInterfaces(
       rotation: [0, 0, 0],
       compatibleWith: ["plate-mount", "bracket-face", "rail-slot", "generic-structural"],
       compatibilityStatus: "compatible",
+      dimensionConstraint: {
+        maxLengthM: foundation.length * 0.9,
+        maxWidthM: foundation.width * 0.85,
+        maxPayloadKg: 15,
+      },
+      provenance: ESTIMATED_INTERFACE_PROVENANCE,
     },
     {
       id: "foundation-top-front",
@@ -156,6 +184,12 @@ export function getFoundationMountingInterfaces(
       rotation: [0, 0, 0],
       compatibleWith: ["plate-mount", "bracket-face", "rail-slot", "generic-structural"],
       compatibilityStatus: "compatible",
+      dimensionConstraint: {
+        maxLengthM: foundation.length * 0.45,
+        maxWidthM: foundation.width * 0.8,
+        maxPayloadKg: 10,
+      },
+      provenance: ESTIMATED_INTERFACE_PROVENANCE,
     },
     {
       id: "foundation-top-rear",
@@ -165,6 +199,12 @@ export function getFoundationMountingInterfaces(
       rotation: [0, 0, 0],
       compatibleWith: ["plate-mount", "bracket-face", "rail-slot", "generic-structural"],
       compatibilityStatus: "compatible",
+      dimensionConstraint: {
+        maxLengthM: foundation.length * 0.45,
+        maxWidthM: foundation.width * 0.8,
+        maxPayloadKg: 10,
+      },
+      provenance: ESTIMATED_INTERFACE_PROVENANCE,
     },
     {
       id: "foundation-front-face",
@@ -174,6 +214,12 @@ export function getFoundationMountingInterfaces(
       rotation: [0, 0, 0],
       compatibleWith: ["generic-structural", "bracket-face"],
       compatibilityStatus: "compatible",
+      dimensionConstraint: {
+        maxLengthM: 0.45,
+        maxWidthM: foundation.width * 1.15,
+        maxPayloadKg: 8,
+      },
+      provenance: ESTIMATED_INTERFACE_PROVENANCE,
     },
     {
       id: "foundation-rear-face",
@@ -183,6 +229,12 @@ export function getFoundationMountingInterfaces(
       rotation: [0, Math.PI, 0],
       compatibleWith: ["generic-structural", "bracket-face"],
       compatibilityStatus: "compatible",
+      dimensionConstraint: {
+        maxLengthM: 0.45,
+        maxWidthM: foundation.width * 1.15,
+        maxPayloadKg: 8,
+      },
+      provenance: ESTIMATED_INTERFACE_PROVENANCE,
     },
     {
       id: "foundation-left-rail",
@@ -192,6 +244,12 @@ export function getFoundationMountingInterfaces(
       rotation: [0, -Math.PI / 2, 0],
       compatibleWith: ["rail-slot", "bracket-face", "generic-structural", "motor-mount"],
       compatibilityStatus: "compatible",
+      dimensionConstraint: {
+        maxLengthM: foundation.length,
+        maxWidthM: 0.55,
+        maxPayloadKg: 8,
+      },
+      provenance: ESTIMATED_INTERFACE_PROVENANCE,
     },
     {
       id: "foundation-right-rail",
@@ -201,6 +259,12 @@ export function getFoundationMountingInterfaces(
       rotation: [0, Math.PI / 2, 0],
       compatibleWith: ["rail-slot", "bracket-face", "generic-structural", "motor-mount"],
       compatibilityStatus: "compatible",
+      dimensionConstraint: {
+        maxLengthM: foundation.length,
+        maxWidthM: 0.55,
+        maxPayloadKg: 8,
+      },
+      provenance: ESTIMATED_INTERFACE_PROVENANCE,
     },
   ];
 }
@@ -213,8 +277,24 @@ export function resolvePartMountingInterfaces(
   part: RobotPart,
   foundation?: FoundationConfig | null
 ): AttachmentInterface[] {
+  const customList = part.customMountingInterfaces ?? [];
+  const patternList = (part.mountingPatterns ?? []).flatMap((pattern) =>
+    patternToAttachmentInterfaces(pattern)
+  );
+
   if (part.id === "foundation-chassis" && foundation) {
-    return getFoundationMountingInterfaces(foundation);
+    if (foundation.mode === "imported") {
+      // For imported foundations, prefer user-defined mounting interfaces & optional patterns;
+      // expose nominal fallback envelope interfaces marked explicitly as estimated if none authored yet.
+      if (customList.length > 0 || patternList.length > 0) {
+        return [...customList, ...patternList];
+      }
+    }
+    return [...getFoundationMountingInterfaces(foundation), ...customList, ...patternList];
+  }
+
+  if (part.meshAssetId && (customList.length > 0 || patternList.length > 0)) {
+    return [...customList, ...patternList];
   }
 
   const extents =
@@ -234,8 +314,9 @@ export function resolvePartMountingInterfaces(
         kind: "motor-mount",
         position: [0, -hhy, 0],
         rotation: [0, 0, 0],
-        compatibleWith: ["foundation-rail", "rail-slot", "bracket-face"],
+        compatibleWith: ["foundation-rail", "rail-slot", "bracket-face", "plate-mount"],
         compatibilityStatus: "compatible",
+        provenance: ESTIMATED_INTERFACE_PROVENANCE,
       },
       {
         id: "motor-shaft",
@@ -244,7 +325,14 @@ export function resolvePartMountingInterfaces(
         position: [hx + lx * 0.55, 0, 0],
         rotation: [0, 0, 0],
         compatibleWith: ["wheel-hub"],
-        compatibilityStatus: "compatible",
+        compatibilityStatus:
+          part.engineeringSpec?.category === "motor" && part.engineeringSpec.shaft
+            ? "compatible"
+            : "unknown",
+        provenance:
+          part.engineeringSpec?.category === "motor" && part.engineeringSpec.shaft
+            ? part.engineeringSpec.generalProvenance ?? ESTIMATED_INTERFACE_PROVENANCE
+            : UNKNOWN_INTERFACE_PROVENANCE,
       },
     ];
   }
@@ -258,7 +346,14 @@ export function resolvePartMountingInterfaces(
         position: [-hx, 0, 0],
         rotation: [0, 0, 0],
         compatibleWith: ["motor-mount"],
-        compatibilityStatus: "compatible",
+        compatibilityStatus:
+          part.engineeringSpec?.category === "wheel" && part.engineeringSpec.hub
+            ? "compatible"
+            : "unknown",
+        provenance:
+          part.engineeringSpec?.category === "wheel" && part.engineeringSpec.hub
+            ? part.engineeringSpec.generalProvenance ?? ESTIMATED_INTERFACE_PROVENANCE
+            : UNKNOWN_INTERFACE_PROVENANCE,
       },
     ];
   }
@@ -307,6 +402,11 @@ export function resolvePartMountingInterfaces(
 
   if (part.structuralCategory === "rail" || part.structuralCategory === "beam" || part.structuralCategory === "crossbar") {
     const kind: AttachmentInterfaceKind = "rail-slot";
+    const spanConstraint = {
+      maxLengthM: Math.max(lx, wz) * 1.4,
+      maxWidthM: Math.max(lx, wz) * 1.1,
+      maxPayloadKg: part.structuralCategory === "beam" ? 10 : 6,
+    };
     return [
       {
         id: "rail-bottom",
@@ -316,6 +416,8 @@ export function resolvePartMountingInterfaces(
         rotation: [0, 0, 0],
         compatibleWith: ["foundation-deck", "foundation-rail", "bracket-face", "plate-mount", "rail-slot", "generic-structural"],
         compatibilityStatus: "compatible",
+        dimensionConstraint: spanConstraint,
+        provenance: ESTIMATED_INTERFACE_PROVENANCE,
       },
       {
         id: "rail-top",
@@ -325,6 +427,30 @@ export function resolvePartMountingInterfaces(
         rotation: [0, 0, 0],
         compatibleWith: ["bracket-face", "plate-mount", "rail-slot", "motor-mount", "generic-structural"],
         compatibilityStatus: "compatible",
+        dimensionConstraint: spanConstraint,
+        provenance: ESTIMATED_INTERFACE_PROVENANCE,
+      },
+      {
+        id: "rail-left-flange",
+        label: "Side Slot (+Z)",
+        kind,
+        position: [0, 0, hz],
+        rotation: [0, -Math.PI / 2, 0],
+        compatibleWith: ["bracket-face", "rail-slot", "motor-mount", "generic-structural"],
+        compatibilityStatus: "compatible",
+        dimensionConstraint: spanConstraint,
+        provenance: ESTIMATED_INTERFACE_PROVENANCE,
+      },
+      {
+        id: "rail-right-flange",
+        label: "Side Slot (-Z)",
+        kind,
+        position: [0, 0, -hz],
+        rotation: [0, Math.PI / 2, 0],
+        compatibleWith: ["bracket-face", "rail-slot", "motor-mount", "generic-structural"],
+        compatibilityStatus: "compatible",
+        dimensionConstraint: spanConstraint,
+        provenance: ESTIMATED_INTERFACE_PROVENANCE,
       },
       {
         id: "rail-front-end",
@@ -334,6 +460,8 @@ export function resolvePartMountingInterfaces(
         rotation: [0, 0, 0],
         compatibleWith: ["bracket-face", "rail-slot", "generic-structural"],
         compatibilityStatus: "compatible",
+        dimensionConstraint: { maxLengthM: 0.6, maxWidthM: 0.6, maxPayloadKg: 4 },
+        provenance: ESTIMATED_INTERFACE_PROVENANCE,
       },
       {
         id: "rail-rear-end",
@@ -343,11 +471,18 @@ export function resolvePartMountingInterfaces(
         rotation: [0, Math.PI, 0],
         compatibleWith: ["bracket-face", "rail-slot", "generic-structural"],
         compatibilityStatus: "compatible",
+        dimensionConstraint: { maxLengthM: 0.6, maxWidthM: 0.6, maxPayloadKg: 4 },
+        provenance: ESTIMATED_INTERFACE_PROVENANCE,
       },
     ];
   }
 
   if (part.structuralCategory === "bracket") {
+    const bracketConstraint = {
+      maxLengthM: Math.max(0.55, lx * 3.5),
+      maxWidthM: Math.max(0.55, wz * 3.5),
+      maxPayloadKg: 4,
+    };
     return [
       {
         id: "bracket-base",
@@ -357,6 +492,8 @@ export function resolvePartMountingInterfaces(
         rotation: [0, 0, 0],
         compatibleWith: ["foundation-deck", "foundation-rail", "rail-slot", "plate-mount", "generic-structural"],
         compatibilityStatus: "compatible",
+        dimensionConstraint: bracketConstraint,
+        provenance: ESTIMATED_INTERFACE_PROVENANCE,
       },
       {
         id: "bracket-side-flange",
@@ -366,6 +503,8 @@ export function resolvePartMountingInterfaces(
         rotation: [0, 0, 0],
         compatibleWith: ["rail-slot", "plate-mount", "motor-mount", "generic-structural"],
         compatibilityStatus: "compatible",
+        dimensionConstraint: bracketConstraint,
+        provenance: ESTIMATED_INTERFACE_PROVENANCE,
       },
     ];
   }

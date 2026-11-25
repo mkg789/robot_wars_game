@@ -252,6 +252,7 @@ export default function RobotScene({
       .map((connection) => connection.parentId)
   );
   const targetY = foundation ? foundation.height * 0.5 : 0.5;
+  const hasProceduralMembers = parts.some((p) => Boolean(p.foundationMemberRole));
   const groundScale = Math.max(
     foundation?.length ?? 2,
     foundation?.width ?? 1.5
@@ -342,6 +343,7 @@ export default function RobotScene({
               )
             }
             transformMode={transformMode}
+            hasProceduralMembers={hasProceduralMembers}
             onSelect={() => setSelectedId(part.id)}
             onTransformUpdate={(position, rotation, size) =>
               updatePartTransform(part.id, position, rotation, size)

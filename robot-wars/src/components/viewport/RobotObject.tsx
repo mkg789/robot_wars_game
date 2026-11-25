@@ -8,6 +8,7 @@ import ControllerModel, {
 } from "./ControllerModel";
 import MotorModel from "./MotorModel";
 import { ChassisModel, TopPlateModel } from "./ChassisModel";
+import CustomMeshModel from "./CustomMeshModel";
 import StructuralModel from "./StructuralModel";
 import WheelModel from "./WheelModel";
 import { batteryCatalogue } from "../../features/robot-builder/data/batteryCatalogue";
@@ -37,6 +38,7 @@ type RobotObjectProps = {
   onWheelTransformEnd?: (position: [number, number, number]) => void;
   attached: boolean;
   highlighted?: boolean;
+  hasProceduralMembers?: boolean;
 };
 
 export default function RobotObject({
@@ -50,6 +52,7 @@ export default function RobotObject({
   onWheelTransformEnd,
   attached,
   highlighted = false,
+  hasProceduralMembers = false,
 }: RobotObjectProps) {
   const groupRef = useRef<Group>(null);
   const isTransformingRef = useRef(false);
@@ -128,11 +131,24 @@ export default function RobotObject({
         onSelect();
       }}
     >
-      {part.id === "foundation-chassis" ? (
+      {part.meshAssetId ? (
+        <CustomMeshModel
+          assetId={part.meshAssetId}
+          meshTransform={part.meshTransform}
+          color={part.color}
+          selected={selected || highlighted}
+          collisionConfig={part.collisionConfig}
+          showCollisionOverlay={selected}
+          customInterfaces={part.customMountingInterfaces}
+          mountingPatterns={part.mountingPatterns}
+        />
+      ) : part.id === "foundation-chassis" ? (
         <ChassisModel
           size={boxExtents}
           color={part.color}
           selected={selected || highlighted}
+          proceduralDatumOnly={hasProceduralMembers}
+          mountingPatterns={part.mountingPatterns}
         />
       ) : part.id === "foundation-top-plate" ? (
         <TopPlateModel
