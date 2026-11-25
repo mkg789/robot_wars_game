@@ -3,6 +3,7 @@ import { useState, type ReactNode } from "react";
 import { useRobotStore } from "./store/robotStore";
 
 import RobotScene from "./components/viewport/RobotScene";
+import SimulationView from "./components/simulation/SimulationView";
 import type { MountCandidate } from "./features/robot-builder/logic/mounting";
 import { foundationModels } from "./features/robot-builder/data/foundationModels";
 import { motorCatalogue } from "./features/robot-builder/data/motorCatalogue";
@@ -123,6 +124,9 @@ function VisibilityIcon({ visible }: { visible: boolean }) {
 // --------------------------------------------------
 
 function App() {
+  const [workspaceMode, setWorkspaceMode] = useState<"workshop" | "simulation">(
+    "workshop"
+  );
   const [mountCandidate, setMountCandidate] =
     useState<MountCandidate | null>(null);
   const [collapsedPartIds, setCollapsedPartIds] = useState<Set<string>>(
@@ -413,6 +417,12 @@ function App() {
   );
   const drivetrainSlotCount = getDrivetrainSlotCount(drivetrain.type);
 
+  if (workspaceMode === "simulation") {
+    return (
+      <SimulationView onExitSimulation={() => setWorkspaceMode("workshop")} />
+    );
+  }
+
   const renderDrivetrainGroup = (side: DrivetrainSide) => {
     const sideLabel = side === "left" ? "Left" : "Right";
     return (
@@ -514,7 +524,13 @@ function App() {
         <div className="topbar-actions">
           <button className="top-button">Save</button>
           <button className="top-button">Export</button>
-          <button className="primary-button">Test Robot</button>
+          <button
+            type="button"
+            className="primary-button"
+            onClick={() => setWorkspaceMode("simulation")}
+          >
+            Test Robot
+          </button>
         </div>
       </header>
 
