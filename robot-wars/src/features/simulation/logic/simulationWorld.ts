@@ -13,6 +13,15 @@
  * entire simulation orchestration can be tested headlessly.
  */
 
+import type { ElectricalConnection } from "../../electrical/types/electrical.types";
+import { RobotControlController } from "../../programming/logic/robotControlController";
+import type {
+  CommandNormalizationResult,
+  MotorChannelTarget,
+  RobotControlApi,
+  RobotControlRoutine,
+  RobotProgramControllerState,
+} from "../../programming/types/control.types";
 import type {
   DrivetrainConfiguration,
   FoundationConfig,
@@ -334,6 +343,7 @@ export class SimulationWorld {
   private latestStepDiagnostics: DynamicsStepResult | null = null;
   private lastError: string | null = null;
   private readonly listeners = new Set<SimulationWorldListener>();
+  private readonly controlController: RobotControlController;
 
   constructor(options: SimulationWorldOptions) {
     if (!options || typeof options !== "object") {
@@ -400,6 +410,11 @@ export class SimulationWorld {
       this.resolvedInitialPose,
       this.runnerOptions
     );
+    this.controlController = new RobotControlController({
+      robotConfig: this.robotConfig,
+      parts: options.parts,
+      electricalConnections: options.electricalConnections,
+    });
   }
 
   /**
@@ -411,6 +426,7 @@ export class SimulationWorld {
     readonly connections: readonly RobotConnection[];
     readonly drivetrain: DrivetrainConfiguration | null;
     readonly foundation?: FoundationConfig | null;
+    readonly electricalConnections?: readonly ElectricalConnection[];
     readonly arena?: ArenaConfig;
     readonly initialPose?: { readonly x?: number; readonly z?: number; readonly heading?: number };
     readonly collisionResponse?: SimulationWorldOptions["collisionResponse"];
@@ -454,6 +470,8 @@ export class SimulationWorld {
       const world = new SimulationWorld({
         robotConfig: compilation.config,
         arena: targetArena,
+        parts: params.parts,
+        electricalConnections: params.electricalConnections,
         initialPose: params.initialPose,
         collisionResponse: params.collisionResponse,
         runnerOptions: {
@@ -560,7 +578,76 @@ export class SimulationWorld {
       activeInput: this.activeInput,
       runnerState: this.runnerState,
       telemetry: this.getTelemetrySnapshot(),
+      controlState: this.controlController.getState(),
     };
+  }
+
+  getControlApi(): RobotControlApi {
+    return this.controlController;
+  }
+
+  getControlState(): RobotProgramControllerState {
+    return this.controlController.getState();
+  }
+
+  setProgramRoutine(routine: RobotControlRoutine | null): void {
+    this.controlController.setProgramRoutine(routine);
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+  }
+
+  startProgram(): boolean {
+    if (this.lifecycleStatus === "error") return false;
+    this.activeControls = NEUTRAL_DRIVE_CONTROLS;
+    const started = this.controlController.startProgram();
+    this.activeInput = this.controlController.getDrivetrainInput();
+    if (started && this.lifecycleStatus !== "running") {
+      this.lifecycleStatus = "running";
+    }
+    this.notify();
+    return started;
+  }
+
+  stopProgram(): void {
+    this.controlController.stopProgram();
+    this.activeControls = NEUTRAL_DRIVE_CONTROLS;
+    this.activeInput = NEUTRAL_DRIVETRAIN_INPUT;
+    this.notify();
+  }
+
+  setManualControlMode(): void {
+    this.controlController.setControlSource("manual");
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+  }
+
+  setMotorPower(
+    target: MotorChannelTarget,
+    power: number
+  ): CommandNormalizationResult {
+    if (this.controlController.getControlSource() === "manual") {
+      this.controlController.setControlSource("program");
+    }
+    this.activeControls = NEUTRAL_DRIVE_CONTROLS;
+    const result = this.controlController.setMotorPower(target, power);
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+    return result;
+  }
+
+  stopMotors(target: MotorChannelTarget = "both"): CommandNormalizationResult {
+    const result = this.controlController.stopMotors(target);
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+    return result;
+  }
+
+  stopRobot(): CommandNormalizationResult {
+    this.activeControls = NEUTRAL_DRIVE_CONTROLS;
+    const result = this.controlController.stopRobot();
+    this.activeInput = NEUTRAL_DRIVETRAIN_INPUT;
+    this.notify();
+    return result;
   }
 
   start(): void {
@@ -593,6 +680,7 @@ export class SimulationWorld {
    * and collision diagnostics cleanly and deterministically.
    */
   reset(): void {
+    this.controlController.reset();
     this.clearInputs();
     this.runnerState = createInitialRunnerState(
       this.robotConfig,
@@ -632,6 +720,7 @@ export class SimulationWorld {
   }
 
   setDriveControls(controls: Partial<SimulationDriveControls>): void {
+    this.controlController.setControlSource("manual");
     const next: SimulationDriveControls = {
       forward: Boolean(controls.forward ?? this.activeControls.forward),
       reverse: Boolean(controls.reverse ?? this.activeControls.reverse),
@@ -639,11 +728,17 @@ export class SimulationWorld {
       right: Boolean(controls.right ?? this.activeControls.right),
     };
     this.activeControls = next;
-    this.activeInput = mapDriveControlsToDrivetrainInput(next);
+    const mapped = mapDriveControlsToDrivetrainInput(next);
+    this.controlController.setDifferentialPower(
+      mapped.leftThrottle,
+      mapped.rightThrottle
+    );
+    this.activeInput = this.controlController.getDrivetrainInput();
   }
 
   clearInputs(): void {
     this.activeControls = NEUTRAL_DRIVETRAIN_INPUT_CONTROLS;
+    this.controlController.stopRobot();
     this.activeInput = NEUTRAL_DRIVETRAIN_INPUT;
   }
 
@@ -662,6 +757,11 @@ export class SimulationWorld {
     const clampedDelta = Math.min(frameDeltaSeconds, this.maxFrameDeltaSeconds);
 
     try {
+      this.activeInput = this.controlController.beforePhysicsStep(
+        this.getTelemetrySnapshot(),
+        clampedDelta
+      );
+
       const result = advanceSimulation(
         this.robotConfig,
         this.runnerState,

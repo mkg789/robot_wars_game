@@ -6,6 +6,9 @@
  * without embedding physics in React or Three.js.
  */
 
+import type { ElectricalConnection } from "../../electrical/types/electrical.types";
+import type { RobotProgramControllerState } from "../../programming/types/control.types";
+import type { RobotPart } from "../../robot-builder/types/robot.types";
 import type { ArenaConfig } from "./arena.types";
 import type {
   CollisionResponseOptions,
@@ -97,6 +100,8 @@ export interface SimulationArenaPreset {
 export interface SimulationWorldOptions {
   readonly robotConfig: SimulationRobotConfig;
   readonly arena: ArenaConfig;
+  readonly parts?: readonly RobotPart[];
+  readonly electricalConnections?: readonly ElectricalConnection[];
   readonly initialPose?: {
     readonly x?: number;
     readonly z?: number;
@@ -126,4 +131,5 @@ export interface SimulationWorldDiagnostics {
   readonly activeInput: DrivetrainInput;
   readonly runnerState: SimulationRunnerState;
   readonly telemetry: SimulationTelemetrySnapshot;
+  readonly controlState: RobotProgramControllerState;
 }

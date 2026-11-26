@@ -17,6 +17,7 @@ import type {
   SimulationTelemetrySnapshot,
 } from "../../features/simulation/types/simulationWorld.types";
 import { useRobotStore } from "../../store/robotStore";
+import SimulationControlPanel from "./SimulationControlPanel";
 import SimulationScene from "./SimulationScene";
 
 interface SimulationViewProps {
@@ -37,7 +38,7 @@ const CAMERA_PRESET_OPTIONS: ReadonlyArray<{
   { id: "top", label: "Top" },
 ];
 
-type LeftPanelTab = "controls" | "inspector";
+type LeftPanelTab = "controls" | "program" | "inspector";
 
 function isEditableEventTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) return false;
@@ -63,6 +64,9 @@ export default function SimulationView({
   const connections = useRobotStore((state) => state.connections);
   const drivetrain = useRobotStore((state) => state.drivetrain);
   const foundation = useRobotStore((state) => state.foundation);
+  const electricalConnections = useRobotStore(
+    (state) => state.electricalConnections
+  );
 
   const [selectedArenaId, setSelectedArenaId] = useState(
     SIMULATION_ARENA_PRESETS[0].id
@@ -82,9 +86,10 @@ export default function SimulationView({
         connections,
         drivetrain,
         foundation,
+        electricalConnections,
         arena: SIMULATION_ARENA_PRESETS[0].arena,
       }),
-    [parts, connections, drivetrain, foundation]
+    [parts, connections, drivetrain, foundation, electricalConnections]
   );
 
   const world = initResult.world;
@@ -94,6 +99,9 @@ export default function SimulationView({
   );
   const [driveControls, setDriveControls] = useState<SimulationDriveControls>(
     NEUTRAL_DRIVE_CONTROLS
+  );
+  const [controlState, setControlState] = useState(() =>
+    world ? world.getControlState() : null
   );
   const [cameraMode, setCameraMode] = useState<SimulationCameraMode>("orbit");
   const [cameraPreset, setCameraPreset] =
@@ -128,6 +136,7 @@ export default function SimulationView({
     const unsubscribe = world.subscribe(() => {
       setTelemetry(world.getTelemetrySnapshot());
       setDriveControls(world.getActiveControls());
+      setControlState(world.getControlState());
     });
     return () => {
       unsubscribe();
@@ -410,6 +419,15 @@ export default function SimulationView({
               <button
                 type="button"
                 role="tab"
+                aria-selected={leftPanelTab === "program"}
+                className={`sim-tab-btn ${leftPanelTab === "program" ? "active" : ""}`}
+                onClick={() => setLeftPanelTab("program")}
+              >
+                Control API
+              </button>
+              <button
+                type="button"
+                role="tab"
                 aria-selected={leftPanelTab === "inspector"}
                 className={`sim-tab-btn ${leftPanelTab === "inspector" ? "active" : ""}`}
                 onClick={() => setLeftPanelTab("inspector")}
@@ -537,6 +555,13 @@ export default function SimulationView({
                   </div>
                 </div>
               </>
+            ) : leftPanelTab === "program" ? (
+              controlState ? (
+                <SimulationControlPanel
+                  world={world}
+                  controlState={controlState}
+                />
+              ) : null
             ) : (
               inspectionSummary && (
                 <div className="sim-inspector-section">
@@ -643,7 +668,10 @@ export default function SimulationView({
               cameraMode={cameraMode}
               cameraPreset={cameraPreset}
               cameraResetKey={cameraResetKey}
-              onTelemetryTick={setTelemetry}
+              onTelemetryTick={(t) => {
+                setTelemetry(t);
+                setControlState(world.getControlState());
+              }}
               assemblyParts={parts}
               connections={connections}
               drivetrain={drivetrain}
