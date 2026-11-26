@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   compileVisualProgramToRoutine,
   createDefaultInstruction,
@@ -109,6 +109,10 @@ export default function VisualProgrammingWorkspace({
     loadSavedVisualPrograms()
   );
   const presets = useMemo(() => createStarterPresets(), []);
+  const compiledProgramRef = useRef<{
+    readonly id: string;
+    readonly instructions: VisualRobotProgram["instructions"];
+  } | null>(null);
 
   const issues = useMemo(
     () =>
@@ -122,8 +126,29 @@ export default function VisualProgrammingWorkspace({
   const isFault = controlState.programStatus === "fault";
   const canExecute = errorCount === 0 && controlState.binding.canDrive;
 
+  const applyProgramEdit = (nextProgram: VisualRobotProgram) => {
+    const didStructureOrIdChange =
+      nextProgram.id !== program.id ||
+      nextProgram.instructions !== program.instructions;
+    if (
+      didStructureOrIdChange &&
+      (compiledProgramRef.current !== null ||
+        controlState.activeProgramId === program.id ||
+        controlState.activeProgramId === nextProgram.id)
+    ) {
+      compiledProgramRef.current = null;
+      world.setProgramRoutine(null);
+      onTraceChange(EMPTY_VISUAL_TRACE);
+    }
+    onProgramChange(nextProgram);
+  };
+
   const handleRunRoutine = () => {
     const routine = compileVisualProgramToRoutine(program, onTraceChange);
+    compiledProgramRef.current = {
+      id: program.id,
+      instructions: program.instructions,
+    };
     world.setProgramRoutine(routine);
     world.startProgram();
   };
@@ -137,11 +162,20 @@ export default function VisualProgrammingWorkspace({
   };
 
   const handleStepRoutine = () => {
+    const isStale =
+      !compiledProgramRef.current ||
+      compiledProgramRef.current.id !== program.id ||
+      compiledProgramRef.current.instructions !== program.instructions;
     if (
+      isStale ||
       controlState.programStatus === "idle" ||
       controlState.activeProgramId !== program.id
     ) {
       const routine = compileVisualProgramToRoutine(program, onTraceChange);
+      compiledProgramRef.current = {
+        id: program.id,
+        instructions: program.instructions,
+      };
       world.setProgramRoutine(routine);
     }
     world.stepProgram();
@@ -149,14 +183,12 @@ export default function VisualProgrammingWorkspace({
 
   const handleStopRoutine = () => {
     world.stopProgram();
-    onTraceChange({
-      ...trace,
-      activeInstructionId: null,
-      statusMessage: "Stopped by user",
-    });
+    const updatedTrace = world.getControlState().executionTrace;
+    onTraceChange(updatedTrace ?? EMPTY_VISUAL_TRACE);
   };
 
   const handleResetSimulation = () => {
+    compiledProgramRef.current = null;
     world.reset();
     onTraceChange(EMPTY_VISUAL_TRACE);
   };
@@ -194,7 +226,7 @@ export default function VisualProgrammingWorkspace({
                     type="button"
                     className={`prog-toolbox-btn cat-${item.category}`}
                     onClick={() =>
-                      onProgramChange({
+                      applyProgramEdit({
                         ...program,
                         instructions: insertInstruction(
                           program.instructions,
@@ -223,7 +255,7 @@ export default function VisualProgrammingWorkspace({
                 style={{ textAlign: "left" }}
                 onClick={() => {
                   onTraceChange(EMPTY_VISUAL_TRACE);
-                  onProgramChange({
+                  applyProgramEdit({
                     ...preset,
                     id: createEmptyVisualProgram().id,
                   });
@@ -250,7 +282,7 @@ export default function VisualProgrammingWorkspace({
                     className="electrical-installed-select"
                     onClick={() => {
                       onTraceChange(EMPTY_VISUAL_TRACE);
-                      onProgramChange(saved);
+                      applyProgramEdit(saved);
                     }}
                   >
                     <strong style={{ fontSize: 11 }}>{saved.name}</strong>
@@ -351,7 +383,7 @@ export default function VisualProgrammingWorkspace({
             className="top-button"
             onClick={() => {
               onTraceChange(EMPTY_VISUAL_TRACE);
-              onProgramChange(createEmptyVisualProgram());
+              applyProgramEdit(createEmptyVisualProgram());
             }}
           >
             New Blank
@@ -465,7 +497,7 @@ export default function VisualProgrammingWorkspace({
                   type="button"
                   className="primary-button"
                   onClick={() =>
-                    onProgramChange({
+                    applyProgramEdit({
                       ...program,
                       instructions: [createDefaultInstruction("drive")],
                     })
@@ -476,12 +508,13 @@ export default function VisualProgrammingWorkspace({
                 <button
                   type="button"
                   className="top-button"
-                  onClick={() =>
-                    onProgramChange({
+                  onClick={() => {
+                    onTraceChange(EMPTY_VISUAL_TRACE);
+                    applyProgramEdit({
                       ...presets[0],
                       id: createEmptyVisualProgram().id,
-                    })
-                  }
+                    });
+                  }}
                 >
                   Load Repeat Demo
                 </button>
@@ -498,7 +531,7 @@ export default function VisualProgrammingWorkspace({
                   trace={trace}
                   issues={issues}
                   onUpdate={(id, updater) =>
-                    onProgramChange({
+                    applyProgramEdit({
                       ...program,
                       instructions: updateInstruction(
                         program.instructions,
@@ -508,7 +541,7 @@ export default function VisualProgrammingWorkspace({
                     })
                   }
                   onMove={(id, dir) =>
-                    onProgramChange({
+                    applyProgramEdit({
                       ...program,
                       instructions: moveInstruction(
                         program.instructions,
@@ -518,7 +551,7 @@ export default function VisualProgrammingWorkspace({
                     })
                   }
                   onDuplicate={(id) =>
-                    onProgramChange({
+                    applyProgramEdit({
                       ...program,
                       instructions: duplicateInstruction(
                         program.instructions,
@@ -527,7 +560,7 @@ export default function VisualProgrammingWorkspace({
                     })
                   }
                   onRemove={(id) =>
-                    onProgramChange({
+                    applyProgramEdit({
                       ...program,
                       instructions: removeInstruction(program.instructions, id),
                     })

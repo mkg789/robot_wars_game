@@ -1,144 +1,40 @@
-import { Canvas } from "@react-three/fiber";
-import { useState, type ReactNode } from "react";
-import { useRobotStore } from "./store/robotStore";
-
-import RobotScene from "./components/viewport/RobotScene";
-import SimulationView from "./components/simulation/SimulationView";
-import FoundationStagePanel from "./components/workshop/FoundationStagePanel";
-import StructureStagePanel from "./components/workshop/StructureStagePanel";
-import PartInspectorPanel from "./components/workshop/PartInspectorPanel";
+import { useEffect, useState } from "react";
+import { useShallow } from "zustand/react/shallow";
 import ElectricalWorkspaceView from "./components/electrical/ElectricalWorkspaceView";
-import { PROCEDURAL_ARCHITECTURES } from "./features/robot-builder/logic/proceduralFoundation";
+import SimulationView from "./components/simulation/SimulationView";
+import PartInspectorPanel from "./components/workshop/PartInspectorPanel";
+import { WorkshopHeader } from "./components/workshop/WorkshopHeader";
+import { WorkshopLeftPanel } from "./components/workshop/WorkshopLeftPanel";
+import { WorkshopStageRightPanel } from "./components/workshop/WorkshopStageRightPanel";
+import { WorkshopValidationPanel } from "./components/workshop/WorkshopValidationPanel";
+import { WorkshopViewport } from "./components/workshop/WorkshopViewport";
+import {
+  clearProjectAutosave,
+  downloadRobotProjectFile,
+  hasProjectAutosave,
+  loadProjectAutosave,
+  readProjectFileText,
+  saveProjectAutosave,
+} from "./features/persistence/logic/projectStorage";
 import type { MountCandidate } from "./features/robot-builder/logic/mounting";
-import { validateRobotAssembly } from "./features/robot-builder/logic/assemblyValidation";
-import { foundationModels } from "./features/robot-builder/data/foundationModels";
-import { motorCatalogue } from "./features/robot-builder/data/motorCatalogue";
-import { wheelCatalogue } from "./features/robot-builder/data/wheelCatalogue";
-import { batteryCatalogue } from "./features/robot-builder/data/batteryCatalogue";
-import { controllerCatalogue } from "./features/robot-builder/data/controllerCatalogue";
-import { generateMotorMountZones } from "./features/robot-builder/logic/mountingZones";
-import {
-  getDrivetrainAssignmentKey,
-  getDrivetrainSlotCount,
-  getPoweredWheelAssemblies,
-  resolveMotorMechanicalSupport,
-  validateDrivetrain,
-} from "./features/robot-builder/logic/drivetrain";
-import { resolvePartMountingInterfaces } from "./features/robot-builder/logic/mountingInterfaces";
 import type {
-  DrivetrainSide,
-  DrivetrainType,
-} from "./features/robot-builder/types/robot.types";
-import {
-  getAssemblyFocusFrame,
-  getComponentFocusFrame,
-  getVisibleSelectedPart,
-  type CameraFocusFrame,
-  type CameraFocusRequest,
+  CameraFocusFrame,
+  CameraFocusRequest,
 } from "./features/robot-builder/logic/viewportFocus";
+import { useWorkshopDerivedState } from "./hooks/useWorkshopDerivedState";
 import {
-  formatAcceleration,
-  formatAngle,
-  formatDimensions,
-  formatForce,
-  formatInertia,
-  formatLength,
-  formatMass,
-  formatPercentage,
-  formatSpeed,
-  formatYawRate,
-} from "./features/robot-builder/logic/formatters";
-import { compileRobotPerformanceProfile } from "./features/robot-builder/logic/robotKinematics";
-import { compileRobotStabilityProfile } from "./features/robot-builder/logic/robotStability";
-import { compileRobotInertiaProfile } from "./features/robot-builder/logic/robotInertia";
-
+  exportProjectFromStore,
+  importProjectIntoStore,
+} from "./store/projectStoreAdapter";
+import { useRobotStore } from "./store/robotStore";
 import "./App.css";
-
-type NumericInputProps = {
-  value: number;
-  onValidChange: (value: number) => void;
-  min?: number;
-  step?: number;
-};
-
-function NumericInput({
-  value,
-  onValidChange,
-  min,
-  step = 0.1,
-}: NumericInputProps) {
-  return (
-    <input
-      type="number"
-      min={min}
-      step={step}
-      value={value}
-      onChange={(event) => {
-        const nextDraft = event.target.value;
-
-        if (nextDraft.trim() === "") return;
-
-        const nextValue = Number(nextDraft);
-        if (!Number.isFinite(nextValue)) return;
-        if (min !== undefined && nextValue < min) return;
-
-        onValidChange(nextValue);
-      }}
-      onBlur={(event) => {
-        const nextValue = Number(event.currentTarget.value);
-
-        if (
-          event.currentTarget.value.trim() === "" ||
-          !Number.isFinite(nextValue) ||
-          (min !== undefined && nextValue < min)
-        ) {
-          event.currentTarget.value = String(value);
-        }
-      }}
-    />
-  );
-}
-
-function VisibilityIcon({ visible }: { visible: boolean }) {
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 16 16"
-      width="15"
-      height="15"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.4"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {visible ? (
-        <>
-          <path d="M1.5 8s2.2-4.5 6.5-4.5S14.5 8 14.5 8 12.3 12.5 8 12.5 1.5 8 1.5 8Z" />
-          <circle cx="8" cy="8" r="1.8" />
-        </>
-      ) : (
-        <>
-          <path d="M2 5.2C1.7 5.6 1.5 6 1.5 6s2.2 4.5 6.5 4.5c1 0 1.9-.3 2.7-.7M5.2 3.8A6.2 6.2 0 0 1 8 3.2c4.3 0 6.5 4.5 6.5 4.5s-.5 1-1.6 2" />
-          <path d="m2 2 12 12" />
-        </>
-      )}
-    </svg>
-  );
-}
-
-// --------------------------------------------------
-// APPLICATION
-// --------------------------------------------------
 
 function App() {
   const [workspaceMode, setWorkspaceMode] = useState<
     "workshop" | "electrical" | "simulation"
   >("workshop");
-  const [mountCandidate, setMountCandidate] =
-    useState<MountCandidate | null>(null);
-  const [collapsedPartIds, setCollapsedPartIds] = useState<Set<string>>(
-    () => new Set()
+  const [mountCandidate, setMountCandidate] = useState<MountCandidate | null>(
+    null
   );
   const [cameraFocusRequest, setCameraFocusRequest] =
     useState<CameraFocusRequest>({
@@ -146,215 +42,128 @@ function App() {
       target: [0, 0.175, 0],
       radius: 1,
     });
-  const [confirmAutoMap, setConfirmAutoMap] = useState(false);
-  const [pendingDrivetrainType, setPendingDrivetrainType] =
-    useState<DrivetrainType | null>(null);
   const [rightPanelTab, setRightPanelTab] = useState<
     "stage" | "inspector" | "validation"
   >("stage");
-  const [diagFilter, setDiagFilter] = useState<"all" | "error" | "warning" | "info">(
-    "all"
+  const [hasRecoverableAutosave, setHasRecoverableAutosave] = useState<boolean>(
+    () => useRobotStore.getState().foundation === null && hasProjectAutosave()
   );
-  const [structuralMotorParentId, setStructuralMotorParentId] = useState("");
-  const [structuralMotorIfaceId, setStructuralMotorIfaceId] = useState("");
-  const parts = useRobotStore((state) => state.parts);
-  const hiddenPartIds = useRobotStore((state) => state.hiddenPartIds);
-  const selectedId = useRobotStore((state) => state.selectedId);
-  const transformMode = useRobotStore((state) => state.transformMode);
-  const historyPast = useRobotStore((state) => state.historyPast);
-  const historyFuture = useRobotStore((state) => state.historyFuture);
+  const [projectNotice, setProjectNotice] = useState<{
+    readonly tone: "info" | "warning" | "error";
+    readonly text: string;
+  } | null>(null);
 
-  const setSelectedId = useRobotStore((state) => state.setSelectedId);
-  const setTransformMode = useRobotStore((state) => state.setTransformMode);
-  const undo = useRobotStore((state) => state.undo);
-  const redo = useRobotStore((state) => state.redo);
-  const deletePartById = useRobotStore((state) => state.deletePartById);
-  const togglePartVisibility = useRobotStore(
-    (state) => state.togglePartVisibility
-  );
-  const mountWheelToMotor = useRobotStore(
-    (state) => state.mountWheelToMotor
-  );
-  const connections = useRobotStore((state) => state.connections);
-  const electricalConnections = useRobotStore(
-    (state) => state.electricalConnections
-  );
-  const selectedElectricalConnectionId = useRobotStore(
-    (state) => state.selectedElectricalConnectionId
-  );
-  const selectedElectricalPinId = useRobotStore(
-    (state) => state.selectedElectricalPinId
-  );
-  const setSelectedElectricalConnection = useRobotStore(
-    (state) => state.setSelectedElectricalConnection
-  );
-  const focusElectricalDiagnostic = useRobotStore(
-    (state) => state.focusElectricalDiagnostic
-  );
-  const installElectricalCatalogueItem = useRobotStore(
-    (state) => state.installElectricalCatalogueItem
-  );
-  const replaceElectricalComponent = useRobotStore(
-    (state) => state.replaceElectricalComponent
-  );
-  const addElectricalConnection = useRobotStore(
-    (state) => state.addElectricalConnection
-  );
-  const updateElectricalConnection = useRobotStore(
-    (state) => state.updateElectricalConnection
-  );
-  const assignPinToElectricalConnection = useRobotStore(
-    (state) => state.assignPinToElectricalConnection
-  );
-  const assignConnectorToInterface = useRobotStore(
-    (state) => state.assignConnectorToInterface
-  );
-  const removeElectricalConnection = useRobotStore(
-    (state) => state.removeElectricalConnection
-  );
-  const foundation = useRobotStore((state) => state.foundation);
-  const startNewBuild = useRobotStore((state) => state.startNewBuild);
-  const selectFoundationModel = useRobotStore(
-    (state) => state.selectFoundationModel
-  );
-  const updateFoundationDimensions = useRobotStore(
-    (state) => state.updateFoundationDimensions
-  );
-  const setFoundationOptions = useRobotStore(
-    (state) => state.setFoundationOptions
-  );
-  const confirmFoundation = useRobotStore(
-    (state) => state.confirmFoundation
-  );
-  const selectedBatteryCatalogueId = useRobotStore(
-    (state) => state.selectedBatteryCatalogueId
-  );
-  const selectBatteryCatalogueItem = useRobotStore(
-    (state) => state.selectBatteryCatalogueItem
-  );
-  const installBattery = useRobotStore((state) => state.installBattery);
-  const removeBattery = useRobotStore((state) => state.removeBattery);
-  const selectedControllerCatalogueId = useRobotStore(
-    (state) => state.selectedControllerCatalogueId
-  );
-  const selectControllerCatalogueItem = useRobotStore(
-    (state) => state.selectControllerCatalogueItem
-  );
-  const installController = useRobotStore(
-    (state) => state.installController
-  );
-  const removeController = useRobotStore((state) => state.removeController);
-  const stage = useRobotStore((state) => state.stage);
-  const setStage = useRobotStore((state) => state.setStage);
-  const drivetrain = useRobotStore((state) => state.drivetrain);
-  const setDrivetrainType = useRobotStore(
-    (state) => state.setDrivetrainType
-  );
-  const setDrivetrainAssignment = useRobotStore(
-    (state) => state.setDrivetrainAssignment
-  );
-  const applySuggestedDrivetrainMapping = useRobotStore(
-    (state) => state.applySuggestedDrivetrainMapping
-  );
-  const selectedMotorCatalogueId = useRobotStore(
-    (state) => state.selectedMotorCatalogueId
-  );
-  const selectedMountZoneId = useRobotStore(
-    (state) => state.selectedMountZoneId
-  );
-  const selectMotorCatalogueItem = useRobotStore(
-    (state) => state.selectMotorCatalogueItem
-  );
-  const selectMountZone = useRobotStore(
-    (state) => state.selectMountZone
-  );
-  const placeMotor = useRobotStore((state) => state.placeMotor);
-  const mountMotorToParent = useRobotStore(
-    (state) => state.mountMotorToParent
-  );
-  const replaceMotor = useRobotStore((state) => state.replaceMotor);
-  const removeMotor = useRobotStore((state) => state.removeMotor);
-  const rotateMotor = useRobotStore((state) => state.rotateMotor);
-  const lastReplacementWarning = useRobotStore(
-    (state) => state.lastReplacementWarning
-  );
-  const clearReplacementWarning = useRobotStore(
-    (state) => state.clearReplacementWarning
-  );
-  const selectedWheelCatalogueId = useRobotStore(
-    (state) => state.selectedWheelCatalogueId
-  );
-  const selectedWheelMotorId = useRobotStore(
-    (state) => state.selectedWheelMotorId
-  );
-  const selectedWheelDiameterCm = useRobotStore(
-    (state) => state.selectedWheelDiameterCm
-  );
-  const selectedWheelWidthCm = useRobotStore(
-    (state) => state.selectedWheelWidthCm
-  );
-  const selectWheelCatalogueItem = useRobotStore(
-    (state) => state.selectWheelCatalogueItem
-  );
-  const updateSelectedWheelDimensions = useRobotStore(
-    (state) => state.updateSelectedWheelDimensions
-  );
-  const selectWheelMotor = useRobotStore((state) => state.selectWheelMotor);
-  const assignWheel = useRobotStore((state) => state.assignWheel);
-  const removeWheel = useRobotStore((state) => state.removeWheel);
-  const finishBuild = useRobotStore((state) => state.finishBuild);
-  const selectedStructuralCatalogueId = useRobotStore(
-    (state) => state.selectedStructuralCatalogueId
-  );
-  const selectStructuralCatalogueItem = useRobotStore(
-    (state) => state.selectStructuralCatalogueItem
-  );
-  const addStructuralPart = useRobotStore((state) => state.addStructuralPart);
-  const replaceStructuralPart = useRobotStore(
-    (state) => state.replaceStructuralPart
-  );
-  const configureProceduralFoundation = useRobotStore(
-    (state) => state.configureProceduralFoundation
-  );
-  const resetProceduralFoundation = useRobotStore(
-    (state) => state.resetProceduralFoundation
-  );
-  const importFoundationStl = useRobotStore(
-    (state) => state.importFoundationStl
-  );
-  const importStructuralStl = useRobotStore(
-    (state) => state.importStructuralStl
-  );
-  const updateImportedPartConfiguration = useRobotStore(
-    (state) => state.updateImportedPartConfiguration
-  );
-  const addCustomMountingInterface = useRobotStore(
-    (state) => state.addCustomMountingInterface
-  );
-  const removeCustomMountingInterface = useRobotStore(
-    (state) => state.removeCustomMountingInterface
-  );
-  const duplicatePart = useRobotStore((state) => state.duplicatePart);
-  const attachPart = useRobotStore((state) => state.attachPart);
-  const detachPart = useRobotStore((state) => state.detachPart);
-  const previewPartTransform = useRobotStore(
-    (state) => state.previewPartTransform
-  );
-  const updatePartTransform = useRobotStore(
-    (state) => state.updatePartTransform
+  const store = useRobotStore(
+    useShallow((state) => ({
+      projectName: state.projectName,
+      selectedArenaId: state.selectedArenaId,
+      visualProgram: state.visualProgram,
+      projectRevision: state.projectRevision,
+      lastProjectLoadWarnings: state.lastProjectLoadWarnings,
+      setProjectName: state.setProjectName,
+      clearProjectLoadWarnings: state.clearProjectLoadWarnings,
+      loadProjectState: state.loadProjectState,
+      parts: state.parts,
+      hiddenPartIds: state.hiddenPartIds,
+      selectedId: state.selectedId,
+      transformMode: state.transformMode,
+      historyPast: state.historyPast,
+      historyFuture: state.historyFuture,
+      connections: state.connections,
+      electricalConnections: state.electricalConnections,
+      selectedElectricalConnectionId: state.selectedElectricalConnectionId,
+      selectedElectricalPinId: state.selectedElectricalPinId,
+      foundation: state.foundation,
+      stage: state.stage,
+      drivetrain: state.drivetrain,
+      selectedMotorCatalogueId: state.selectedMotorCatalogueId,
+      selectedMountZoneId: state.selectedMountZoneId,
+      selectedWheelCatalogueId: state.selectedWheelCatalogueId,
+      selectedWheelMotorId: state.selectedWheelMotorId,
+      selectedWheelDiameterCm: state.selectedWheelDiameterCm,
+      selectedWheelWidthCm: state.selectedWheelWidthCm,
+      selectedBatteryCatalogueId: state.selectedBatteryCatalogueId,
+      selectedControllerCatalogueId: state.selectedControllerCatalogueId,
+      selectedStructuralCatalogueId: state.selectedStructuralCatalogueId,
+      lastReplacementWarning: state.lastReplacementWarning,
+      setSelectedId: state.setSelectedId,
+      setTransformMode: state.setTransformMode,
+      undo: state.undo,
+      redo: state.redo,
+      deletePartById: state.deletePartById,
+      togglePartVisibility: state.togglePartVisibility,
+      mountWheelToMotor: state.mountWheelToMotor,
+      setSelectedElectricalConnection: state.setSelectedElectricalConnection,
+      focusElectricalDiagnostic: state.focusElectricalDiagnostic,
+      installElectricalCatalogueItem: state.installElectricalCatalogueItem,
+      replaceElectricalComponent: state.replaceElectricalComponent,
+      addElectricalConnection: state.addElectricalConnection,
+      updateElectricalConnection: state.updateElectricalConnection,
+      assignPinToElectricalConnection: state.assignPinToElectricalConnection,
+      assignConnectorToInterface: state.assignConnectorToInterface,
+      removeElectricalConnection: state.removeElectricalConnection,
+      startNewBuild: state.startNewBuild,
+      selectFoundationModel: state.selectFoundationModel,
+      updateFoundationDimensions: state.updateFoundationDimensions,
+      setFoundationOptions: state.setFoundationOptions,
+      confirmFoundation: state.confirmFoundation,
+      selectBatteryCatalogueItem: state.selectBatteryCatalogueItem,
+      installBattery: state.installBattery,
+      removeBattery: state.removeBattery,
+      selectControllerCatalogueItem: state.selectControllerCatalogueItem,
+      installController: state.installController,
+      removeController: state.removeController,
+      setStage: state.setStage,
+      setDrivetrainType: state.setDrivetrainType,
+      setDrivetrainAssignment: state.setDrivetrainAssignment,
+      applySuggestedDrivetrainMapping: state.applySuggestedDrivetrainMapping,
+      selectMotorCatalogueItem: state.selectMotorCatalogueItem,
+      selectMountZone: state.selectMountZone,
+      placeMotor: state.placeMotor,
+      mountMotorToParent: state.mountMotorToParent,
+      replaceMotor: state.replaceMotor,
+      removeMotor: state.removeMotor,
+      rotateMotor: state.rotateMotor,
+      clearReplacementWarning: state.clearReplacementWarning,
+      selectWheelCatalogueItem: state.selectWheelCatalogueItem,
+      updateSelectedWheelDimensions: state.updateSelectedWheelDimensions,
+      selectWheelMotor: state.selectWheelMotor,
+      assignWheel: state.assignWheel,
+      removeWheel: state.removeWheel,
+      finishBuild: state.finishBuild,
+      selectStructuralCatalogueItem: state.selectStructuralCatalogueItem,
+      addStructuralPart: state.addStructuralPart,
+      replaceStructuralPart: state.replaceStructuralPart,
+      configureProceduralFoundation: state.configureProceduralFoundation,
+      resetProceduralFoundation: state.resetProceduralFoundation,
+      importFoundationStl: state.importFoundationStl,
+      importStructuralStl: state.importStructuralStl,
+      updateImportedPartConfiguration: state.updateImportedPartConfiguration,
+      addCustomMountingInterface: state.addCustomMountingInterface,
+      removeCustomMountingInterface: state.removeCustomMountingInterface,
+      duplicatePart: state.duplicatePart,
+      attachPart: state.attachPart,
+      detachPart: state.detachPart,
+      previewPartTransform: state.previewPartTransform,
+      updatePartTransform: state.updatePartTransform,
+    }))
   );
 
-  const hiddenPartIdSet = new Set(hiddenPartIds);
-  const visibleParts = parts.filter((part) => !hiddenPartIdSet.has(part.id));
-  const selectedPart = parts.find((part) => part.id === selectedId) ?? null;
-  const focusableSelectedPart = getVisibleSelectedPart(
-    parts,
-    selectedId,
-    hiddenPartIds
-  );
-  const selectedPartIsHidden = Boolean(
-    selectedPart && !focusableSelectedPart
-  );
+  const derived = useWorkshopDerivedState({
+    parts: store.parts,
+    connections: store.connections,
+    electricalConnections: store.electricalConnections,
+    hiddenPartIds: store.hiddenPartIds,
+    selectedId: store.selectedId,
+    foundation: store.foundation,
+    drivetrain: store.drivetrain,
+    selectedMotorCatalogueId: store.selectedMotorCatalogueId,
+    selectedWheelCatalogueId: store.selectedWheelCatalogueId,
+    selectedWheelMotorId: store.selectedWheelMotorId,
+    selectedBatteryCatalogueId: store.selectedBatteryCatalogueId,
+    selectedControllerCatalogueId: store.selectedControllerCatalogueId,
+  });
+
   const requestCameraFocus = (frame: CameraFocusFrame | null) => {
     if (!frame) return;
     setCameraFocusRequest((request) => ({
@@ -362,2746 +171,419 @@ function App() {
       key: request.key + 1,
     }));
   };
-  const childrenByParent = new Map<string, typeof parts>();
-  for (const connection of connections) {
-    const parentId = connection.parentId ?? connection.sourceId;
-    const childId = connection.childId ?? connection.targetId;
-    const child = parts.find((part) => part.id === childId);
-    if (!child || !parts.some((part) => part.id === parentId)) continue;
 
-    childrenByParent.set(parentId, [
-      ...(childrenByParent.get(parentId) ?? []),
-      child,
-    ]);
-  }
-  const getMotorLocationLabel = (motor: (typeof parts)[number]): string => {
-    const zoneName = motorMountZones.find(
-      (zone) => zone.id === motor.mountingZoneId
-    )?.name;
-    if (zoneName) return zoneName;
-    if (!foundation) return "Mounted";
-    return resolveMotorMechanicalSupport(motor, parts, connections, foundation)
-      .mountingLocation;
-  };
+  useEffect(() => {
+    if (!store.foundation) return;
+    const timer = window.setTimeout(() => {
+      const project = exportProjectFromStore(useRobotStore.getState());
+      saveProjectAutosave(project);
+      setHasRecoverableAutosave(false);
+    }, 450);
+    return () => window.clearTimeout(timer);
+  }, [
+    store.foundation,
+    store.parts,
+    store.connections,
+    store.electricalConnections,
+    store.drivetrain,
+    store.stage,
+    store.projectName,
+    store.selectedArenaId,
+    store.visualProgram,
+  ]);
 
-  const renderHierarchy = (partId: string, depth = 0): ReactNode => {
-    const part = parts.find((item) => item.id === partId);
-    if (!part) return null;
-    const children = childrenByParent.get(part.id) ?? [];
-    const hasChildren = children.length > 0;
-    const expanded = hasChildren && !collapsedPartIds.has(part.id);
-    const visible = !hiddenPartIdSet.has(part.id);
-    const partDiags = validationReport.diagnosticsByPartId[part.id] ?? [];
-    const hasError = partDiags.some((d) => d.severity === "error");
-    const hasWarning = partDiags.some((d) => d.severity === "warning");
-    const hasUnknown = partDiags.some((d) => d.isUnknownAssumption);
-
-    let roleBadge: string | null = null;
-    if (part.id === "foundation-chassis") {
-      roleBadge = part.meshAssetId ? "STL-Root" : "Root";
-    } else if (part.foundationMemberRole) {
-      roleBadge =
-        part.foundationMemberRole === "rail"
-          ? "Rail"
-          : part.foundationMemberRole === "crossmember"
-            ? "Cross"
-            : part.foundationMemberRole === "plate"
-              ? "Plate"
-              : part.foundationMemberRole === "flange"
-                ? "Flange"
-                : "Member";
-    } else if (part.meshAssetId) {
-      roleBadge = "STL";
-    } else if (part.type === "Motor") {
-      const inLeft = drivetrain.left.some((a) => a?.motorId === part.id);
-      const inRight = drivetrain.right.some((a) => a?.motorId === part.id);
-      roleBadge = inLeft ? "L-Drive" : inRight ? "R-Drive" : part.mountingZoneId ? "Zone" : "Struct";
-    } else if (part.type === "Wheel") {
-      const hasShaftLink = connections.some(
-        (c) => c.type === "Motor-Wheel" && (c.childId ?? c.targetId) === part.id
-      );
-      const inLeft = drivetrain.left.some((a) => a?.wheelId === part.id);
-      const inRight = drivetrain.right.some((a) => a?.wheelId === part.id);
-      roleBadge = inLeft ? "L-Wheel" : inRight ? "R-Wheel" : hasShaftLink ? "Shaft" : "Free";
-    } else if (
-      part.id !== "foundation-top-plate" &&
-      part.id !== "foundation-front-cover" &&
-      !connections.some((c) => (c.childId ?? c.targetId) === part.id)
-    ) {
-      roleBadge = "Unattached";
-    }
-
-    return (
-      <div key={part.id}>
-        <div
-          className={`tree-item ${
-            selectedId === part.id ? "selected" : ""
-          } ${hasError ? "has-error" : hasWarning ? "has-warning" : ""}`}
-          style={{ paddingLeft: `${10 + depth * 14}px` }}
-        >
-          {hasChildren ? (
-            <button
-              type="button"
-              className="tree-expand"
-              aria-label={`${expanded ? "Collapse" : "Expand"} ${part.name}`}
-              aria-expanded={expanded}
-              onClick={() =>
-                setCollapsedPartIds((current) => {
-                  const next = new Set(current);
-                  if (next.has(part.id)) next.delete(part.id);
-                  else next.add(part.id);
-                  return next;
-                })
-              }
-            >
-              {expanded ? "▾" : "▸"}
-            </button>
-          ) : (
-            <span className="tree-expand-spacer" aria-hidden="true" />
-          )}
-          <button
-            type="button"
-            className="tree-select"
-            aria-label={`Select ${part.name}`}
-            aria-pressed={selectedId === part.id}
-            onClick={() => {
-              setSelectedId(part.id);
-              if (part.id !== "foundation-chassis") {
-                setRightPanelTab("inspector");
-              }
-            }}
-          >
-            <span className="tree-icon" aria-hidden="true">▣</span>
-            <span className="tree-label">{part.name}</span>
-            {roleBadge && (
-              <span className={`tree-role-tag ${roleBadge === "Unattached" || roleBadge === "Free" ? "free" : ""}`}>
-                {roleBadge}
-              </span>
-            )}
-          </button>
-          {(hasError || hasWarning || hasUnknown) && (
-            <span
-              className={`tree-diag-badge ${hasError ? "error" : hasWarning ? "warning" : "unknown"}`}
-              title={partDiags.map((d) => d.message).join("\n")}
-            >
-              {hasError ? "✕" : hasWarning ? "!" : "?"}
-            </span>
-          )}
-          <button
-            type="button"
-            className={`tree-visibility ${visible ? "visible" : "hidden"}`}
-            aria-label={`${visible ? "Hide" : "Show"} ${part.name}`}
-            aria-pressed={!visible}
-            title={`${visible ? "Hide" : "Show"} ${part.name}`}
-            onClick={() => togglePartVisibility(part.id)}
-          >
-            <VisibilityIcon visible={visible} />
-          </button>
-          {part.id !== "foundation-chassis" && (
-            <button
-              type="button"
-              className="tree-remove-btn"
-              aria-label={`Remove ${part.name}`}
-              title={`Remove ${part.name}`}
-              onClick={() => deletePartById(part.id)}
-            >
-              ×
-            </button>
-          )}
-        </div>
-        {expanded &&
-          children.map((child) => renderHierarchy(child.id, depth + 1))}
-      </div>
-    );
-  };
-
-  const attachedChildIds = new Set<string>();
-  for (const children of childrenByParent.values()) {
-    children.forEach((child) => attachedChildIds.add(child.id));
-  }
-  const independentParts = parts.filter(
-    (part) => !attachedChildIds.has(part.id)
-  );
-  const anchoredRootParts = independentParts.filter((part) =>
-    part.id.startsWith("foundation-")
-  );
-  const unattachedRootParts = independentParts.filter(
-    (part) => !part.id.startsWith("foundation-")
-  );
-  const mountedMotors = parts.filter(
-    (part) =>
-      part.type === "Motor" &&
-      Boolean(
-        part.mountingZoneId ||
-          (foundation &&
-            resolveMotorMechanicalSupport(part, parts, connections, foundation)
-              .supported)
-      )
-  );
-  const motorMountZones = foundation
-    ? generateMotorMountZones(foundation)
-    : [];
-  const structuralMotorCarriers = parts.filter(
-    (part) =>
-      part.id !== "foundation-chassis" &&
-      (part.structuralCategory === "rail" ||
-        part.structuralCategory === "bracket" ||
-        part.structuralCategory === "beam" ||
-        part.structuralCategory === "crossbar" ||
-        part.structuralCategory === "plate" ||
-        part.type === "Structural Block" ||
-        part.type === "Armor Plate")
-  );
-  const activeMotorCarrier =
-    structuralMotorCarriers.find((p) => p.id === structuralMotorParentId) ??
-    structuralMotorCarriers[0] ??
-    null;
-  const activeMotorCarrierInterfaces = activeMotorCarrier
-    ? resolvePartMountingInterfaces(activeMotorCarrier, foundation).filter((i) =>
-        i.compatibleWith.includes("motor-mount")
-      )
-    : [];
-  const activeMotorCarrierIface =
-    activeMotorCarrierInterfaces.find((i) => i.id === structuralMotorIfaceId) ??
-    activeMotorCarrierInterfaces[0] ??
-    null;
-  const selectedMotorDefinition = motorCatalogue.find(
-    (motor) => motor.id === selectedMotorCatalogueId
-  );
-  const selectedWheelDefinition = wheelCatalogue.find(
-    (wheel) => wheel.id === selectedWheelCatalogueId
-  );
-  const selectedBatteryDefinition = batteryCatalogue.find(
-    (battery) => battery.id === selectedBatteryCatalogueId
-  );
-  const installedBattery = parts.find((part) => part.type === "Battery");
-  const installedBatteryDefinition = batteryCatalogue.find(
-    (battery) => battery.id === installedBattery?.batteryCatalogueId
-  );
-  const selectedControllerDefinition = controllerCatalogue.find(
-    (controller) => controller.id === selectedControllerCatalogueId
-  );
-  const installedController = parts.find((part) => part.type === "Controller");
-  const installedControllerDefinition = controllerCatalogue.find(
-    (controller) => controller.id === installedController?.controllerCatalogueId
-  );
-  const mountedWheels = parts.filter((part) => part.type === "Wheel");
-  const wheelByMotorId = new Map<
-    string,
-    (typeof mountedWheels)[number]
-  >();
-  connections
-    .filter((connection) => connection.type === "Motor-Wheel")
-    .forEach((connection) => {
-      const wheel = mountedWheels.find(
-        (part) => part.id === connection.childId
-      );
-      if (wheel) wheelByMotorId.set(connection.parentId, wheel);
+  const handleSaveProject = () => {
+    const project = exportProjectFromStore(useRobotStore.getState());
+    downloadRobotProjectFile(project);
+    saveProjectAutosave(project);
+    setProjectNotice({
+      tone: "info",
+      text: `Saved project "${project.metadata.name}" (${project.build.parts.length} parts, ${project.assets.length} STL assets).`,
     });
-  const selectedWheelMotor = mountedMotors.find(
-    (motor) => motor.id === selectedWheelMotorId
-  );
-  const selectedWheelMotorDefinition = motorCatalogue.find(
-    (motor) => motor.id === selectedWheelMotor?.motorCatalogueId
-  );
-  const selectedMotorWheel = selectedWheelMotor
-    ? wheelByMotorId.get(selectedWheelMotor.id)
-    : undefined;
-  const occupiedZoneIds = new Set(
-    mountedMotors.map((motor) => motor.mountingZoneId)
-  );
-  const poweredWheelAssemblies = getPoweredWheelAssemblies(
-    parts,
-    connections,
-    foundation
-  );
-  const drivetrainValidation = validateDrivetrain(
-    drivetrain,
-    parts,
-    connections,
-    foundation
-  );
-  const stabilityProfile = compileRobotStabilityProfile(
-    parts,
-    connections,
-    drivetrain
-  );
-  const performanceProfile = compileRobotPerformanceProfile(
-    parts,
-    connections,
-    drivetrain,
-    stabilityProfile
-  );
-  const inertiaProfile = compileRobotInertiaProfile(
-    parts,
-    drivetrain,
-    stabilityProfile.centerOfMass
-  );
-  const validationReport = validateRobotAssembly({
-    parts,
-    connections,
-    foundation,
-    drivetrain,
-    electricalConnections,
-  });
-  const selectedPartDiagnostics = selectedPart
-    ? (validationReport.diagnosticsByPartId[selectedPart.id] ?? [])
-    : [];
-  const drivetrainSlotCount = getDrivetrainSlotCount(drivetrain.type);
+  };
+
+  const applyLoadResult = (
+    result: ReturnType<typeof importProjectIntoStore>,
+    sourceLabel: string
+  ) => {
+    if (!result.success || !result.project) {
+      setProjectNotice({
+        tone: "error",
+        text: result.errors[0] ?? `Failed to load ${sourceLabel}.`,
+      });
+      return;
+    }
+    setMountCandidate(null);
+    setWorkspaceMode("workshop");
+    setRightPanelTab("stage");
+    setHasRecoverableAutosave(false);
+    setProjectNotice({
+      tone: result.warnings.length > 0 ? "warning" : "info",
+      text:
+        result.warnings.length > 0
+          ? `Loaded "${result.project.metadata.name}" with ${result.warnings.length} notice(s): ${result.warnings[0]}`
+          : `Loaded project "${result.project.metadata.name}".`,
+    });
+  };
+
+  const handleImportProjectFile = async (file: File) => {
+    try {
+      const rawText = await readProjectFileText(file);
+      const result = importProjectIntoStore(rawText);
+      applyLoadResult(result, file.name);
+    } catch (err) {
+      setProjectNotice({
+        tone: "error",
+        text: err instanceof Error ? err.message : `Unable to read "${file.name}".`,
+      });
+    }
+  };
+
+  const handleRecoverAutosave = () => {
+    const autosaved = loadProjectAutosave();
+    if (!autosaved || !autosaved.success) {
+      setHasRecoverableAutosave(false);
+      setProjectNotice({
+        tone: "error",
+        text: autosaved?.errors[0] ?? "No valid autosaved project found.",
+      });
+      return;
+    }
+    store.loadProjectState(autosaved);
+    applyLoadResult(autosaved, "browser autosave");
+  };
+
+  const handleResetBuild = () => {
+    store.startNewBuild();
+    clearProjectAutosave();
+    setHasRecoverableAutosave(false);
+    setProjectNotice(null);
+  };
 
   if (workspaceMode === "simulation") {
     return (
-      <SimulationView onExitSimulation={() => setWorkspaceMode("workshop")} />
+      <SimulationView
+        key={store.projectRevision}
+        onExitSimulation={() => setWorkspaceMode("workshop")}
+      />
     );
   }
 
-  const renderDrivetrainGroup = (side: DrivetrainSide) => {
-    const sideLabel = side === "left" ? "Left" : "Right";
-    return (
-      <div className="drivetrain-group" key={side}>
-        <div className="drivetrain-group-title">{sideLabel} drive group</div>
-        {Array.from({ length: drivetrainSlotCount }, (_, index) => {
-          const currentAssignment = drivetrain[side][index] ?? null;
-          const currentKey = currentAssignment
-            ? getDrivetrainAssignmentKey(currentAssignment)
-            : "";
-          const hasDuplicateAssignment = (): boolean =>
-            (["left", "right"] as const).some((otherSide) =>
-              drivetrain[otherSide].some((assignment, otherIndex) => {
-                if (!assignment) return false;
-                if (otherSide === side && otherIndex === index) return false;
-                return (
-                  assignment.motorId === currentAssignment?.motorId ||
-                  assignment.wheelId === currentAssignment?.wheelId
-                );
-              })
-            );
-
-          return (
-            <label
-              className="drivetrain-slot"
-              key={`${side}-${index}`}
-            >
-              <span>
-                {sideLabel} wheel {index + 1}
-              </span>
-              <select
-                aria-label={`${sideLabel} drive wheel ${index + 1}`}
-                value={currentKey}
-                disabled={pendingDrivetrainType !== null}
-                onChange={(event) => {
-                  const selectedAssembly = poweredWheelAssemblies.find(
-                    (assembly) =>
-                      getDrivetrainAssignmentKey(assembly) ===
-                      event.target.value
-                  );
-                  setDrivetrainAssignment(
-                    side,
-                    index,
-                    selectedAssembly
-                      ? {
-                          motorId: selectedAssembly.motorId,
-                          wheelId: selectedAssembly.wheelId,
-                        }
-                      : null
-                  );
-                }}
-              >
-                <option value="">Select powered wheel assembly</option>
-                {poweredWheelAssemblies.map((assembly) => {
-                  return (
-                    <option
-                      key={getDrivetrainAssignmentKey(assembly)}
-                      value={getDrivetrainAssignmentKey(assembly)}
-                    >
-                      {assembly.mountingLocation}: {assembly.motor.name} +{" "}
-                      {assembly.wheel.name}
-                    </option>
-                  );
-                })}
-              </select>
-              {currentAssignment && hasDuplicateAssignment() && (
-                <small className="drivetrain-warning">
-                  This assembly is already assigned to another drive slot.
-                </small>
-              )}
-            </label>
-          );
-        })}
-      </div>
-    );
-  };
-
   return (
     <div className="workshop">
+      <WorkshopHeader
+        projectName={store.projectName}
+        workspaceMode={workspaceMode}
+        historyPastCount={store.historyPast.length}
+        historyFutureCount={store.historyFuture.length}
+        validationReport={derived.validationReport}
+        electricalConnectionCount={store.electricalConnections.length}
+        hasRecoverableAutosave={hasRecoverableAutosave}
+        onChangeProjectName={store.setProjectName}
+        onSaveProject={handleSaveProject}
+        onImportProjectFile={(file) => {
+          void handleImportProjectFile(file);
+        }}
+        onRecoverAutosave={handleRecoverAutosave}
+        onDismissRecoverAutosave={() => {
+          clearProjectAutosave();
+          setHasRecoverableAutosave(false);
+        }}
+        onUndo={() => store.undo()}
+        onRedo={() => store.redo()}
+        onOpenValidation={() => setRightPanelTab("validation")}
+        onSetWorkspaceMode={setWorkspaceMode}
+        onResetBuild={handleResetBuild}
+      />
 
-      {/* HEADER */}
-      <header className="topbar">
-        <div className="brand">
-          <div className="brand-icon">R</div>
-
-          <div>
-            <div className="brand-name">ROBOT WARS</div>
-            <div className="brand-subtitle">
-              ENGINEERING WORKSHOP
-            </div>
-          </div>
-        </div>
-
-        <div className="project-name">
-          <span className="status-dot" />
-          Untitled Robot
-        </div>
-
-        <div className="topbar-actions">
+      {projectNotice && (
+        <div
+          className={`project-notice-banner ${projectNotice.tone}`}
+          role={projectNotice.tone === "error" ? "alert" : "status"}
+        >
+          <span>{projectNotice.text}</span>
           <button
             type="button"
-            className="top-button"
-            disabled={historyPast.length === 0}
-            onClick={() => undo()}
-            title="Undo last assembly edit"
+            className="sim-clear-selection-btn"
+            onClick={() => {
+              setProjectNotice(null);
+              store.clearProjectLoadWarnings();
+            }}
           >
-            ↶ Undo
-          </button>
-          <button
-            type="button"
-            className="top-button"
-            disabled={historyFuture.length === 0}
-            onClick={() => redo()}
-            title="Redo undone assembly edit"
-          >
-            ↷ Redo
-          </button>
-          <button
-            type="button"
-            className={`top-button workshop-health-btn ${
-              validationReport.errors.length > 0
-                ? "error"
-                : validationReport.warnings.length > 0
-                  ? "warning"
-                  : "valid"
-            }`}
-            onClick={() => setRightPanelTab("validation")}
-            title="Inspect placement and assembly diagnostics"
-          >
-            {validationReport.errors.length > 0
-              ? `✕ ${validationReport.errors.length} Errors`
-              : validationReport.warnings.length > 0
-                ? `⚠ ${validationReport.warnings.length} Warnings`
-                : "✓ Valid"}
-          </button>
-          <button
-            type="button"
-            className={`top-button ${workspaceMode === "workshop" ? "active-mode" : ""}`}
-            onClick={() => setWorkspaceMode("workshop")}
-            title="Switch to 3D Mechanical Workshop"
-          >
-            3D Workshop
-          </button>
-          <button
-            type="button"
-            className={`top-button ${workspaceMode === "electrical" ? "active-mode" : ""}`}
-            onClick={() => setWorkspaceMode("electrical")}
-            title="Open Electrical Catalogue & Wiring Workspace"
-          >
-            ⚡ Electrical ({electricalConnections.length})
-          </button>
-          <button
-            type="button"
-            className="top-button"
-            onClick={startNewBuild}
-            title="Reset robot build and clear edit history"
-          >
-            Reset
-          </button>
-          <button
-            type="button"
-            className="primary-button"
-            onClick={() => setWorkspaceMode("simulation")}
-          >
-            Test Robot
+            Dismiss
           </button>
         </div>
-      </header>
-
-      {/* MAIN LAYOUT */}
-      {workspaceMode === "electrical" ? (
-        <ElectricalWorkspaceView
-          parts={parts}
-          connections={connections}
-          foundation={foundation}
-          electricalConnections={electricalConnections}
-          validationReport={validationReport}
-          selectedId={selectedId}
-          selectedElectricalConnectionId={selectedElectricalConnectionId}
-          selectedElectricalPinId={selectedElectricalPinId}
-          onSelectPart={setSelectedId}
-          onSelectConnection={setSelectedElectricalConnection}
-          onFocusDiagnostic={focusElectricalDiagnostic}
-          onInstallCatalogueItem={installElectricalCatalogueItem}
-          onReplaceElectricalComponent={replaceElectricalComponent}
-          onDeletePart={deletePartById}
-          onCreateConnection={addElectricalConnection}
-          onUpdateConnection={updateElectricalConnection}
-          onAssignPin={assignPinToElectricalConnection}
-          onAssignConnector={assignConnectorToInterface}
-          onRemoveConnection={removeElectricalConnection}
-          onPreviewTransform={previewPartTransform}
-          onApplyTransform={updatePartTransform}
-          onReplaceStructuralPart={replaceStructuralPart}
-          onDuplicatePart={duplicatePart}
-          onAttachPart={attachPart}
-          onDetachPart={detachPart}
-          onUpdateImportedConfig={updateImportedPartConfiguration}
-          onAddCustomInterface={addCustomMountingInterface}
-          onRemoveCustomInterface={removeCustomMountingInterface}
-        />
-      ) : (
-      <div className="main-layout">
-
-        {/* LEFT PANEL */}
-        <aside className="left-panel">
-          <div className="panel-content">
-            <div className="builder-steps">
-              {(
-                [
-                  { id: "foundation", label: "Foundation", num: 1 },
-                  { id: "structure", label: "Structure", num: 2 },
-                  { id: "battery", label: "Battery", num: 3 },
-                  { id: "controller", label: "Controller", num: 4 },
-                  { id: "motors", label: "Motors", num: 5 },
-                  { id: "wheels", label: "Wheels", num: 6 },
-                  { id: "drivetrain", label: "Drivetrain", num: 7 },
-                ] as const
-              ).map((step) => {
-                const order = [
-                  "foundation",
-                  "structure",
-                  "battery",
-                  "controller",
-                  "motors",
-                  "wheels",
-                  "drivetrain",
-                  "completed",
-                ];
-                const currentIdx = order.indexOf(stage);
-                const stepIdx = order.indexOf(step.id);
-                const isComplete = stepIdx < currentIdx;
-                const isClickable =
-                  step.id === "foundation" || Boolean(foundation?.confirmed);
-                return (
-                  <button
-                    key={step.id}
-                    type="button"
-                    disabled={!isClickable}
-                    className={`builder-step ${stage === step.id ? "active" : isComplete ? "complete" : ""}`}
-                    onClick={() => {
-                      if (isClickable) {
-                        setStage(step.id);
-                        setRightPanelTab("stage");
-                      }
-                    }}
-                  >
-                    <span>{step.num}</span>
-                    {step.label}
-                  </button>
-                );
-              })}
-            </div>
-
-            {stage === "foundation" && foundation ? (
-              <FoundationStagePanel
-                foundation={foundation}
-                onSelectFoundationModel={selectFoundationModel}
-                onConfigureProcedural={configureProceduralFoundation}
-                onResetProcedural={resetProceduralFoundation}
-                onImportFoundationStl={importFoundationStl}
-              />
-            ) : stage === "structure" ? (
-              <StructureStagePanel
-                parts={parts}
-                foundation={foundation}
-                selectedPart={selectedPart}
-                selectedCatalogueId={selectedStructuralCatalogueId}
-                onSelectCatalogueItem={selectStructuralCatalogueItem}
-                onAddStructuralPart={addStructuralPart}
-                onReplaceStructuralPart={replaceStructuralPart}
-                onDuplicatePart={duplicatePart}
-                onImportStructuralStl={importStructuralStl}
-                onContinueToBattery={() => setStage("battery")}
-                onBackToFoundation={() => setStage("foundation")}
-              />
-            ) : stage === "battery" ? (
-              <>
-                <div className="section-label">BATTERY CATALOGUE</div>
-                <p className="builder-intro">
-                  Choose an optional battery to install on the foundation.
-                </p>
-                <div className="motor-list">
-                  {batteryCatalogue.map((battery) => (
-                    <button
-                      key={battery.id}
-                      className={`motor-card ${
-                        selectedBatteryCatalogueId === battery.id
-                          ? "selected"
-                          : ""
-                      }`}
-                      onClick={() => selectBatteryCatalogueItem(battery.id)}
-                    >
-                      <span
-                        className="motor-card-icon"
-                        style={{ borderColor: battery.color }}
-                      >
-                        ▰
-                      </span>
-                      <span>
-                        <strong>{battery.name}</strong>
-                        <small>
-                          {battery.voltage}V · {battery.capacityMah}mAh
-                        </small>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <div className="battery-install-status" role="status">
-                  {installedBatteryDefinition
-                    ? `${installedBatteryDefinition.name} installed`
-                    : "No battery installed"}
-                </div>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("controller")}
-                >
-                  Continue to Controller
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("foundation")}
-                >
-                  ← Back to Foundation
-                </button>
-              </>
-            ) : stage === "controller" ? (
-              <>
-                <div className="section-label">CONTROLLER CATALOGUE</div>
-                <p className="builder-intro">
-                  Choose an optional controller board for the robot.
-                </p>
-                <div className="motor-list">
-                  {controllerCatalogue.map((controller) => (
-                    <button
-                      key={controller.id}
-                      className={`motor-card ${
-                        selectedControllerCatalogueId === controller.id
-                          ? "selected"
-                          : ""
-                      }`}
-                      onClick={() =>
-                        selectControllerCatalogueItem(controller.id)
-                      }
-                    >
-                      <span
-                        className="motor-card-icon"
-                        style={{ borderColor: controller.color }}
-                      >
-                        ▤
-                      </span>
-                      <span>
-                        <strong>{controller.name}</strong>
-                        <small>{controller.controllerType}</small>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <div className="controller-install-status" role="status">
-                  {installedControllerDefinition
-                    ? `${installedControllerDefinition.name} installed`
-                    : "No controller installed"}
-                </div>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("battery")}
-                >
-                  ← Back to Battery
-                </button>
-              </>
-            ) : stage === "motors" ? (
-              <>
-                <div className="section-label">MOTOR CATALOGUE</div>
-                <div className="motor-list">
-                  {motorCatalogue.map((motor) => (
-                    <button
-                      key={motor.id}
-                      className={`motor-card ${
-                        selectedMotorCatalogueId === motor.id ? "selected" : ""
-                      }`}
-                      onClick={() => selectMotorCatalogueItem(motor.id)}
-                    >
-                      <span
-                        className="motor-card-icon"
-                        style={{ borderColor: motor.color }}
-                      >
-                        ⚙
-                      </span>
-                      <span>
-                        <strong>{motor.name}</strong>
-                        <small>
-                          {motor.rpm} RPM · {motor.torque.toFixed(1)} N·m
-                        </small>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("controller")}
-                >
-                  ← Back to Controller
-                </button>
-              </>
-            ) : stage === "wheels" ? (
-              <>
-                <div className="section-label">WHEEL CATALOGUE</div>
-                <div className="wheel-list">
-                  {wheelCatalogue.map((wheel) => (
-                    <button
-                      key={wheel.id}
-                      className={`wheel-card ${
-                        selectedWheelCatalogueId === wheel.id ? "selected" : ""
-                      }`}
-                      onClick={() => selectWheelCatalogueItem(wheel.id)}
-                    >
-                      <span className="wheel-card-icon">◉</span>
-                      <span>
-                        <strong>{wheel.name}</strong>
-                        <small>
-                          {formatLength(wheel.diameter, "cm", { decimals: 0 })} ×{" "}
-                          {formatLength(wheel.width, "cm", { decimals: 1 })} ·{" "}
-                          {wheel.category}
-                        </small>
-                      </span>
-                    </button>
-                  ))}
-                </div>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("motors")}
-                >
-                  ← Back to Motors
-                </button>
-              </>
-            ) : stage === "drivetrain" ? (
-              <>
-                <div className="section-label">DRIVETRAIN CONFIGURATION</div>
-                <p className="builder-intro">
-                  Map mounted motor and wheel assemblies to the left and right
-                  drive groups.
-                </p>
-                <div
-                  className={`drivetrain-status ${
-                    drivetrainValidation.isValid ? "valid" : "invalid"
-                  }`}
-                  role="status"
-                >
-                  {drivetrainValidation.isValid
-                    ? "Configuration ready"
-                    : "Configuration needs attention"}
-                </div>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("wheels")}
-                >
-                  ← Back to Wheels
-                </button>
-              </>
-            ) : stage === "completed" ? (
-              <>
-                <div className="section-label">BUILD COMPLETE</div>
-                <p className="builder-intro">
-                  Your robot configuration is ready to review.
-                </p>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("wheels")}
-                >
-                  ← Edit Wheels
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("motors")}
-                >
-                  ← Edit Motors
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("drivetrain")}
-                >
-                  ← Edit Drivetrain
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("foundation")}
-                >
-                  ← Edit Foundation
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("structure")}
-                >
-                  ← Edit Structure
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("battery")}
-                >
-                  ← Edit Battery
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("controller")}
-                >
-                  ← Edit Controller
-                </button>
-              </>
-            ) : (
-              <div className="placeholder-content">
-                <p>Start a new robot build to continue.</p>
-              </div>
-            )}
-            {stage === "foundation" && !foundation && (
-              <>
-                <div className="section-label">NEW ROBOT</div>
-                <p className="builder-intro">
-                  Choose the foundation that will support your motors and wheels.
-                </p>
-              </>
-            )}
-          </div>
-          <div className="panel-heading">
-            ROBOT STRUCTURE ({parts.length})
-          </div>
-
-          <div className="panel-content">
-            <div className="section-label">
-              ASSEMBLY HIERARCHY
-            </div>
-
-            {anchoredRootParts.map((part) => renderHierarchy(part.id))}
-
-            {unattachedRootParts.length > 0 && (
-              <>
-                <div className="section-label" style={{ marginTop: 10 }}>
-                  UNATTACHED COMPONENTS ({unattachedRootParts.length})
-                </div>
-                {unattachedRootParts.map((part) => renderHierarchy(part.id))}
-              </>
-            )}
-          </div>
-
-          <div className="panel-footer">
-            <div className="footer-label">
-              BUILD STATUS
-            </div>
-
-            <div className="build-status">
-              <span className="status-dot" />
-              Editable Objects
-            </div>
-          </div>
-        </aside>
-
-        {/* 3D VIEWPORT */}
-        <main className="viewport">
-          <Canvas
-            shadows
-            camera={{ position: [4.5, 4.2, 6], fov: 44 }}
-            gl={{ antialias: true }}
-            onPointerMissed={() => setSelectedId(null)}
-          >
-            <color attach="background" args={["#10151d"]} />
-
-            <RobotScene
-              parts={parts}
-              selectedId={selectedId}
-              setSelectedId={setSelectedId}
-              transformMode={transformMode}
-              mountCandidate={mountCandidate}
-              onMountCandidateChange={setMountCandidate}
-              cameraFocusRequest={cameraFocusRequest}
-            />
-          </Canvas>
-
-          {/* VIEWPORT OVERLAY */}
-          <div className="viewport-overlay viewport-top-left">
-            <div className="overlay-title">
-              3D WORKSPACE
-            </div>
-
-            <div className="overlay-subtitle">
-              Interactive Construction Mode
-            </div>
-          </div>
-
-          <div className="viewport-overlay viewport-bottom">
-            <span>Orbit: Left Mouse</span>
-            <span>Zoom: Scroll</span>
-            <span>Pan: Right Mouse</span>
-          </div>
-
-          <div className="viewport-focus">
-            <div className="viewport-focus-actions">
-              <button
-                type="button"
-                onClick={() =>
-                  requestCameraFocus(getAssemblyFocusFrame(visibleParts))
-                }
-                disabled={!foundation || visibleParts.length === 0}
-                title="Center and frame the visible robot"
-              >
-                Focus Robot
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (focusableSelectedPart) {
-                    requestCameraFocus(
-                      getComponentFocusFrame(focusableSelectedPart)
-                    );
-                  }
-                }}
-                disabled={!focusableSelectedPart}
-                title={
-                  selectedPartIsHidden
-                    ? "Show this component in the Assembly tree before focusing"
-                    : selectedPart
-                      ? "Center and frame the selected component"
-                      : "Select a component before focusing"
-                }
-              >
-                Focus Component
-              </button>
-            </div>
-            {selectedPartIsHidden && selectedPart && (
-              <div className="viewport-focus-note" role="status">
-                {selectedPart.name} is hidden. Show it in the Assembly tree before focusing.
-              </div>
-            )}
-            {foundation &&
-              visibleParts.length === 0 &&
-              !selectedPartIsHidden && (
-                <div className="viewport-focus-note" role="status">
-                  Show a component to focus the robot.
-                </div>
-              )}
-          </div>
-
-          <div className="view-controls workshop-gizmo-bar" role="group" aria-label="Transform gizmo mode">
-            {(
-              [
-                { id: "select", label: "Select" },
-                { id: "translate", label: "Move" },
-                { id: "rotate", label: "Rotate" },
-                { id: "scale", label: "Scale" },
-              ] as const
-            ).map((mode) => (
-              <button
-                key={mode.id}
-                type="button"
-                className={transformMode === mode.id ? "tool-active" : ""}
-                onClick={() => setTransformMode(mode.id)}
-                title={`Set viewport gizmo to ${mode.label}`}
-              >
-                {mode.label}
-              </button>
-            ))}
-          </div>
-
-          {!foundation && (
-            <div className="foundation-start">
-              <span className="foundation-start-icon">▣</span>
-              <h2>Start a new robot</h2>
-              <p>Step 1 begins with choosing and configuring your foundation.</p>
-              <button onClick={startNewBuild}>Start Foundation Build</button>
-            </div>
-          )}
-
-          {mountCandidate && (
-            <div className="mount-confirmation" role="dialog">
-              <div>Mount this wheel to the motor?</div>
-              <div className="mount-actions">
-                <button
-                  onClick={() => {
-                    mountWheelToMotor(
-                      mountCandidate.motorId,
-                      mountCandidate.wheelId
-                    );
-                    setMountCandidate(null);
-                  }}
-                >
-                  Mount
-                </button>
-                <button
-                  className="mount-cancel"
-                  onClick={() => setMountCandidate(null)}
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-        </main>
-
-        {/* RIGHT PANEL */}
-        <aside className="right-panel">
-          <div className="panel-heading">
-            PROPERTIES &amp; DIAGNOSTICS
-          </div>
-
-          <div className="workshop-right-tabs" role="tablist" aria-label="Right inspector tabs">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={rightPanelTab === "stage"}
-              className={`sim-tab-btn ${rightPanelTab === "stage" ? "active" : ""}`}
-              onClick={() => setRightPanelTab("stage")}
-            >
-              Build Step
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={rightPanelTab === "inspector"}
-              className={`sim-tab-btn ${rightPanelTab === "inspector" ? "active" : ""}`}
-              onClick={() => setRightPanelTab("inspector")}
-            >
-              Part
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={rightPanelTab === "validation"}
-              className={`sim-tab-btn ${rightPanelTab === "validation" ? "active" : ""}`}
-              onClick={() => setRightPanelTab("validation")}
-            >
-              Validate ({validationReport.diagnostics.length})
-            </button>
-          </div>
-
-          <div className="panel-content">
-            {rightPanelTab === "inspector" ? (
-              selectedPart ? (
-                <PartInspectorPanel
-                  key={`${selectedPart.id}-${selectedPart.position.join(",")}-${selectedPart.rotation.join(",")}-${selectedPart.size.join(",")}`}
-                  part={selectedPart}
-                  parts={parts}
-                  connections={connections}
-                  foundation={foundation}
-                  diagnostics={selectedPartDiagnostics}
-                  onPreviewTransform={previewPartTransform}
-                  onApplyTransform={updatePartTransform}
-                  onReplaceStructuralPart={replaceStructuralPart}
-                  onDuplicatePart={duplicatePart}
-                  onAttachPart={attachPart}
-                  onDetachPart={detachPart}
-                  onDeletePart={deletePartById}
-                  onUpdateImportedConfig={updateImportedPartConfiguration}
-                  onAddCustomInterface={addCustomMountingInterface}
-                  onRemoveCustomInterface={removeCustomMountingInterface}
-                  electricalConnections={electricalConnections}
-                  onRemoveElectricalConnection={removeElectricalConnection}
-                />
-              ) : (
-                <div className="placeholder-content">
-                  <div className="placeholder-icon">⊞</div>
-                  <p>Select any installed component in the Assembly Tree or 3D Viewport to adjust Position, Rotation, Dimensions, or Mounting.</p>
-                </div>
-              )
-            ) : rightPanelTab === "validation" ? (
-              <div className="workshop-validation-panel">
-                <div className="section-label">ENGINEERING HEALTH &amp; DIAGNOSTICS</div>
-                <div
-                  className={`drivetrain-status ${
-                    validationReport.healthStatus === "error"
-                      ? "invalid"
-                      : validationReport.healthStatus === "warning"
-                        ? "warning"
-                        : "valid"
-                  }`}
-                  role="status"
-                >
-                  {validationReport.errors.length > 0
-                    ? `${validationReport.errors.length} error(s), ${validationReport.warnings.length} warning(s)`
-                    : validationReport.warnings.length > 0
-                      ? `${validationReport.warnings.length} warning(s), ${validationReport.infos.length} notice(s)`
-                      : validationReport.infos.length > 0
-                        ? `Ready · ${validationReport.infos.length} advisory notice(s)`
-                        : "All mechanical checks passed"}
-                </div>
-
-                {lastReplacementWarning && (
-                  <div className="workshop-diag-item warning" role="alert">
-                    <strong>REPLACEMENT IMPACT</strong>
-                    <span>{lastReplacementWarning}</span>
-                    <button
-                      type="button"
-                      className="sim-clear-selection-btn"
-                      onClick={clearReplacementWarning}
-                    >
-                      Dismiss
-                    </button>
-                  </div>
-                )}
-
-                <div className="workshop-subsystems-grid">
-                  {validationReport.subsystems.map((sub) => (
-                    <div
-                      key={sub.key}
-                      className={`workshop-subsystem-card ${sub.status}`}
-                      title={sub.summary}
-                    >
-                      <strong>{sub.label}</strong>
-                      <small>
-                        {sub.errorCount > 0
-                          ? `${sub.errorCount} err`
-                          : sub.warningCount > 0
-                            ? `${sub.warningCount} warn`
-                            : sub.unknownCount > 0
-                              ? `${sub.unknownCount} unverified`
-                              : "OK"}
-                      </small>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="workshop-filter-chips" role="group" aria-label="Filter diagnostics severity">
-                  {(
-                    [
-                      { id: "all", label: `All (${validationReport.diagnostics.length})` },
-                      { id: "error", label: `Errors (${validationReport.errors.length})` },
-                      { id: "warning", label: `Warnings (${validationReport.warnings.length})` },
-                      { id: "info", label: `Info (${validationReport.infos.length})` },
-                    ] as const
-                  ).map((item) => (
-                    <button
-                      key={item.id}
-                      type="button"
-                      className={`workshop-chip ${diagFilter === item.id ? "active" : ""}`}
-                      onClick={() => setDiagFilter(item.id)}
-                    >
-                      {item.label}
-                    </button>
-                  ))}
-                </div>
-
-                {validationReport.diagnostics.filter(
-                  (d) => diagFilter === "all" || d.severity === diagFilter
-                ).length === 0 ? (
-                  <p className="builder-intro">
-                    No diagnostics in this category. Assembly uses 3D OBB SAT checks and explicit interface provenance.
-                  </p>
-                ) : (
-                  <div className="workshop-diag-list">
-                    {validationReport.diagnostics
-                      .filter((d) => diagFilter === "all" || d.severity === diagFilter)
-                      .map((diag) => (
-                        <button
-                          key={diag.id}
-                          type="button"
-                          className={`workshop-diag-item ${diag.severity}`}
-                          onClick={() => {
-                            if (diag.partId) {
-                              setSelectedId(diag.partId);
-                              setRightPanelTab("inspector");
-                            }
-                          }}
-                        >
-                          <strong>
-                            {diag.title ?? diag.severity.toUpperCase()} ·{" "}
-                            {diag.severity.toUpperCase()}
-                            {diag.isUnknownAssumption ? " · UNVERIFIED" : ""}
-                          </strong>
-                          <span>{diag.message}</span>
-                          {diag.reason && diag.reason !== diag.message && (
-                            <small className="workshop-diag-meta">{diag.reason}</small>
-                          )}
-                          {diag.correctiveAction && (
-                            <small className="workshop-diag-action">
-                              Fix: {diag.correctiveAction}
-                            </small>
-                          )}
-                        </button>
-                      ))}
-                  </div>
-                )}
-
-                {validationReport.electricalReport && (
-                  <div className="workshop-mount-target" style={{ marginTop: 12 }}>
-                    <div className="section-label">
-                      ELECTRICAL ARCHITECTURE HEALTH ({electricalConnections.length} CONNECTIONS)
-                    </div>
-                    <div
-                      className={`workshop-subsystem-card ${validationReport.electricalReport.healthStatus}`}
-                    >
-                      <strong>
-                        Electrical Subsystem: {validationReport.electricalReport.healthStatus.toUpperCase()}
-                      </strong>
-                      <small>
-                        {validationReport.electricalReport.errorCount} err ·{" "}
-                        {validationReport.electricalReport.warningCount} warn ·{" "}
-                        {validationReport.electricalReport.unknownCount} unverified specs
-                      </small>
-                    </div>
-                    <button
-                      type="button"
-                      className="top-button"
-                      style={{ width: "100%", marginTop: 6 }}
-                      onClick={() => setWorkspaceMode("electrical")}
-                    >
-                      ⚡ Open Electrical Wiring Workspace
-                    </button>
-                    {validationReport.electricalReport.diagnostics.length > 0 && (
-                      <div className="workshop-diag-list" style={{ marginTop: 6 }}>
-                        {validationReport.electricalReport.diagnostics.map((eDiag) => (
-                          <button
-                            key={eDiag.id}
-                            type="button"
-                            className={`workshop-diag-item ${
-                              eDiag.severity === "unknown" ? "info" : eDiag.severity
-                            }`}
-                            onClick={() => {
-                              focusElectricalDiagnostic(eDiag);
-                              if (eDiag.connectionId) {
-                                setWorkspaceMode("electrical");
-                              } else if (eDiag.partId) {
-                                setRightPanelTab("inspector");
-                              }
-                            }}
-                          >
-                            <strong>
-                              [ELECTRICAL] {eDiag.title} · {eDiag.severity.toUpperCase()}
-                            </strong>
-                            <span>{eDiag.reason}</span>
-                            {eDiag.correctiveAction && (
-                              <small className="workshop-diag-action">
-                                Fix: {eDiag.correctiveAction}
-                              </small>
-                            )}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </div>
-            ) : stage === "structure" && foundation ? (
-              <>
-                <div className="section-label">STRUCTURAL ASSEMBLY TIPS</div>
-                <p className="builder-intro">
-                  Add brackets, rails, plates, crossbars, beams, standoffs, spacers, or bumpers on the left, then select any component to fine-tune transforms or attach children.
-                </p>
-                {selectedPart && (
-                  <button
-                    type="button"
-                    className="primary-button foundation-confirm"
-                    onClick={() => setRightPanelTab("inspector")}
-                  >
-                    Edit Selected: {selectedPart.name}
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="secondary-button"
-                  onClick={() => setStage("battery")}
-                >
-                  Continue to Battery
-                </button>
-              </>
-            ) : stage === "drivetrain" && foundation ? (
-              <>
-                <div className="section-label">DRIVETRAIN TYPE</div>
-                <label className="drivetrain-type-control">
-                  <span>Drive configuration</span>
-                  <select
-                    aria-label="Drivetrain type"
-                    value={pendingDrivetrainType ?? drivetrain.type}
-                    onChange={(event) => {
-                      setConfirmAutoMap(false);
-                      const nextType = event.target.value as DrivetrainType;
-                      const nextSlotCount =
-                        getDrivetrainSlotCount(nextType);
-                      const removesCustomAssignments =
-                        drivetrain.mappingCustomized &&
-                        (["left", "right"] as const).some((side) =>
-                          drivetrain[side]
-                            .slice(nextSlotCount)
-                            .some((assignment) => assignment !== null)
-                        );
-                      if (removesCustomAssignments) {
-                        setPendingDrivetrainType(nextType);
-                      } else {
-                        setPendingDrivetrainType(null);
-                        setDrivetrainType(nextType);
-                      }
-                    }}
-                  >
-                    <option value="differential-2">
-                      Differential Drive · 2 wheel
-                    </option>
-                    <option value="differential-4">
-                      4-Wheel Differential Drive
-                    </option>
-                  </select>
-                </label>
-                {pendingDrivetrainType && (
-                  <div className="drivetrain-confirm" role="group">
-                    <p>
-                      Switching to 2-wheel differential drive removes the
-                      additional custom assignments. Continue?
-                    </p>
-                    <button
-                      type="button"
-                      className="primary-button"
-                      onClick={() => {
-                        setDrivetrainType(pendingDrivetrainType, true);
-                        setPendingDrivetrainType(null);
-                      }}
-                    >
-                      Switch and Remove Extra Assignments
-                    </button>
-                    <button
-                      type="button"
-                      className="stage-back-button"
-                      onClick={() => setPendingDrivetrainType(null)}
-                    >
-                      Keep Current Type
-                    </button>
-                  </div>
-                )}
-                <p className="builder-intro">
-                  {drivetrain.type === "differential-2"
-                    ? "Assign one powered wheel assembly to each side."
-                    : "Assign two powered wheel assemblies to each side."}
-                </p>
-
-                <button
-                  type="button"
-                  className="secondary-button drivetrain-suggest-button"
-                  disabled={pendingDrivetrainType !== null}
-                  onClick={() => {
-                    if (drivetrain.mappingCustomized) {
-                      setConfirmAutoMap(true);
-                    } else {
-                      applySuggestedDrivetrainMapping();
-                    }
-                  }}
-                >
-                  Suggest Mapping
-                </button>
-                {confirmAutoMap && (
-                  <div className="drivetrain-confirm" role="group">
-                    <p>
-                      Replace the custom mapping with the mounting-position
-                      suggestion?
-                    </p>
-                    <button
-                      type="button"
-                      className="primary-button"
-                      onClick={() => {
-                        applySuggestedDrivetrainMapping(true);
-                        setConfirmAutoMap(false);
-                      }}
-                    >
-                      Apply Suggestion
-                    </button>
-                    <button
-                      type="button"
-                      className="stage-back-button"
-                      onClick={() => setConfirmAutoMap(false)}
-                    >
-                      Keep Current Mapping
-                    </button>
-                  </div>
-                )}
-
-                {renderDrivetrainGroup("left")}
-                {renderDrivetrainGroup("right")}
-
-                <div
-                  className={`drivetrain-status ${
-                    drivetrainValidation.isValid ? "valid" : "invalid"
-                  }`}
-                  role="status"
-                >
-                  {drivetrainValidation.isValid
-                    ? "Drivetrain configuration valid"
-                    : "Drivetrain configuration incomplete"}
-                </div>
-                {!drivetrainValidation.isValid && (
-                  <ul className="drivetrain-errors" role="alert">
-                    {drivetrainValidation.errors.map((error) => (
-                      <li key={error}>{error}</li>
-                    ))}
-                  </ul>
-                )}
-
-                <div className="section-label">CONFIGURATION SUMMARY</div>
-                {(["left", "right"] as const).map((side) => (
-                  <div className="drivetrain-summary-side" key={side}>
-                    <strong>
-                      {side === "left" ? "Left" : "Right"} drive group
-                    </strong>
-                    {drivetrain[side].every(
-                      (assignment) => assignment === null
-                    ) ? (
-                      <small>Unassigned</small>
-                    ) : (
-                      drivetrain[side].map((assignment, index) => {
-                        if (!assignment) return null;
-                        const assembly = poweredWheelAssemblies.find(
-                          (item) =>
-                            item.motorId === assignment.motorId &&
-                            item.wheelId === assignment.wheelId
-                        );
-                        return (
-                          <small key={`${side}-summary-${index}`}>
-                            {assembly
-                              ? `${assembly.mountingLocation}: ${assembly.motor.name} · ${assembly.wheel.name}`
-                              : "Assignment is no longer available"}
-                          </small>
-                        );
-                      })
-                    )}
-                  </div>
-                ))}
-
-                <button
-                  className="primary-button foundation-confirm"
-                  disabled={
-                    !drivetrainValidation.isValid ||
-                    pendingDrivetrainType !== null
-                  }
-                  onClick={finishBuild}
-                >
-                  Complete Build
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("wheels")}
-                >
-                  ← Back to Wheels
-                </button>
-              </>
-            ) : stage === "foundation" && foundation ? (
-              <>
-                <div className="section-label">FOUNDATION CONFIGURATION</div>
-
-                <div className="object-card">
-                  <div className="object-icon">▣</div>
-                  <div>
-                    <div className="object-name">
-                      {foundation.mode === "imported" && foundation.imported
-                        ? foundation.imported.fileName
-                        : foundation.procedural
-                          ? PROCEDURAL_ARCHITECTURES.find(
-                              (a) => a.id === foundation.procedural?.architecture
-                            )?.name ?? "Procedural Chassis"
-                          : foundationModels.find(
-                              (model) => model.id === foundation.modelId
-                            )?.name}
-                    </div>
-                    <div className="object-type">
-                      {foundation.mode === "imported"
-                        ? "Imported STL Foundation"
-                        : foundation.procedural
-                          ? `Procedural · ${parts.filter((p) => Boolean(p.foundationMemberRole)).length} structural members`
-                          : "Preset Primary Structure"}
-                    </div>
-                  </div>
-                </div>
-
-                {foundation.mode === "imported" && foundation.imported ? (
-                  <div className="workshop-mount-target">
-                    <div className="property-row">
-                      <span>Dimensions (L × W × H)</span>
-                      <span>
-                        {foundation.length.toFixed(2)} × {foundation.width.toFixed(2)} ×{" "}
-                        {foundation.height.toFixed(2)} m
-                      </span>
-                    </div>
-                    <div className="property-row">
-                      <span>Mesh / Triangles</span>
-                      <span>
-                        {foundation.imported.inspection.format.toUpperCase()} ·{" "}
-                        {foundation.imported.inspection.triangleCount}
-                      </span>
-                    </div>
-                    <div className="property-row">
-                      <span>Mass</span>
-                      <span>
-                        {foundation.imported.engineering.massKg !== undefined
-                          ? `${foundation.imported.engineering.massKg.toFixed(2)} kg (${foundation.imported.engineering.provenance.method})`
-                          : "Unknown"}
-                      </span>
-                    </div>
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      style={{ marginTop: 8 }}
-                      onClick={() => {
-                        setSelectedId("foundation-chassis");
-                        setRightPanelTab("inspector");
-                      }}
-                    >
-                      Edit Imported Properties &amp; Interfaces
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <div className="property-row">
-                      <span>Length</span>
-                      <NumericInput
-                        value={foundation.length}
-                        min={foundation.mode === "procedural" ? 0.35 : 0.8}
-                        step={0.1}
-                        onValidChange={(length) =>
-                          updateFoundationDimensions({ length })
-                        }
-                      />
-                    </div>
-                    <div className="property-row">
-                      <span>Width</span>
-                      <NumericInput
-                        value={foundation.width}
-                        min={foundation.mode === "procedural" ? 0.35 : 0.8}
-                        step={0.1}
-                        onValidChange={(width) =>
-                          updateFoundationDimensions({ width })
-                        }
-                      />
-                    </div>
-                    <div className="property-row">
-                      <span>Height / Envelope</span>
-                      <NumericInput
-                        value={foundation.height}
-                        min={foundation.mode === "procedural" ? 0.04 : 0.12}
-                        step={0.05}
-                        onValidChange={(height) =>
-                          updateFoundationDimensions({ height })
-                        }
-                      />
-                    </div>
-
-                    {foundation.procedural && (
-                      <div className="workshop-mount-target">
-                        <div className="section-label">MEMBER OPTIONS</div>
-                        <div className="property-row">
-                          <span>Base Thickness</span>
-                          <NumericInput
-                            value={foundation.procedural.thickness}
-                            min={0.008}
-                            step={0.005}
-                            onValidChange={(thickness) =>
-                              configureProceduralFoundation({ thickness })
-                            }
-                          />
-                        </div>
-                        {(foundation.procedural.architecture === "perimeter-frame" ||
-                          foundation.procedural.architecture === "t-slot-frame" ||
-                          foundation.procedural.architecture === "patterned-frame" ||
-                          foundation.procedural.architecture === "hybrid") && (
-                          <>
-                            <div className="property-row">
-                              <span>Rail Width</span>
-                              <NumericInput
-                                value={foundation.procedural.railWidth}
-                                min={0.02}
-                                step={0.01}
-                                onValidChange={(railWidth) =>
-                                  configureProceduralFoundation({ railWidth })
-                                }
-                              />
-                            </div>
-                            <div className="property-row">
-                              <span>Rail Height</span>
-                              <NumericInput
-                                value={foundation.procedural.railHeight}
-                                min={0.02}
-                                step={0.01}
-                                onValidChange={(railHeight) =>
-                                  configureProceduralFoundation({ railHeight })
-                                }
-                              />
-                            </div>
-                            <label className="foundation-option">
-                              <input
-                                type="checkbox"
-                                checked={foundation.procedural.includeCornerBrackets}
-                                onChange={(e) =>
-                                  configureProceduralFoundation({
-                                    includeCornerBrackets: e.target.checked,
-                                  })
-                                }
-                              />
-                              Corner gusset brackets
-                            </label>
-                          </>
-                        )}
-                        {foundation.procedural.architecture === "sheet-metal-tray" && (
-                          <div className="property-row">
-                            <span>Flange Height</span>
-                            <NumericInput
-                              value={foundation.procedural.flanges.heightM}
-                              min={0.03}
-                              step={0.02}
-                              onValidChange={(heightM) =>
-                                configureProceduralFoundation({
-                                  flanges: {
-                                    ...foundation.procedural!.flanges,
-                                    heightM,
-                                  },
-                                })
-                              }
-                            />
-                          </div>
-                        )}
-                      </div>
-                    )}
-
-                    <div className="section-label">STRUCTURAL DETAILS</div>
-                    <label className="foundation-option">
-                      <input
-                        type="checkbox"
-                        checked={foundation.includeTopPlate}
-                        onChange={(event) =>
-                          setFoundationOptions({
-                            includeTopPlate: event.target.checked,
-                          })
-                        }
-                      />
-                      Top structural plate
-                    </label>
-                    <label className="foundation-option">
-                      <input
-                        type="checkbox"
-                        checked={foundation.includeFrontCover}
-                        onChange={(event) =>
-                          setFoundationOptions({
-                            includeFrontCover: event.target.checked,
-                          })
-                        }
-                      />
-                      Front protective cover
-                    </label>
-                  </>
-                )}
-
-                {foundation.confirmed ? (
-                  <div className="foundation-confirmed">
-                    <span>✓</span>
-                    Foundation confirmed
-                  </div>
-                ) : (
-                  <button
-                    className="primary-button foundation-confirm"
-                    onClick={confirmFoundation}
-                  >
-                    Confirm Foundation
-                  </button>
-                )}
-              </>
-            ) : stage === "battery" && foundation ? (
-              <>
-                <div className="section-label">BATTERY SPECIFICATIONS</div>
-                {selectedBatteryDefinition ? (
-                  <div className="motor-spec-card">
-                    <div className="motor-spec-title">
-                      <span
-                        className="motor-card-icon"
-                        style={{
-                          borderColor: selectedBatteryDefinition.color,
-                        }}
-                      >
-                        ▰
-                      </span>
-                      <div>
-                        <strong>{selectedBatteryDefinition.name}</strong>
-                        <small>Sample game-catalogue values</small>
-                      </div>
-                    </div>
-                    <div className="property-row">
-                      <span>Chemistry</span>
-                      <span>{selectedBatteryDefinition.chemistry}</span>
-                    </div>
-                    <div className="property-row">
-                      <span>Voltage</span>
-                      <span>{selectedBatteryDefinition.voltage}V</span>
-                    </div>
-                    <div className="property-row">
-                      <span>Capacity</span>
-                      <span>
-                        {selectedBatteryDefinition.capacityMah.toLocaleString()}{" "}
-                        mAh
-                      </span>
-                    </div>
-                    <div className="property-row">
-                      <span>Dimensions (L × W × H)</span>
-                      <span>
-                        {formatDimensions(selectedBatteryDefinition.dimensions, "m", { decimals: [2, 2, 3] })}
-                      </span>
-                    </div>
-                    <div className="property-row">
-                      <span>Weight</span>
-                      <span>{formatMass(selectedBatteryDefinition.weight, "kg", { decimals: 2 })}</span>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="builder-intro">
-                    Select a battery from the catalogue.
-                  </p>
-                )}
-
-                <div className="battery-install-status" role="status">
-                  {installedBatteryDefinition
-                    ? `Installed: ${installedBatteryDefinition.name}`
-                    : "No battery installed. Battery installation is optional."}
-                </div>
-                <button
-                  className="primary-button foundation-confirm"
-                  disabled={!selectedBatteryDefinition}
-                  onClick={() => {
-                    if (selectedBatteryCatalogueId) {
-                      installBattery(selectedBatteryCatalogueId);
-                    }
-                  }}
-                >
-                  {installedBattery ? "Install / Replace Battery" : "Install Battery"}
-                </button>
-                <button
-                  className="danger-button battery-remove-button"
-                  disabled={!installedBattery}
-                  onClick={removeBattery}
-                >
-                  Remove Battery
-                </button>
-                <button
-                  className="primary-button foundation-confirm"
-                  onClick={() => setStage("controller")}
-                >
-                  Continue to Controller
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("foundation")}
-                >
-                  ← Back to Foundation
-                </button>
-              </>
-            ) : stage === "controller" && foundation ? (
-              <>
-                <div className="section-label">CONTROLLER SPECIFICATIONS</div>
-                {selectedControllerDefinition ? (
-                  <div className="motor-spec-card">
-                    <div className="motor-spec-title">
-                      <span
-                        className="motor-card-icon"
-                        style={{
-                          borderColor: selectedControllerDefinition.color,
-                        }}
-                      >
-                        ▤
-                      </span>
-                      <div>
-                        <strong>{selectedControllerDefinition.name}</strong>
-                        <small>{selectedControllerDefinition.controllerType}</small>
-                      </div>
-                    </div>
-                    <div className="property-row">
-                      <span>Processor</span>
-                      <span>{selectedControllerDefinition.processor}</span>
-                    </div>
-                    <div className="property-row">
-                      <span>Clock speed</span>
-                      <span>{selectedControllerDefinition.clockMHz} MHz</span>
-                    </div>
-                    <div className="property-row">
-                      <span>Operating voltage</span>
-                      <span>{selectedControllerDefinition.operatingVoltage}</span>
-                    </div>
-                    <div className="property-row">
-                      <span>Dimensions (L × W × H)</span>
-                      <span>
-                        {formatDimensions(selectedControllerDefinition.dimensions, "mm", { decimals: 1 })}
-                      </span>
-                    </div>
-                    <div className="property-row">
-                      <span>Weight</span>
-                      <span>
-                        {formatMass(selectedControllerDefinition.weight, "g", { decimals: 0 })}
-                      </span>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="builder-intro">
-                    Select a controller from the catalogue.
-                  </p>
-                )}
-
-                <div className="controller-install-status" role="status">
-                  {installedControllerDefinition
-                    ? `Installed: ${installedControllerDefinition.name}`
-                    : "No controller installed. Installation is optional."}
-                </div>
-                <button
-                  className="primary-button foundation-confirm"
-                  disabled={!selectedControllerDefinition}
-                  onClick={() => {
-                    if (selectedControllerCatalogueId) {
-                      installController(selectedControllerCatalogueId);
-                    }
-                  }}
-                >
-                  {installedController
-                    ? "Install / Replace Controller"
-                    : "Install Controller"}
-                </button>
-                <button
-                  className="danger-button controller-remove-button"
-                  disabled={!installedController}
-                  onClick={removeController}
-                >
-                  Remove Controller
-                </button>
-                <button
-                  className="primary-button foundation-confirm"
-                  onClick={() => setStage("motors")}
-                >
-                  Continue to Motors
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("battery")}
-                >
-                  ← Back to Battery
-                </button>
-              </>
-            ) : stage === "motors" ? (
-              <>
-                <div className="section-label">MOUNTING CONFIGURATION</div>
-                {selectedMotorDefinition ? (
-                  <div className="motor-spec-card">
-                    <div className="motor-spec-title">
-                      <span
-                        className="motor-card-icon"
-                        style={{ borderColor: selectedMotorDefinition.color }}
-                      >
-                        ⚙
-                      </span>
-                      <div>
-                        <strong>{selectedMotorDefinition.name}</strong>
-                        <small>{selectedMotorDefinition.description}</small>
-                      </div>
-                    </div>
-                    <div className="property-row">
-                      <span>Weight</span>
-                      <span>{selectedMotorDefinition.weight.toFixed(2)} kg</span>
-                    </div>
-                    <div className="property-row">
-                      <span>RPM</span>
-                      <span>{selectedMotorDefinition.rpm}</span>
-                    </div>
-                    <div className="property-row">
-                      <span>Torque</span>
-                      <span>{selectedMotorDefinition.torque.toFixed(1)} N·m</span>
-                    </div>
-                    <div className="property-row">
-                      <span>Footprint</span>
-                      <span>
-                        {selectedMotorDefinition.mountingFootprint[0]} ×{" "}
-                        {selectedMotorDefinition.mountingFootprint[1]} m
-                      </span>
-                    </div>
-                  </div>
-                ) : (
-                  <p className="builder-intro">Select a motor from the catalogue.</p>
-                )}
-
-                <div className="section-label">MOUNTING LOCATIONS</div>
-                <div className="mount-zone-list">
-                  {motorMountZones.map((zone) => {
-                    const occupied = occupiedZoneIds.has(zone.id);
-                    return (
-                      <button
-                        key={zone.id}
-                        className={`mount-zone-item ${
-                          selectedMountZoneId === zone.id ? "selected" : ""
-                        } ${occupied ? "occupied" : ""}`}
-                        onClick={() => selectMountZone(zone.id)}
-                      >
-                        <span>{zone.name}</span>
-                        <small>{occupied ? "Occupied" : "Available"}</small>
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {selectedMountZoneId && (
-                  <div className="motor-actions">
-                    {occupiedZoneIds.has(selectedMountZoneId) ? (
-                      <>
-                        {selectedMotorDefinition && (
-                          <button
-                            className="primary-button"
-                            onClick={() => replaceMotor(selectedMountZoneId)}
-                          >
-                            Replace Motor
-                          </button>
-                        )}
-                        <button
-                          className="danger-button"
-                          onClick={() => removeMotor(selectedMountZoneId)}
-                        >
-                          Remove Motor
-                        </button>
-                        <button
-                          className="secondary-button"
-                          onClick={() => {
-                            const currentMotor = mountedMotors.find(
-                              (motor) =>
-                                motor.mountingZoneId === selectedMountZoneId
-                            );
-                            const zone = motorMountZones.find(
-                              (item) => item.id === selectedMountZoneId
-                            );
-                            if (!currentMotor || !zone) return;
-                            const isBaseline =
-                              Math.abs(currentMotor.rotation[1] - zone.rotation[1]) < 0.001;
-                            rotateMotor(
-                              selectedMountZoneId,
-                              isBaseline
-                                ? zone.rotation[1] + Math.PI
-                                : zone.rotation[1]
-                            );
-                          }}
-                        >
-                          Rotate 180°
-                        </button>
-                      </>
-                    ) : (
-                      <button
-                        className="primary-button"
-                        disabled={!selectedMotorDefinition}
-                        onClick={placeMotor}
-                      >
-                        Add Motor
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                {structuralMotorCarriers.length > 0 && (
-                  <div className="workshop-mount-target">
-                    <div className="section-label">STRUCTURAL CARRIER MOUNTING</div>
-                    <label className="sim-select-field">
-                      <span>Structural Carrier</span>
-                      <select
-                        aria-label="Structural motor parent"
-                        value={activeMotorCarrier?.id ?? ""}
-                        onChange={(e) => {
-                          setStructuralMotorParentId(e.target.value);
-                          setStructuralMotorIfaceId("");
-                        }}
-                      >
-                        {structuralMotorCarriers.map((carrier) => (
-                          <option key={carrier.id} value={carrier.id}>
-                            {carrier.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                    {activeMotorCarrierInterfaces.length > 0 && (
-                      <label className="sim-select-field">
-                        <span>Mount Interface</span>
-                        <select
-                          aria-label="Structural motor interface"
-                          value={activeMotorCarrierIface?.id ?? ""}
-                          onChange={(e) =>
-                            setStructuralMotorIfaceId(e.target.value)
-                          }
-                        >
-                          {activeMotorCarrierInterfaces.map((iface) => (
-                            <option key={iface.id} value={iface.id}>
-                              {iface.label}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    )}
-                    <button
-                      type="button"
-                      className="secondary-button"
-                      disabled={
-                        !selectedMotorDefinition ||
-                        !activeMotorCarrier ||
-                        mountedMotors.length >= 4
-                      }
-                      onClick={() => {
-                        if (!activeMotorCarrier) return;
-                        mountMotorToParent(
-                          activeMotorCarrier.id,
-                          activeMotorCarrierIface?.id
-                        );
-                      }}
-                    >
-                      Mount {selectedMotorDefinition?.name ?? "Motor"} on Structure
-                    </button>
-                  </div>
-                )}
-
-                <div className="section-label">
-                  INSTALLED MOTORS ({mountedMotors.length}/4)
-                </div>
-                {mountedMotors.length ? (
-                  mountedMotors.map((motor) => (
-                    <div className="installed-motor" key={motor.id}>
-                      <span>{motor.name}</span>
-                      <small>{getMotorLocationLabel(motor)}</small>
-                    </div>
-                  ))
-                ) : (
-                  <p className="builder-intro">No motors installed.</p>
-                )}
-
-                <button
-                  className="primary-button foundation-confirm"
-                  onClick={() => setStage("wheels")}
-                >
-                  Continue to Wheels
-                </button>
-              </>
-            ) : stage === "wheels" ? (
-              <>
-                <div className="section-label">WHEEL SPECIFICATIONS</div>
-                {selectedWheelDefinition ? (
-                  <div className="motor-spec-card">
-                    <div className="motor-spec-title">
-                      <span className="wheel-card-icon">◉</span>
-                      <div>
-                        <strong>{selectedWheelDefinition.name}</strong>
-                        <small>{selectedWheelDefinition.description}</small>
-                      </div>
-                    </div>
-                    <div className="property-row">
-                      <span>Category</span>
-                      <span>{selectedWheelDefinition.category}</span>
-                    </div>
-                    <div className="property-row">
-                      <span>Diameter</span>
-                      <span>{formatLength(selectedWheelDefinition.diameter, "cm", { decimals: 0 })}</span>
-                    </div>
-                    <div className="property-row">
-                      <span>Width</span>
-                      <span>{formatLength(selectedWheelDefinition.width, "cm", { decimals: 1 })}</span>
-                    </div>
-                    <div className="property-row">
-                      <span>Weight</span>
-                      <span>{formatMass(selectedWheelDefinition.weight, "kg", { decimals: 2 })}</span>
-                    </div>
-                    <small className="spec-disclaimer">
-                      Placeholder simulation specifications, not manufacturer verified.
-                    </small>
-                  </div>
-                ) : (
-                  <p className="builder-intro">
-                    Choose a wheel type from the catalogue.
-                  </p>
-                )}
-
-                {selectedWheelDefinition && (
-                  <>
-                    <div className="section-label">WHEEL CUSTOMIZATION</div>
-                    <div className="wheel-dimension-control">
-                      <div className="wheel-dimension-heading">
-                        <label htmlFor="wheel-diameter">Diameter</label>
-                        <span>{selectedWheelDiameterCm.toFixed(1)} cm</span>
-                      </div>
-                      <div className="wheel-dimension-inputs">
-                        <input
-                          id="wheel-diameter"
-                          aria-label="Wheel diameter in centimeters"
-                          type="number"
-                          min={8}
-                          max={60}
-                          step={0.1}
-                          value={selectedWheelDiameterCm}
-                          onChange={(event) => {
-                            if (event.target.value === "") return;
-                            const value = Number(event.target.value);
-                            if (Number.isFinite(value)) {
-                              updateSelectedWheelDimensions({
-                                diameterCm: value,
-                              });
-                            }
-                          }}
-                        />
-                        <span>cm</span>
-                      </div>
-                      <input
-                        className="wheel-dimension-slider"
-                        aria-label="Wheel diameter slider"
-                        type="range"
-                        min={8}
-                        max={60}
-                        step={0.5}
-                        value={selectedWheelDiameterCm}
-                        onChange={(event) =>
-                          updateSelectedWheelDimensions({
-                            diameterCm: Number(event.target.value),
-                          })
-                        }
-                      />
-                      <div className="wheel-dimension-limits">
-                        <span>8 cm</span>
-                        <span>60 cm</span>
-                      </div>
-                    </div>
-
-                    <div className="wheel-dimension-control">
-                      <div className="wheel-dimension-heading">
-                        <label htmlFor="wheel-width">Width</label>
-                        <span>{selectedWheelWidthCm.toFixed(1)} cm</span>
-                      </div>
-                      <div className="wheel-dimension-inputs">
-                        <input
-                          id="wheel-width"
-                          aria-label="Wheel width in centimeters"
-                          type="number"
-                          min={3}
-                          max={20}
-                          step={0.1}
-                          value={selectedWheelWidthCm}
-                          onChange={(event) => {
-                            if (event.target.value === "") return;
-                            const value = Number(event.target.value);
-                            if (Number.isFinite(value)) {
-                              updateSelectedWheelDimensions({
-                                widthCm: value,
-                              });
-                            }
-                          }}
-                        />
-                        <span>cm</span>
-                      </div>
-                      <input
-                        className="wheel-dimension-slider"
-                        aria-label="Wheel width slider"
-                        type="range"
-                        min={3}
-                        max={20}
-                        step={0.1}
-                        value={selectedWheelWidthCm}
-                        onChange={(event) =>
-                          updateSelectedWheelDimensions({
-                            widthCm: Number(event.target.value),
-                          })
-                        }
-                      />
-                      <div className="wheel-dimension-limits">
-                        <span>3 cm</span>
-                        <span>20 cm</span>
-                      </div>
-                    </div>
-                  </>
-                )}
-
-                <div className="section-label">
-                  ASSIGN TO MOTOR ({mountedMotors.length} INSTALLED)
-                </div>
-                {mountedMotors.length ? (
-                  <div className="wheel-motor-list">
-                    {mountedMotors.map((motor) => {
-                      const assignment = wheelByMotorId.get(motor.id);
-                      const motorDefinition = motorCatalogue.find(
-                        (item) => item.id === motor.motorCatalogueId
-                      );
-                      const compatible = Boolean(
-                        selectedWheelDefinition &&
-                        motor.motorCatalogueId &&
-                        selectedWheelDefinition.compatibleMotorIds.includes(
-                          motor.motorCatalogueId
-                        )
-                      );
-                      return (
-                        <button
-                          key={motor.id}
-                          className={`wheel-motor-card ${
-                            selectedWheelMotorId === motor.id ? "selected" : ""
-                          }`}
-                          onClick={() => selectWheelMotor(motor.id)}
-                        >
-                          <span>
-                            <strong>{motorDefinition?.name ?? motor.name}</strong>
-                            <small>{getMotorLocationLabel(motor)}</small>
-                          </span>
-                          <small className={assignment ? "assignment-installed" : ""}>
-                            {assignment
-                              ? `${assignment.name} · Replace`
-                              : selectedWheelDefinition && !compatible
-                                ? "Not compatible"
-                                : "Unassigned"}
-                          </small>
-                        </button>
-                      );
-                    })}
-                  </div>
-                ) : (
-                  <p className="builder-intro">
-                    Install at least one motor in the Motors stage before assigning wheels.
-                  </p>
-                )}
-
-                {selectedWheelMotor && (
-                  <div className="wheel-assignment-actions">
-                    <div className="assignment-target">
-                      Selected motor:{" "}
-                      <strong>
-                        {selectedWheelMotorDefinition?.name ?? selectedWheelMotor.name}
-                      </strong>
-                    </div>
-                    {selectedWheelDefinition &&
-                      selectedWheelMotor.motorCatalogueId &&
-                      !selectedWheelDefinition.compatibleMotorIds.includes(
-                        selectedWheelMotor.motorCatalogueId
-                      ) && (
-                        <p className="compatibility-warning">
-                          This wheel is not compatible with the selected motor.
-                        </p>
-                      )}
-                    <button
-                      className="primary-button"
-                      disabled={
-                        !selectedWheelDefinition ||
-                        !selectedWheelMotor.motorCatalogueId ||
-                        !selectedWheelDefinition.compatibleMotorIds.includes(
-                          selectedWheelMotor.motorCatalogueId
-                        )
-                      }
-                      onClick={() => assignWheel(selectedWheelMotor.id)}
-                    >
-                      {selectedMotorWheel ? "Replace Wheel" : "Mount Wheel"}
-                    </button>
-                    {selectedMotorWheel && (
-                      <button
-                        className="danger-button"
-                        onClick={() => removeWheel(selectedWheelMotor.id)}
-                      >
-                        Remove Wheel
-                      </button>
-                    )}
-                  </div>
-                )}
-
-                <div className="section-label">
-                  INSTALLED WHEELS ({mountedWheels.length})
-                </div>
-                {mountedMotors.map((motor) => {
-                  const wheel = wheelByMotorId.get(motor.id);
-                  return (
-                    <div className="installed-motor" key={motor.id}>
-                      <span>{wheel?.name ?? "No wheel assigned"}</span>
-                      <small>{getMotorLocationLabel(motor)}</small>
-                    </div>
-                  );
-                })}
-
-                <button
-                  className="primary-button foundation-confirm"
-                  onClick={() => setStage("drivetrain")}
-                >
-                  Continue to Drivetrain
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("motors")}
-                >
-                  ← Back to Motors
-                </button>
-              </>
-            ) : stage === "completed" && foundation ? (
-              <>
-                <div className="section-label">ROBOT BUILD SUMMARY</div>
-                <div className="motor-spec-card">
-                  <strong>
-                    {foundationModels.find(
-                      (model) => model.id === foundation.modelId
-                    )?.name}
-                  </strong>
-                  <div className="property-row">
-                    <span>Foundation</span>
-                    <span>
-                      {foundation.length.toFixed(2)} × {foundation.width.toFixed(2)} ×{" "}
-                      {foundation.height.toFixed(2)} m
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Battery</span>
-                    <span>
-                      {installedBatteryDefinition?.name ?? "None installed"}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Controller</span>
-                    <span>
-                      {installedControllerDefinition?.name ?? "None installed"}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Installed motors</span>
-                    <span>{mountedMotors.length}</span>
-                  </div>
-                  <div className="property-row">
-                    <span>Installed wheels</span>
-                    <span>{mountedWheels.length}</span>
-                  </div>
-                </div>
-                <div className="section-label">MOTORS & WHEELS</div>
-                {mountedMotors.map((motor) => (
-                  <div className="installed-motor" key={motor.id}>
-                    <span>{motor.name}</span>
-                    <small>
-                      {getMotorLocationLabel(motor)}
-                      {" · "}
-                      {wheelByMotorId.get(motor.id)?.name ?? "No wheel"}
-                    </small>
-                  </div>
-                ))}
-                <div className="section-label">DRIVETRAIN</div>
-                <div className="drivetrain-summary-card">
-                  <strong>
-                    {drivetrain.type === "differential-2"
-                      ? "Differential Drive · 2 wheel"
-                      : "4-Wheel Differential Drive"}
-                  </strong>
-                  <span className="drivetrain-status valid">
-                    Configuration valid
-                  </span>
-                  {(["left", "right"] as const).map((side) => (
-                    <div className="drivetrain-summary-side" key={side}>
-                      <strong>
-                        {side === "left" ? "Left" : "Right"} drive group
-                      </strong>
-                      {drivetrain[side].map((assignment, index) => {
-                        if (!assignment) return null;
-                        const assembly = poweredWheelAssemblies.find(
-                          (item) =>
-                            item.motorId === assignment.motorId &&
-                            item.wheelId === assignment.wheelId
-                        );
-                        return assembly ? (
-                          <small key={`${side}-complete-${index}`}>
-                            {assembly.mountingLocation}: {assembly.motor.name} ·{" "}
-                            {assembly.wheel.name}
-                          </small>
-                        ) : null;
-                      })}
-                    </div>
-                  ))}
-                </div>
-                <div className="section-label">THEORETICAL PERFORMANCE</div>
-                <div className="motor-spec-card">
-                  <div className="property-row">
-                    <span>Total mass</span>
-                    <span>{formatMass(performanceProfile.totalMassKg)}</span>
-                  </div>
-                  <div className="property-row">
-                    <span>Top speed</span>
-                    <span>
-                      {performanceProfile.topSpeedMps !== undefined
-                        ? `${formatSpeed(performanceProfile.topSpeedMps)} (${formatSpeed(performanceProfile.topSpeedKmh, "km/h")})`
-                        : "Unavailable"}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Est. push force</span>
-                    <span>
-                      {performanceProfile.theoreticalPushForceN !== undefined
-                        ? `${formatForce(performanceProfile.theoreticalPushForceN)} (${performanceProfile.pushForceLimiter === "motor-torque" ? "torque limited" : "traction limited"})`
-                        : "Unavailable"}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Est. acceleration</span>
-                    <span>
-                      {performanceProfile.maxAccelerationMps2 !== undefined
-                        ? `${formatAcceleration(performanceProfile.maxAccelerationMps2)} (${formatAcceleration(performanceProfile.maxAccelerationG, "g")})`
-                        : "Unavailable"}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Push-to-weight ratio</span>
-                    <span>
-                      {performanceProfile.pushToWeightRatio !== undefined
-                        ? `${performanceProfile.pushToWeightRatio.toFixed(2)} : 1`
-                        : "Unavailable"}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Track width</span>
-                    <span>
-                      {performanceProfile.trackWidthM !== undefined
-                        ? formatLength(performanceProfile.trackWidthM, "m")
-                        : "Unavailable"}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Wheelbase</span>
-                    <span>
-                      {performanceProfile.wheelbaseM !== undefined
-                        ? performanceProfile.wheelbaseM === 0
-                          ? "Single axle (0 m)"
-                          : formatLength(performanceProfile.wheelbaseM, "m")
-                        : "Unavailable"}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Turning rate (yaw)</span>
-                    <span>
-                      {performanceProfile.maxYawRateDegPerSec !== undefined
-                        ? `${formatYawRate(performanceProfile.maxYawRateDegPerSec)} (${formatYawRate(performanceProfile.maxYawRateRadPerSec, "rad/s")})`
-                        : "Unavailable"}
-                    </span>
-                  </div>
-                  <small
-                    style={{
-                      display: "block",
-                      padding: "8px 10px",
-                      color: "#64748b",
-                      fontSize: "10px",
-                      lineHeight: "1.4",
-                    }}
-                  >
-                    Theoretical performance estimates based on component specifications and zero-slip kinematic assumptions. Not simulated dynamics.
-                  </small>
-                </div>
-
-                <div className="section-label">MASS DISTRIBUTION &amp; STATIC STABILITY</div>
-                <div className="motor-spec-card">
-                  <div className="property-row">
-                    <span>Stability status</span>
-                    <span
-                      style={{
-                        padding: "2px 8px",
-                        borderRadius: "4px",
-                        fontSize: "11px",
-                        fontWeight: 600,
-                        textTransform: "uppercase",
-                        backgroundColor:
-                          stabilityProfile.stabilityStatus === "stable"
-                            ? "rgba(22, 101, 52, 0.25)"
-                            : stabilityProfile.stabilityStatus === "marginal"
-                            ? "rgba(133, 77, 14, 0.25)"
-                            : "rgba(185, 28, 28, 0.25)",
-                        color:
-                          stabilityProfile.stabilityStatus === "stable"
-                            ? "#86efac"
-                            : stabilityProfile.stabilityStatus === "marginal"
-                            ? "#fcd34d"
-                            : "#fca5a5",
-                        border: `1px solid ${
-                          stabilityProfile.stabilityStatus === "stable"
-                            ? "#166534"
-                            : stabilityProfile.stabilityStatus === "marginal"
-                            ? "#854d0e"
-                            : "#7f1d1d"
-                        }`,
-                      }}
-                    >
-                      {stabilityProfile.stabilityStatus}
-                    </span>
-                  </div>
-
-                  <div style={{ marginTop: "6px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
-                    CENTER OF MASS (CoM)
-                  </div>
-                  <div className="property-row">
-                    <span>CoM position (X, Y, Z)</span>
-                    <span>
-                      {formatLength(stabilityProfile.centerOfMass.x, "m", { trimTrailingZeros: true })} ·{" "}
-                      {formatLength(stabilityProfile.centerOfMass.y, "m", { trimTrailingZeros: true })} ·{" "}
-                      {formatLength(stabilityProfile.centerOfMass.z, "m", { trimTrailingZeros: true })}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Height above ground</span>
-                    <span>{formatLength(stabilityProfile.centerOfMass.heightAboveGroundM, "m")}</span>
-                  </div>
-
-                  <div style={{ marginTop: "8px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
-                    MASS &amp; WHEEL LOAD DISTRIBUTION
-                  </div>
-                  <div className="property-row">
-                    <span>Total assembly mass</span>
-                    <span>{formatMass(stabilityProfile.centerOfMass.totalMassKg)}</span>
-                  </div>
-                  <div className="property-row">
-                    <span>Driven-wheel load</span>
-                    <span>
-                      {formatPercentage(stabilityProfile.wheelLoadDistribution.drivenLoadFraction, { decimals: 1 })}{" "}
-                      ({formatForce(stabilityProfile.wheelLoadDistribution.drivenNormalForceN)})
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Driven supported mass</span>
-                    <span>{formatMass(stabilityProfile.wheelLoadDistribution.drivenMassEquivalentKg)}</span>
-                  </div>
-
-                  {stabilityProfile.wheelLoadDistribution.perWheelLoads.length > 0 && (
-                    <div style={{ margin: "6px 0", padding: "6px 8px", background: "rgba(15, 23, 42, 0.4)", borderRadius: "4px" }}>
-                      <div style={{ fontSize: "10px", color: "#64748b", marginBottom: "4px" }}>Per-wheel normal loads:</div>
-                      {stabilityProfile.wheelLoadDistribution.perWheelLoads.map((w) => (
-                        <div key={w.partId} style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", padding: "2px 0" }}>
-                          <span>{w.location ? w.location.toUpperCase() : w.name}</span>
-                          <span>
-                            {formatForce(w.normalForceN)} ({formatPercentage(w.loadFraction, { decimals: 0 })})
-                          </span>
-                        </div>
-                      ))}
-                      {stabilityProfile.wheelLoadDistribution.skidNormalForceN !== undefined && (
-                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", padding: "2px 0", color: "#94a3b8" }}>
-                          <span>PASSIVE SKID</span>
-                          <span>
-                            {formatForce(stabilityProfile.wheelLoadDistribution.skidNormalForceN)} ({formatPercentage(stabilityProfile.wheelLoadDistribution.skidLoadFraction, { decimals: 0 })})
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  <div style={{ marginTop: "8px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
-                    STATIC STABILITY &amp; TIPPING LIMITS
-                  </div>
-                  <div className="property-row">
-                    <span>Min stability margin</span>
-                    <span>
-                      {stabilityProfile.minimumStabilityMarginM !== undefined
-                        ? formatLength(stabilityProfile.minimumStabilityMarginM, "m")
-                        : "Unavailable"}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Forward tipping angle</span>
-                    <span>
-                      {stabilityProfile.forwardTipAngleDeg !== undefined
-                        ? formatAngle(stabilityProfile.forwardTipAngleDeg)
-                        : "Unavailable"}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Backward tipping angle</span>
-                    <span>
-                      {stabilityProfile.backwardTipAngleDeg !== undefined
-                        ? formatAngle(stabilityProfile.backwardTipAngleDeg)
-                        : "Unavailable"}
-                    </span>
-                  </div>
-                  <div className="property-row">
-                    <span>Lateral tipping angle (min)</span>
-                    <span>
-                      {stabilityProfile.minTipAngleDeg !== undefined
-                        ? formatAngle(
-                            Math.min(
-                              stabilityProfile.leftTipAngleDeg ?? Infinity,
-                              stabilityProfile.rightTipAngleDeg ?? Infinity
-                            )
-                          )
-                        : "Unavailable"}
-                    </span>
-                  </div>
-
-                  <small
-                    style={{
-                      display: "block",
-                      padding: "8px 10px",
-                      color: "#64748b",
-                      fontSize: "10px",
-                      lineHeight: "1.4",
-                    }}
-                  >
-                    Analytical static equilibrium estimates (flat ground, rigid body). Component positions represent geometric centroids. Not simulated dynamic rollover.
-                  </small>
-                </div>
-
-                <div className="section-label">ROTATIONAL MASS &amp; INERTIA</div>
-                <div className="motor-spec-card">
-                  <div className="property-row">
-                    <span>Inertia validity</span>
-                    <span
-                      style={{
-                        padding: "2px 8px",
-                        borderRadius: "4px",
-                        fontSize: "11px",
-                        fontWeight: 600,
-                        textTransform: "uppercase",
-                        backgroundColor:
-                          inertiaProfile.validity === "valid"
-                            ? "rgba(22, 101, 52, 0.25)"
-                            : inertiaProfile.validity === "marginal"
-                            ? "rgba(133, 77, 14, 0.25)"
-                            : "rgba(185, 28, 28, 0.25)",
-                        color:
-                          inertiaProfile.validity === "valid"
-                            ? "#86efac"
-                            : inertiaProfile.validity === "marginal"
-                            ? "#fcd34d"
-                            : "#fca5a5",
-                        border: `1px solid ${
-                          inertiaProfile.validity === "valid"
-                            ? "#166534"
-                            : inertiaProfile.validity === "marginal"
-                            ? "#854d0e"
-                            : "#7f1d1d"
-                        }`,
-                      }}
-                    >
-                      {inertiaProfile.validity}
-                    </span>
-                  </div>
-
-                  <div className="property-row">
-                    <span>Total mass used</span>
-                    <span>{formatMass(inertiaProfile.totalMassKg)}</span>
-                  </div>
-
-                  <div style={{ marginTop: "6px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
-                    BODY-FRAME MOMENTS OF INERTIA (CoM)
-                  </div>
-                  <div className="property-row">
-                    <span>Ixx (Roll inertia)</span>
-                    <span>{formatInertia(inertiaProfile.bodyMomentsOfInertia.ixx)}</span>
-                  </div>
-                  <div className="property-row">
-                    <span>Iyy (Yaw inertia)</span>
-                    <span>{formatInertia(inertiaProfile.bodyMomentsOfInertia.iyy)}</span>
-                  </div>
-                  <div className="property-row">
-                    <span>Izz (Pitch inertia)</span>
-                    <span>{formatInertia(inertiaProfile.bodyMomentsOfInertia.izz)}</span>
-                  </div>
-
-                  <div style={{ marginTop: "6px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
-                    RADII OF GYRATION
-                  </div>
-                  <div className="property-row">
-                    <span>kx · ky · kz</span>
-                    <span>
-                      {formatLength(inertiaProfile.radiiOfGyration.kx, "m")} ·{" "}
-                      {formatLength(inertiaProfile.radiiOfGyration.ky, "m")} ·{" "}
-                      {formatLength(inertiaProfile.radiiOfGyration.kz, "m")}
-                    </span>
-                  </div>
-
-                  <div style={{ marginTop: "6px", marginBottom: "4px", fontSize: "11px", fontWeight: 600, color: "#94a3b8" }}>
-                    PRODUCTS OF INERTIA (CoM)
-                  </div>
-                  <div className="property-row">
-                    <span>Ixy · Ixz · Iyz</span>
-                    <span>
-                      {formatInertia(inertiaProfile.tensor[0][1], "kg·m²", { decimals: 3 })} ·{" "}
-                      {formatInertia(inertiaProfile.tensor[0][2], "kg·m²", { decimals: 3 })} ·{" "}
-                      {formatInertia(inertiaProfile.tensor[1][2], "kg·m²", { decimals: 3 })}
-                    </span>
-                  </div>
-
-                  {inertiaProfile.warnings.length > 0 && (
-                    <div style={{ margin: "6px 0", padding: "6px 8px", background: "rgba(15, 23, 42, 0.4)", borderRadius: "4px" }}>
-                      <div style={{ fontSize: "10px", color: "#fcd34d", marginBottom: "2px" }}>Approximation Notes:</div>
-                      {inertiaProfile.warnings.slice(0, 3).map((w, idx) => (
-                        <div key={idx} style={{ fontSize: "10px", color: "#94a3b8", lineHeight: "1.3" }}>
-                          • {w}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-
-                  <small
-                    style={{
-                      display: "block",
-                      padding: "8px 10px",
-                      color: "#64748b",
-                      fontSize: "10px",
-                      lineHeight: "1.4",
-                    }}
-                  >
-                    Analytical rigid-body inertia tensor relative to assembly CoM. Components modeled as uniform homogeneous solids. Not dynamic simulation.
-                  </small>
-                </div>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("drivetrain")}
-                >
-                  Edit Drivetrain
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("foundation")}
-                >
-                  Edit Foundation
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("battery")}
-                >
-                  Edit Battery
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("controller")}
-                >
-                  Edit Controller
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("motors")}
-                >
-                  Edit Motors
-                </button>
-                <button
-                  className="stage-back-button"
-                  onClick={() => setStage("wheels")}
-                >
-                  Edit Wheels
-                </button>
-              </>
-            ) : (
-              <div className="placeholder-content">
-                <div className="placeholder-icon">▣</div>
-                <p>Start a build to configure your foundation.</p>
-              </div>
-            )}
-          </div>
-
-          <div className="panel-footer">
-            <div className="footer-label">
-              SYSTEM
-            </div>
-
-            <div className="build-status">
-              <span className="status-dot" />
-              Editor Online
-            </div>
-          </div>
-        </aside>
-      </div>
       )}
 
-      {/* FOOTER */}
+      {workspaceMode === "electrical" ? (
+        <ElectricalWorkspaceView
+          parts={store.parts}
+          connections={store.connections}
+          foundation={store.foundation}
+          electricalConnections={store.electricalConnections}
+          validationReport={derived.validationReport}
+          selectedId={store.selectedId}
+          selectedElectricalConnectionId={store.selectedElectricalConnectionId}
+          selectedElectricalPinId={store.selectedElectricalPinId}
+          onSelectPart={store.setSelectedId}
+          onSelectConnection={store.setSelectedElectricalConnection}
+          onFocusDiagnostic={store.focusElectricalDiagnostic}
+          onInstallCatalogueItem={store.installElectricalCatalogueItem}
+          onReplaceElectricalComponent={store.replaceElectricalComponent}
+          onDeletePart={store.deletePartById}
+          onCreateConnection={store.addElectricalConnection}
+          onUpdateConnection={store.updateElectricalConnection}
+          onAssignPin={store.assignPinToElectricalConnection}
+          onAssignConnector={store.assignConnectorToInterface}
+          onRemoveConnection={store.removeElectricalConnection}
+          onPreviewTransform={store.previewPartTransform}
+          onApplyTransform={store.updatePartTransform}
+          onReplaceStructuralPart={store.replaceStructuralPart}
+          onDuplicatePart={store.duplicatePart}
+          onAttachPart={store.attachPart}
+          onDetachPart={store.detachPart}
+          onUpdateImportedConfig={store.updateImportedPartConfiguration}
+          onAddCustomInterface={store.addCustomMountingInterface}
+          onRemoveCustomInterface={store.removeCustomMountingInterface}
+        />
+      ) : (
+        <div className="main-layout">
+          <WorkshopLeftPanel
+            stage={store.stage}
+            foundation={store.foundation}
+            parts={store.parts}
+            connections={store.connections}
+            drivetrain={store.drivetrain}
+            selectedPart={derived.selectedPart}
+            selectedId={store.selectedId}
+            hiddenPartIdSet={derived.hiddenPartIdSet}
+            childrenByParent={derived.childrenByParent}
+            anchoredRootParts={derived.anchoredRootParts}
+            unattachedRootParts={derived.unattachedRootParts}
+            validationReport={derived.validationReport}
+            drivetrainValidation={derived.drivetrainValidation}
+            selectedStructuralCatalogueId={store.selectedStructuralCatalogueId}
+            selectedBatteryCatalogueId={store.selectedBatteryCatalogueId}
+            selectedControllerCatalogueId={store.selectedControllerCatalogueId}
+            selectedMotorCatalogueId={store.selectedMotorCatalogueId}
+            selectedWheelCatalogueId={store.selectedWheelCatalogueId}
+            installedBatteryDefinition={derived.installedBatteryDefinition}
+            installedControllerDefinition={derived.installedControllerDefinition}
+            onSetStage={store.setStage}
+            onResetRightTabToStage={() => setRightPanelTab("stage")}
+            onSelectHierarchyPart={(partId) => {
+              store.setSelectedId(partId);
+              if (partId !== "foundation-chassis") {
+                setRightPanelTab("inspector");
+              }
+            }}
+            onTogglePartVisibility={store.togglePartVisibility}
+            onDeletePart={store.deletePartById}
+            onSelectFoundationModel={store.selectFoundationModel}
+            onConfigureProcedural={store.configureProceduralFoundation}
+            onResetProcedural={store.resetProceduralFoundation}
+            onImportFoundationStl={store.importFoundationStl}
+            onSelectStructuralCatalogueItem={store.selectStructuralCatalogueItem}
+            onAddStructuralPart={store.addStructuralPart}
+            onReplaceStructuralPart={store.replaceStructuralPart}
+            onDuplicatePart={store.duplicatePart}
+            onImportStructuralStl={store.importStructuralStl}
+            onSelectBatteryCatalogueItem={store.selectBatteryCatalogueItem}
+            onSelectControllerCatalogueItem={store.selectControllerCatalogueItem}
+            onSelectMotorCatalogueItem={store.selectMotorCatalogueItem}
+            onSelectWheelCatalogueItem={store.selectWheelCatalogueItem}
+          />
+
+          <WorkshopViewport
+            parts={store.parts}
+            visibleParts={derived.visibleParts}
+            foundation={store.foundation}
+            selectedId={store.selectedId}
+            selectedPart={derived.selectedPart}
+            focusableSelectedPart={derived.focusableSelectedPart}
+            selectedPartIsHidden={derived.selectedPartIsHidden}
+            transformMode={store.transformMode}
+            mountCandidate={mountCandidate}
+            cameraFocusRequest={cameraFocusRequest}
+            onSetSelectedId={store.setSelectedId}
+            onSetMountCandidate={setMountCandidate}
+            onMountWheelToMotor={store.mountWheelToMotor}
+            onRequestCameraFocus={requestCameraFocus}
+            onSetTransformMode={store.setTransformMode}
+            onStartNewBuild={store.startNewBuild}
+          />
+
+          <aside className="right-panel">
+            <div className="panel-heading">
+              PROPERTIES &amp; DIAGNOSTICS
+            </div>
+
+            <div className="workshop-right-tabs" role="tablist" aria-label="Right inspector tabs">
+              <button
+                type="button"
+                role="tab"
+                aria-selected={rightPanelTab === "stage"}
+                className={`sim-tab-btn ${rightPanelTab === "stage" ? "active" : ""}`}
+                onClick={() => setRightPanelTab("stage")}
+              >
+                Build Step
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={rightPanelTab === "inspector"}
+                className={`sim-tab-btn ${rightPanelTab === "inspector" ? "active" : ""}`}
+                onClick={() => setRightPanelTab("inspector")}
+              >
+                Part
+              </button>
+              <button
+                type="button"
+                role="tab"
+                aria-selected={rightPanelTab === "validation"}
+                className={`sim-tab-btn ${rightPanelTab === "validation" ? "active" : ""}`}
+                onClick={() => setRightPanelTab("validation")}
+              >
+                Validate ({derived.validationReport.diagnostics.length})
+              </button>
+            </div>
+
+            <div className="panel-content">
+              {rightPanelTab === "inspector" ? (
+                derived.selectedPart ? (
+                  <PartInspectorPanel
+                    key={derived.selectedPart.id}
+                    part={derived.selectedPart}
+                    parts={store.parts}
+                    connections={store.connections}
+                    foundation={store.foundation}
+                    diagnostics={derived.selectedPartDiagnostics}
+                    onPreviewTransform={store.previewPartTransform}
+                    onApplyTransform={store.updatePartTransform}
+                    onReplaceStructuralPart={store.replaceStructuralPart}
+                    onDuplicatePart={store.duplicatePart}
+                    onAttachPart={store.attachPart}
+                    onDetachPart={store.detachPart}
+                    onDeletePart={store.deletePartById}
+                    onUpdateImportedConfig={store.updateImportedPartConfiguration}
+                    onAddCustomInterface={store.addCustomMountingInterface}
+                    onRemoveCustomInterface={store.removeCustomMountingInterface}
+                    electricalConnections={store.electricalConnections}
+                    onRemoveElectricalConnection={store.removeElectricalConnection}
+                  />
+                ) : (
+                  <div className="placeholder-content">
+                    <div className="placeholder-icon">⊞</div>
+                    <p>Select any installed component in the Assembly Tree or 3D Viewport to adjust Position, Rotation, Dimensions, or Mounting.</p>
+                  </div>
+                )
+              ) : rightPanelTab === "validation" ? (
+                <WorkshopValidationPanel
+                  validationReport={derived.validationReport}
+                  electricalConnectionCount={store.electricalConnections.length}
+                  lastReplacementWarning={store.lastReplacementWarning}
+                  onClearReplacementWarning={store.clearReplacementWarning}
+                  onInspectPart={(partId) => {
+                    store.setSelectedId(partId);
+                    setRightPanelTab("inspector");
+                  }}
+                  onFocusElectricalDiagnostic={store.focusElectricalDiagnostic}
+                  onOpenElectricalWorkspace={() => setWorkspaceMode("electrical")}
+                  onOpenPartInspector={() => setRightPanelTab("inspector")}
+                />
+              ) : (
+                <WorkshopStageRightPanel
+                  stage={store.stage}
+                  foundation={store.foundation}
+                  parts={store.parts}
+                  selectedPart={derived.selectedPart}
+                  drivetrain={store.drivetrain}
+                  drivetrainSlotCount={derived.drivetrainSlotCount}
+                  drivetrainValidation={derived.drivetrainValidation}
+                  poweredWheelAssemblies={derived.poweredWheelAssemblies}
+                  mountedMotors={derived.mountedMotors}
+                  mountedWheels={derived.mountedWheels}
+                  wheelByMotorId={derived.wheelByMotorId}
+                  motorMountZones={derived.motorMountZones}
+                  occupiedZoneIds={derived.occupiedZoneIds}
+                  structuralMotorCarriers={derived.structuralMotorCarriers}
+                  selectedMotorDefinition={derived.selectedMotorDefinition}
+                  selectedMountZoneId={store.selectedMountZoneId}
+                  selectedWheelDefinition={derived.selectedWheelDefinition}
+                  selectedWheelMotor={derived.selectedWheelMotor}
+                  selectedWheelMotorId={store.selectedWheelMotorId}
+                  selectedWheelMotorDefinition={derived.selectedWheelMotorDefinition}
+                  selectedMotorWheel={derived.selectedMotorWheel}
+                  selectedWheelDiameterCm={store.selectedWheelDiameterCm}
+                  selectedWheelWidthCm={store.selectedWheelWidthCm}
+                  selectedBatteryCatalogueId={store.selectedBatteryCatalogueId}
+                  selectedBatteryDefinition={derived.selectedBatteryDefinition}
+                  installedBattery={derived.installedBattery}
+                  installedBatteryDefinition={derived.installedBatteryDefinition}
+                  selectedControllerCatalogueId={store.selectedControllerCatalogueId}
+                  selectedControllerDefinition={derived.selectedControllerDefinition}
+                  installedController={derived.installedController}
+                  installedControllerDefinition={derived.installedControllerDefinition}
+                  performanceProfile={derived.performanceProfile}
+                  stabilityProfile={derived.stabilityProfile}
+                  inertiaProfile={derived.inertiaProfile}
+                  getMotorLocationLabel={derived.getMotorLocationLabel}
+                  onSetStage={store.setStage}
+                  onInspectFoundationChassis={() => {
+                    store.setSelectedId("foundation-chassis");
+                    setRightPanelTab("inspector");
+                  }}
+                  onOpenPartInspector={() => setRightPanelTab("inspector")}
+                  onUpdateFoundationDimensions={store.updateFoundationDimensions}
+                  onConfigureProceduralFoundation={store.configureProceduralFoundation}
+                  onSetFoundationOptions={store.setFoundationOptions}
+                  onConfirmFoundation={store.confirmFoundation}
+                  onInstallBattery={store.installBattery}
+                  onRemoveBattery={store.removeBattery}
+                  onInstallController={store.installController}
+                  onRemoveController={store.removeController}
+                  onSelectMountZone={store.selectMountZone}
+                  onPlaceMotor={store.placeMotor}
+                  onMountMotorToParent={store.mountMotorToParent}
+                  onReplaceMotor={store.replaceMotor}
+                  onRemoveMotor={store.removeMotor}
+                  onRotateMotor={store.rotateMotor}
+                  onUpdateSelectedWheelDimensions={store.updateSelectedWheelDimensions}
+                  onSelectWheelMotor={store.selectWheelMotor}
+                  onAssignWheel={store.assignWheel}
+                  onRemoveWheel={store.removeWheel}
+                  onSetDrivetrainType={store.setDrivetrainType}
+                  onSetDrivetrainAssignment={store.setDrivetrainAssignment}
+                  onApplySuggestedDrivetrainMapping={
+                    store.applySuggestedDrivetrainMapping
+                  }
+                  onFinishBuild={store.finishBuild}
+                />
+              )}
+            </div>
+
+            <div className="panel-footer">
+              <div className="footer-label">
+                SYSTEM
+              </div>
+
+              <div className="build-status">
+                <span className="status-dot" />
+                Editor Online
+              </div>
+            </div>
+          </aside>
+        </div>
+      )}
+
       <footer className="statusbar">
         <span>
           {workspaceMode === "electrical"
             ? "ROBOT WARS / ELECTRICAL WORKSPACE"
             : "ROBOT WARS / WORKSHOP"}
         </span>
-        <span>OBJECTS: {parts.length}</span>
-        <span>WIRES: {electricalConnections.length}</span>
+        <span>OBJECTS: {store.parts.length}</span>
+        <span>WIRES: {store.electricalConnections.length}</span>
       </footer>
     </div>
   );

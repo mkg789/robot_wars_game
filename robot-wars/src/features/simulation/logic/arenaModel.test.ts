@@ -604,5 +604,21 @@ describe("Phase 4.1.2: Arena Geometry & Spatial Surface Zones", () => {
       );
       expect(cornerSurface.id).toBe("steel");
     });
+
+    it("computes tight rotated barrier AABB bounds when rotationRadians is non-zero", () => {
+      const rotatedBarrier: ArenaBarrier = {
+        id: "diag-wall",
+        name: "Diagonal Wall",
+        geometryType: "rectangle",
+        position: { x: 1, z: 2 },
+        sizeX: 2.0,
+        sizeZ: 0.4,
+        rotationRadians: Math.PI / 4,
+      };
+      const bounds = getBarrierBounds(rotatedBarrier);
+      const expectedHalf = 1.0 * Math.SQRT1_2 + 0.2 * Math.SQRT1_2;
+      expect(bounds.maxX - bounds.minX).toBeCloseTo(2 * expectedHalf, 6);
+      expect(bounds.maxZ - bounds.minZ).toBeCloseTo(2 * expectedHalf, 6);
+    });
   });
 });

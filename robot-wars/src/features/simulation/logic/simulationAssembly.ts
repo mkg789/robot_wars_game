@@ -311,6 +311,8 @@ export function resolveDrivetrainWheelSideMap(
 
 /**
  * Computes symmetric X-Z footprint bounds around the robot origin from all visible assembly parts.
+ * Considers custom collision proxy envelopes when configured; SimulationWorld simulates one global
+ * 2D planar OBB per robot, so multi-box internal gaps/concave pockets remain outer-envelope bounds.
  */
 export function computeAssemblyFootprintDimensions(
   parts: readonly RobotPart[],
@@ -323,24 +325,38 @@ export function computeAssemblyFootprintDimensions(
     const boxExtents = getPartBoxExtents(part);
     const cylinderDims = getPartCylinderDimensions(part);
 
+    const proxySize = part.collisionConfig?.envelopeSize;
+    const proxyCenter = part.collisionConfig?.envelopeCenter;
+
     // WheelModel places axle along local +X and radius in local Y-Z.
     const localHalfExtents: [number, number, number] =
       part.type === "Wheel"
         ? [cylinderDims.width / 2, cylinderDims.radius, cylinderDims.radius]
-        : [boxExtents[0] / 2, boxExtents[1] / 2, boxExtents[2] / 2];
+        : proxySize
+          ? [proxySize[0] / 2, proxySize[1] / 2, proxySize[2] / 2]
+          : [boxExtents[0] / 2, boxExtents[1] / 2, boxExtents[2] / 2];
 
     const [hx, , hz] = computeRotatedHalfExtents(
       localHalfExtents,
       part.rotation
     );
 
+    let centerX = part.position[0];
+    let centerZ = part.position[2];
+    if (proxyCenter && (proxyCenter[0] !== 0 || proxyCenter[1] !== 0 || proxyCenter[2] !== 0)) {
+      const cosY = Math.cos(-(part.rotation?.[1] ?? 0));
+      const sinY = Math.sin(-(part.rotation?.[1] ?? 0));
+      centerX += proxyCenter[0] * cosY - proxyCenter[2] * sinY;
+      centerZ += proxyCenter[0] * sinY + proxyCenter[2] * cosY;
+    }
+
     const partMaxX = Math.max(
-      Math.abs(part.position[0] - hx),
-      Math.abs(part.position[0] + hx)
+      Math.abs(centerX - hx),
+      Math.abs(centerX + hx)
     );
     const partMaxZ = Math.max(
-      Math.abs(part.position[2] - hz),
-      Math.abs(part.position[2] + hz)
+      Math.abs(centerZ - hz),
+      Math.abs(centerZ + hz)
     );
 
     if (partMaxX > maxAbsX) maxAbsX = partMaxX;

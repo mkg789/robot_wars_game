@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import * as THREE from "three";
 
 export type ControllerVariant = "arduino-uno" | "esp32" | "stm32-nucleo";
@@ -205,10 +205,30 @@ export default function ControllerModel({
     [variant]
   );
 
+  const activeTexturesRef = useRef<{
+    board: THREE.CanvasTexture | null;
+    espShield: THREE.CanvasTexture | null;
+  }>({ board: null, espShield: null });
+
+  // Defer disposal via microtask so React StrictMode double-mount preserves memoized textures
   useEffect(() => {
+    activeTexturesRef.current = {
+      board: boardTexture,
+      espShield: espShieldTexture,
+    };
     return () => {
-      boardTexture?.dispose();
-      espShieldTexture?.dispose();
+      activeTexturesRef.current = { board: null, espShield: null };
+      Promise.resolve().then(() => {
+        if (boardTexture && activeTexturesRef.current.board !== boardTexture) {
+          boardTexture.dispose();
+        }
+        if (
+          espShieldTexture &&
+          activeTexturesRef.current.espShield !== espShieldTexture
+        ) {
+          espShieldTexture.dispose();
+        }
+      });
     };
   }, [boardTexture, espShieldTexture]);
 

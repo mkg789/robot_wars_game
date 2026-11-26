@@ -67,6 +67,10 @@ export default function SimulationScene({
   const telemetryAccumulatorRef = useRef(0);
   const lastCollisionKeyRef = useRef("");
   const lastStepCountRef = useRef(0);
+  const lastProgramStatusRef = useRef(world.getControlState().programStatus);
+  const lastActiveInstructionRef = useRef(
+    world.getControlState().executionTrace?.activeInstructionId ?? null
+  );
   const lastFollowTargetRef = useRef<{ x: number; z: number } | null>(null);
 
   const defaultCameraPose = useMemo(
@@ -177,12 +181,13 @@ export default function SimulationScene({
     if (status === "running") {
       world.stepFrame(clampedDelta);
     }
+    const postStatus = world.getLifecycleStatus();
 
     const currentSteps = world.getRunnerState().totalPhysicsSteps;
     const didReset = currentSteps === 0 && lastStepCountRef.current > 0;
     lastStepCountRef.current = currentSteps;
 
-    syncVisualPose(status === "running" ? clampedDelta : 0, didReset);
+    syncVisualPose(postStatus === "running" ? clampedDelta : 0, didReset);
 
     // Optional follow-camera tracking via incremental target/position translation
     if (cameraMode === "follow") {
@@ -215,11 +220,18 @@ export default function SimulationScene({
     const collision = world.getCollisionIndicator();
     const collisionKey = collision.collidedBarrierIds.join("|");
     const collisionChanged = collisionKey !== lastCollisionKeyRef.current;
+    const ctrlState = world.getControlState();
+    const nextActiveInstr = ctrlState.executionTrace?.activeInstructionId ?? null;
+    const programStateChanged =
+      ctrlState.programStatus !== lastProgramStatusRef.current ||
+      nextActiveInstr !== lastActiveInstructionRef.current;
 
-    if (status !== "running") {
+    if (postStatus !== "running") {
       telemetryAccumulatorRef.current = 0;
-      if (collisionChanged) {
+      if (collisionChanged || programStateChanged) {
         lastCollisionKeyRef.current = collisionKey;
+        lastProgramStatusRef.current = ctrlState.programStatus;
+        lastActiveInstructionRef.current = nextActiveInstr;
         onTelemetryTick(world.getTelemetrySnapshot());
       }
       return;
@@ -228,10 +240,13 @@ export default function SimulationScene({
     telemetryAccumulatorRef.current += clampedDelta;
     if (
       collisionChanged ||
+      programStateChanged ||
       telemetryAccumulatorRef.current >= TELEMETRY_SYNC_INTERVAL_SECONDS
     ) {
       telemetryAccumulatorRef.current = 0;
       lastCollisionKeyRef.current = collisionKey;
+      lastProgramStatusRef.current = ctrlState.programStatus;
+      lastActiveInstructionRef.current = nextActiveInstr;
       onTelemetryTick(world.getTelemetrySnapshot());
     }
   });

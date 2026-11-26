@@ -303,9 +303,14 @@ export function testObbAabbCollision(
   const uFwd: Vector2D = { x: cos, z: sin };
   const uLeft: Vector2D = { x: -sin, z: cos };
 
-  // Barrier half-extents
+  // Barrier half-extents and oriented local axes (matching raycast rotationRadians convention)
   const halfBx = barrier.sizeX / 2;
   const halfBz = barrier.sizeZ / 2;
+  const bRot = barrier.rotationRadians ?? 0;
+  const cosB = Math.cos(bRot);
+  const sinB = Math.sin(bRot);
+  const bFwd: Vector2D = { x: cosB, z: sinB };
+  const bLeft: Vector2D = { x: -sinB, z: cosB };
 
   // Center-to-center offset vector from barrier to OBB
   const dx = obb.position.x - barrier.position.x;
@@ -314,14 +319,14 @@ export function testObbAabbCollision(
   // Candidate separating axes:
   // [axisX, axisZ]
   const axes: readonly [number, number][] = [
-    [1, 0], // Axis 1: Barrier X
-    [0, 1], // Axis 2: Barrier Z
+    [bFwd.x, bFwd.z], // Axis 1: Barrier local X
+    [bLeft.x, bLeft.z], // Axis 2: Barrier local Z
     [uFwd.x, uFwd.z], // Axis 3: Robot Longitudinal
     [uLeft.x, uLeft.z], // Axis 4: Robot Lateral
   ];
 
   let minOverlap = Number.POSITIVE_INFINITY;
-  let bestAxis: Vector2D = { x: 1, z: 0 };
+  let bestAxis: Vector2D = { x: bFwd.x, z: bFwd.z };
 
   for (const [ax, az] of axes) {
     // Project OBB half-extents onto axis: r_obb = hL * |a · uFwd| + hW * |a · uLeft|
@@ -329,8 +334,10 @@ export function testObbAabbCollision(
     const projLeft = Math.abs(ax * uLeft.x + az * uLeft.z);
     const rObb = halfL * projFwd + halfW * projLeft;
 
-    // Project Barrier half-extents onto axis: r_barrier = hBx * |a_x| + hBz * |a_z|
-    const rBarrier = halfBx * Math.abs(ax) + halfBz * Math.abs(az);
+    // Project Barrier half-extents onto axis: r_barrier = hBx * |a · bFwd| + hBz * |a · bLeft|
+    const rBarrier =
+      halfBx * Math.abs(ax * bFwd.x + az * bFwd.z) +
+      halfBz * Math.abs(ax * bLeft.x + az * bLeft.z);
 
     // Distance between centers projected onto axis
     const dist = Math.abs(dx * ax + dz * az);
@@ -358,7 +365,7 @@ export function testObbAabbCollision(
     normalX = -normalX;
     normalZ = -normalZ;
   } else if (Math.abs(dotD) < 1e-12) {
-    // Exact center alignment: default normal to push along +X or +Z
+    // Exact center alignment: default normal to push along +bFwd or +bLeft
     normalX = bestAxis.x;
     normalZ = bestAxis.z;
   }
@@ -373,7 +380,7 @@ export function testObbAabbCollision(
   const penetrationDepth = Math.max(0, minOverlap);
 
   // Representative contact point:
-  // Find the OBB corner vertex or edge penetrating deepest into the barrier (most negative dot with normal)
+  // Find the OBB corner vertices penetrating deepest into the barrier (most negative dot with normal)
   const vertices = [
     obb.vertices.frontLeft,
     obb.vertices.frontRight,
@@ -389,9 +396,38 @@ export function testObbAabbCollision(
     }
   }
 
-  // Collect all vertices tied at minimum normal projection (2 vertices for a face-on edge contact)
   const tiedVertices = vertices.filter(
     (v) => v.x * normal.x + v.z * normal.z <= minProj + 1e-6
+  );
+
+  // Also locate the barrier corner vertices closest to robot along normal
+  const barrierVertices: readonly Vector2D[] = [
+    {
+      x: barrier.position.x + halfBx * bFwd.x + halfBz * bLeft.x,
+      z: barrier.position.z + halfBx * bFwd.z + halfBz * bLeft.z,
+    },
+    {
+      x: barrier.position.x + halfBx * bFwd.x - halfBz * bLeft.x,
+      z: barrier.position.z + halfBx * bFwd.z - halfBz * bLeft.z,
+    },
+    {
+      x: barrier.position.x - halfBx * bFwd.x - halfBz * bLeft.x,
+      z: barrier.position.z - halfBx * bFwd.z - halfBz * bLeft.z,
+    },
+    {
+      x: barrier.position.x - halfBx * bFwd.x + halfBz * bLeft.x,
+      z: barrier.position.z - halfBx * bFwd.z + halfBz * bLeft.z,
+    },
+  ];
+  let maxBarrierProj = Number.NEGATIVE_INFINITY;
+  for (const bv of barrierVertices) {
+    const proj = bv.x * normal.x + bv.z * normal.z;
+    if (proj > maxBarrierProj) {
+      maxBarrierProj = proj;
+    }
+  }
+  const tiedBarrierVertices = barrierVertices.filter(
+    (bv) => bv.x * normal.x + bv.z * normal.z >= maxBarrierProj - 1e-6
   );
 
   let contactPoint: Vector2D;
@@ -402,7 +438,6 @@ export function testObbAabbCollision(
       z: deepestVertex.z + (penetrationDepth / 2) * normal.z,
     };
   } else {
-    // Tangent unit vector perpendicular to normal
     const tx = -normal.z;
     const tz = normal.x;
 
@@ -414,16 +449,23 @@ export function testObbAabbCollision(
       if (projT > obbTMax) obbTMax = projT;
     }
 
-    // Clip incident OBB face against barrier tangent span so partial face overlaps preserve torque arm
-    const barrierCenterT = barrier.position.x * tx + barrier.position.z * tz;
-    const barrierHalfT = halfBx * Math.abs(tx) + halfBz * Math.abs(tz);
-    const clipMin = Math.max(obbTMin, barrierCenterT - barrierHalfT);
-    const clipMax = Math.min(obbTMax, barrierCenterT + barrierHalfT);
+    let barrierTMin = Number.POSITIVE_INFINITY;
+    let barrierTMax = Number.NEGATIVE_INFINITY;
+    for (const bv of tiedBarrierVertices) {
+      const projT = bv.x * tx + bv.z * tz;
+      if (projT < barrierTMin) barrierTMin = projT;
+      if (projT > barrierTMax) barrierTMax = projT;
+    }
+
+    const clipMin = Math.max(obbTMin, barrierTMin);
+    const clipMax = Math.min(obbTMax, barrierTMax);
 
     const contactT =
       clipMin <= clipMax + 1e-9
         ? 0.5 * (clipMin + clipMax)
-        : 0.5 * (obbTMin + obbTMax);
+        : tiedBarrierVertices.length === 1
+          ? Math.max(obbTMin, Math.min(obbTMax, barrierTMin))
+          : 0.5 * (obbTMin + obbTMax);
     const contactN = minProj + penetrationDepth / 2;
 
     contactPoint = {

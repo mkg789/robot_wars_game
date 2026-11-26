@@ -130,6 +130,11 @@ export type RobotPart = {
   engineeringSpec?: ComponentEngineeringSpec;
   electricalSpec?: ElectricalComponentSpec;
   electricalCatalogueId?: string;
+  /** Optional runtime/inspector electrical hardware switch or fuse state (defaults: switchClosed=true, fuseTripped=false). */
+  electricalState?: {
+    readonly switchClosed?: boolean;
+    readonly fuseTripped?: boolean;
+  };
 };
 
 export type Vector3Data = [number, number, number];

@@ -496,6 +496,9 @@ export function compileVisualProgramToRoutine(
     if (!completedIds.includes(id)) {
       completedIds.push(id);
     }
+    if (skippedIds.includes(id)) {
+      skippedIds = skippedIds.filter((sid) => sid !== id);
+    }
   };
 
   const markSkipped = (list: readonly ProgramInstruction[]) => {
@@ -551,12 +554,14 @@ export function compileVisualProgramToRoutine(
     activeTimerRemaining = 0;
   };
 
+  const MAX_INSTANT_STEPS_PER_TICK = 2000;
+
   const stepInstructionPointer = (
     api: RobotControlApi,
     isSingleStep: boolean
   ): "yield" | "done" => {
     let guardSteps = 0;
-    while (stack.length > 0 && guardSteps < 200) {
+    while (stack.length > 0 && guardSteps < MAX_INSTANT_STEPS_PER_TICK) {
       guardSteps += 1;
       const top = stack[stack.length - 1];
 
@@ -564,6 +569,9 @@ export function compileVisualProgramToRoutine(
         if (top.repeatOwnerId && top.remainingRepeats && top.remainingRepeats > 1) {
           top.remainingRepeats -= 1;
           top.index = 0;
+          const resetIds = new Set(collectNestedIds(top.list));
+          completedIds = completedIds.filter((id) => !resetIds.has(id));
+          skippedIds = skippedIds.filter((id) => !resetIds.has(id));
           const total = top.totalRepeats ?? top.remainingRepeats;
           const curIter = total - top.remainingRepeats + 1;
           repeatProgressById[top.repeatOwnerId] = {
@@ -582,8 +590,15 @@ export function compileVisualProgramToRoutine(
       const instr = top.list[top.index];
       switch (instr.kind) {
         case "drive": {
+          if (!Number.isFinite(instr.durationSeconds) || instr.durationSeconds <= 0) {
+            emitTrace(api, instr.id, "Invalid drive duration");
+            throw new Error(
+              `Drive instruction "${instr.id}" has invalid duration (${String(instr.durationSeconds)}).`
+            );
+          }
           const sign = instr.direction === "backward" ? -1 : 1;
-          const pwr = Math.max(0, Math.min(1, Math.abs(instr.power))) * sign;
+          const rawPower = Number.isFinite(instr.power) ? instr.power : 0;
+          const pwr = Math.max(0, Math.min(1, Math.abs(rawPower))) * sign;
           const dur = Math.max(0.01, instr.durationSeconds);
           const res = api.setDifferentialPower(pwr, pwr);
           currentLeft = res.leftPower;
@@ -606,7 +621,14 @@ export function compileVisualProgramToRoutine(
           return "yield";
         }
         case "turn": {
-          const mag = Math.max(0, Math.min(1, Math.abs(instr.power)));
+          if (!Number.isFinite(instr.durationSeconds) || instr.durationSeconds <= 0) {
+            emitTrace(api, instr.id, "Invalid turn duration");
+            throw new Error(
+              `Turn instruction "${instr.id}" has invalid duration (${String(instr.durationSeconds)}).`
+            );
+          }
+          const rawPower = Number.isFinite(instr.power) ? instr.power : 0;
+          const mag = Math.max(0, Math.min(1, Math.abs(rawPower)));
           const dur = Math.max(0.01, instr.durationSeconds);
           const leftP = instr.direction === "right" ? mag : -mag;
           const rightP = instr.direction === "right" ? -mag : mag;
@@ -631,6 +653,12 @@ export function compileVisualProgramToRoutine(
           return "yield";
         }
         case "wait": {
+          if (!Number.isFinite(instr.durationSeconds) || instr.durationSeconds <= 0) {
+            emitTrace(api, instr.id, "Invalid wait duration");
+            throw new Error(
+              `Wait instruction "${instr.id}" has invalid duration (${String(instr.durationSeconds)}).`
+            );
+          }
           const dur = Math.max(0.01, instr.durationSeconds);
           activeTimedId = instr.id;
           activeTimedInstr = instr;
@@ -722,6 +750,12 @@ export function compileVisualProgramToRoutine(
           continue;
         }
         case "if-ultrasonic": {
+          if (!Number.isFinite(instr.thresholdMeters) || instr.thresholdMeters <= 0) {
+            emitTrace(api, instr.id, "Invalid ultrasonic threshold");
+            throw new Error(
+              `If-Ultrasonic instruction "${instr.id}" has invalid distance threshold (${String(instr.thresholdMeters)}).`
+            );
+          }
           const res = api.readUltrasonic(instr.sensorId);
           let branch = false;
           if (res.ok && res.data) {
@@ -803,8 +837,10 @@ export function compileVisualProgramToRoutine(
       }
     }
 
-    // Also include helper use to avoid unused lint if needed
-    void collectNestedIds;
+    if (stack.length > 0) {
+      emitTrace(api, null, "Yielding synchronous instruction batch");
+      return "yield";
+    }
     return "done";
   };
 

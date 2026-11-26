@@ -16,7 +16,7 @@
  */
 
 import type { Vector2D } from "./collision.types";
-import type { SimulationAssumption, SimulationState } from "./simulation.types";
+import type { SimulationAssumption, SimulationState } from "./simulationCore.types";
 
 /**
  * Configurable parameters for deterministic planar collision response and contact resolution.

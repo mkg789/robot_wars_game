@@ -481,4 +481,74 @@ endsolid test_part`;
     ready.startNewBuild();
     expect(getRegisteredAssetCount()).toBe(0);
   });
+
+  it("manages STL asset lifecycle across structural import, duplicate, delete, undo/redo, and transform preview history", () => {
+    const store = useRobotStore.getState();
+    store.startNewBuild();
+    store.confirmFoundation();
+
+    const binBuf = buildBinaryStlBuffer(createWatertightBoxTriangles(400, 120, 200));
+    const parsed = parseStlArrayBuffer(binBuf, "arm-bracket.stl");
+    const rec = registerParsedStlAsset(parsed);
+
+    // Unused duplicate raw positions buffer is no longer retained on MeshAssetRecord
+    expect((rec as unknown as Record<string, unknown>).positions).toBeUndefined();
+    expect(rec.centeredPositions.length).toBeGreaterThan(0);
+
+    const transform = {
+      unit: "mm" as const,
+      unitConfirmed: true,
+      scaleMode: "uniform" as const,
+      uniformScale: 1,
+      nonUniformScale: [1, 1, 1] as const,
+      orientationRotation: [0, 0, 0] as const,
+      positionOffset: [0, 0, 0] as const,
+    };
+    const eng = resolveImportedEngineeringProperties({
+      inspection: parsed.inspection,
+      transform,
+      materialId: "aluminum-6061",
+      massMode: "user",
+      userMassKg: 1.2,
+      centerOfMassMode: "calculated",
+      inertiaMode: "calculated",
+    });
+    const col = buildCustomCollisionConfig({
+      mode: "bounding-box",
+      extents: [0.4, 0.12, 0.2],
+      assetId: rec.assetId,
+    });
+
+    store.importStructuralStl({
+      assetId: rec.assetId,
+      fileName: "arm-bracket.stl",
+      inspection: parsed.inspection,
+      transform,
+      engineering: eng,
+      collision: col,
+    });
+    // Simulate UI importer preview release after handoff
+    releaseMeshAsset(rec.assetId);
+    expect(getRegisteredAssetCount()).toBe(1);
+
+    const part1 = useRobotStore.getState().parts.find((p) => p.meshAssetId === rec.assetId)!;
+
+    // Live transform preview does not pollute historyPast; Undo cleanly cancels unapplied preview back to baseline
+    const origPos: [number, number, number] = [...part1.position];
+    useRobotStore.getState().previewPartTransform(part1.id, [0.95, 0.5, 0.1], part1.rotation ?? [0, 0, 0]);
+    expect(useRobotStore.getState().parts.find((p) => p.id === part1.id)!.position[0]).toBeCloseTo(0.95, 4);
+    expect(useRobotStore.getState().undo()).toBe(true);
+    expect(useRobotStore.getState().parts.find((p) => p.id === part1.id)!.position).toEqual(origPos);
+
+    // Duplicate + delete retains shared mesh asset while still in parts or undo history
+    const dupId = useRobotStore.getState().duplicatePart(part1.id)!;
+    expect(dupId).toBeTruthy();
+    useRobotStore.getState().deletePartById(dupId);
+    expect(getMeshAssetRecord(rec.assetId)).not.toBeNull();
+    useRobotStore.getState().deletePartById(part1.id);
+    // Still in historyPast -> Undo restores part1 with its intact MeshAssetRecord!
+    expect(getMeshAssetRecord(rec.assetId)).not.toBeNull();
+    expect(useRobotStore.getState().undo()).toBe(true);
+    expect(useRobotStore.getState().parts.some((p) => p.id === part1.id)).toBe(true);
+  });
 });

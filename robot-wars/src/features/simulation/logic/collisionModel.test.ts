@@ -582,5 +582,35 @@ describe("Phase 4.1.3: Planar Collision Detection Foundation", () => {
       expect(partialRes).not.toBeNull();
       expect(partialRes!.contactPoint.z).toBeCloseTo(0.3, 6);
     });
+
+    it("tests collision accurately against rotated barrier OBBs matching oriented obstacle geometry", () => {
+      // Thin barrier centered at (2, 0), length 2m along barrier X, thickness 0.2m, rotated 90° (runs along Z in [-1, 1], X in [1.9, 2.1])
+      const rotatedWall = {
+        id: "rot-wall-90",
+        isPerimeter: false,
+        geometryType: "rectangle" as const,
+        position: { x: 2.0, z: 0 },
+        sizeX: 2.0,
+        sizeZ: 0.2,
+        rotationRadians: Math.PI / 2,
+      };
+
+      // Outside unrotated X span (x=1.25 < 1.9), but WAS mistakenly inside unrotated sizeX/2 (1.0) at z=0: must NOT collide
+      const robotClearAtAxisX = createRobotCollisionEnvelope(
+        { x: 1.4, z: 0, headingRadians: 0 },
+        { lengthM: 0.6, widthM: 0.6 } // maxX = 1.7 < 1.9
+      );
+      expect(testObbAabbCollision(robotClearAtAxisX, rotatedWall)).toBeNull();
+
+      // Rotated span reaches z = +0.9; robot at (x=2.0, z=1.15) touches rotated barrier end whereas unrotated AABB (sizeZ=0.2) missed it!
+      const robotHittingRotatedEnd = createRobotCollisionEnvelope(
+        { x: 2.0, z: 1.15, headingRadians: 0 },
+        { lengthM: 0.5, widthM: 0.5 } // minZ = 0.90 vs barrier maxZ = 1.00
+      );
+      const hit = testObbAabbCollision(robotHittingRotatedEnd, rotatedWall);
+      expect(hit).not.toBeNull();
+      expect(hit!.penetrationDepth).toBeCloseTo(0.1, 4);
+      expect(hit!.normal.z).toBeGreaterThan(0.9);
+    });
   });
 });

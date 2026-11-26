@@ -389,6 +389,23 @@ export function buildBinaryStlBuffer(
 }
 
 /**
+ * Computes canonical unrotated local SI dimensions [length X, height Y, width Z] in meters
+ * from raw STL dimensions, length unit, and scale multiplier (prior to part rotation).
+ */
+export function computeLocalStlExtents(params: {
+  readonly rawDimensions: readonly [number, number, number];
+  readonly unit: StlLengthUnit;
+  readonly scale: readonly [number, number, number];
+}): readonly [number, number, number] {
+  const unitFactor = STL_UNIT_TO_METERS[params.unit];
+  return [
+    Math.max(1e-5, params.rawDimensions[0] * unitFactor * params.scale[0]),
+    Math.max(1e-5, params.rawDimensions[1] * unitFactor * params.scale[1]),
+    Math.max(1e-5, params.rawDimensions[2] * unitFactor * params.scale[2]),
+  ];
+}
+
+/**
  * Computes canonical SI dimensions (length X, height Y, width Z in meters) and rotated world bounds
  * from raw STL dimensions, selected length unit, scale multiplier, and CAD orientation offset.
  */

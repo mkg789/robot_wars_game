@@ -86,11 +86,17 @@ export function isPointInsideArenaBounds(
 }
 
 /**
- * Computes the axis-aligned 2D bounding box for an arena barrier in the X-Z plane.
+ * Computes the axis-aligned 2D bounding box enclosing an arena barrier in the X-Z plane,
+ * accounting for optional barrier yaw rotation.
  */
 export function getBarrierBounds(barrier: ArenaBarrier): ArenaBounds2D {
-  const halfX = barrier.sizeX / 2;
-  const halfZ = barrier.sizeZ / 2;
+  const halfBx = barrier.sizeX / 2;
+  const halfBz = barrier.sizeZ / 2;
+  const rot = barrier.rotationRadians ?? 0;
+  const cos = Math.abs(Math.cos(rot));
+  const sin = Math.abs(Math.sin(rot));
+  const halfX = halfBx * cos + halfBz * sin;
+  const halfZ = halfBx * sin + halfBz * cos;
   return {
     minX: barrier.position.x - halfX,
     maxX: barrier.position.x + halfX,

@@ -17,32 +17,13 @@ import type {
   CollisionResponseResult,
 } from "./collisionResponse.types";
 import type { GroundSurface } from "./surface.types";
+import type { SimulationAssumption, SimulationState } from "./simulationCore.types";
 
 export * from "./surface.types";
 export * from "./arena.types";
 export * from "./collision.types";
 export * from "./collisionResponse.types";
-
-/**
- * Origin classification for an engineering assumption used in simulation.
- */
-export type AssumptionSource =
-  | "catalogue-unverified"
-  | "derived-heuristic"
-  | "standard-default"
-  | "user-specified";
-
-/**
- * Explicit engineering assumption used in simulation where verified component data is unavailable.
- */
-export interface SimulationAssumption {
-  readonly id: string;
-  readonly parameter: string;
-  readonly value: number | string | boolean;
-  readonly unit?: string;
-  readonly source: AssumptionSource;
-  readonly description: string;
-}
+export * from "./simulationCore.types";
 
 /**
  * Mechanical and electrical provenance metadata for a simulation component.
@@ -69,6 +50,14 @@ export interface MotorSimulationConfig {
   readonly noLoadAngularVelocityRadPerSec: number;
   /** Nominal operating voltage in Volts (V), if specified */
   readonly nominalVoltageV?: number;
+  /** Rated continuous current in Amperes (A), if specified */
+  readonly ratedCurrentA?: number;
+  /** Stall current in Amperes (A), if specified */
+  readonly stallCurrentA?: number;
+  /** No-load current in Amperes (A), if specified */
+  readonly noLoadCurrentA?: number;
+  /** Optional linked ElectricalComponentSpec or catalogue identifier */
+  readonly electricalSpecId?: string;
   /** Provenance metadata describing specification source and verification */
   readonly provenance: ComponentSimulationProvenance;
 }
@@ -116,6 +105,12 @@ export interface BatterySimulationConfig {
   readonly cutoffVoltageV?: number;
   /** Total pack capacity in milliampere-hours (mAh), if specified */
   readonly capacityMah?: number;
+  /** Maximum continuous discharge current in Amperes (A), if specified */
+  readonly maxContinuousDischargeA?: number;
+  /** Peak/burst discharge current in Amperes (A), if specified */
+  readonly peakDischargeA?: number;
+  /** Internal pack resistance in Ohms (Ω), if specified */
+  readonly internalResistanceOhm?: number;
   /** Provenance metadata describing battery data source */
   readonly provenance: ComponentSimulationProvenance;
 }
@@ -145,6 +140,126 @@ export interface NormalLoadBaseline {
 }
 
 /**
+ * Compiled hardware switch state & downstream impact map for runtime simulation.
+ */
+export interface CompiledElectricalSwitch {
+  readonly partId: string;
+  readonly name: string;
+  readonly defaultClosed: boolean;
+  readonly affectsBatteryMain: boolean;
+  readonly downstreamMotorIds: readonly string[];
+  readonly downstreamPartIds: readonly string[];
+}
+
+/**
+ * Compiled protection fuse metadata & downstream impact map for runtime overcurrent tripping.
+ */
+export interface CompiledElectricalFuse {
+  readonly partId: string;
+  readonly name: string;
+  readonly ratedCurrentA: number;
+  readonly initialTripped: boolean;
+  readonly affectsBatteryMain: boolean;
+  readonly downstreamMotorIds: readonly string[];
+  readonly downstreamPartIds: readonly string[];
+}
+
+/**
+ * Compiled voltage regulator / ESC BEC behavior for runtime dropout & current conservation.
+ */
+export interface CompiledElectricalRegulator {
+  readonly partId: string;
+  readonly name: string;
+  readonly powerRole: "buck" | "boost" | "linear" | "bec";
+  readonly outputNominalV: number;
+  readonly inputMinV?: number;
+  readonly inputMaxV?: number;
+  readonly dropoutVoltageV?: number;
+  readonly efficiency?: number;
+  readonly maxOutputCurrentA?: number;
+  readonly quiescentCurrentA: number;
+  readonly seriesSwitchIds: readonly string[];
+  readonly seriesFuseIds: readonly string[];
+  readonly hasCompileFault: boolean;
+}
+
+/**
+ * Compiled per-motor power-path descriptor bridging electrical topology into drivetrain physics.
+ */
+export interface CompiledMotorElectricalPath {
+  readonly motorId: string;
+  readonly hasElectricalPath: boolean;
+  readonly canEnergize: boolean;
+  readonly hasCompileFault: boolean;
+  readonly faultReason?: string;
+  readonly supplyKind: "unregulated-battery" | "regulated-rail" | "unpowered";
+  readonly regulatedVoltageV?: number;
+  readonly regulatorPartId?: string;
+  readonly driverPartId?: string;
+  readonly driverContinuousCurrentA?: number;
+  readonly driverPeakCurrentA?: number;
+  readonly seriesSwitchIds: readonly string[];
+  readonly seriesFuseIds: readonly string[];
+  readonly hasGroundReturn: boolean;
+}
+
+/**
+ * Compiled steady non-motor load (controller, sensor, servo, etc.) on battery or regulated rail.
+ */
+export interface CompiledAuxiliaryLoad {
+  readonly partId: string;
+  readonly name: string;
+  readonly nominalCurrentA: number;
+  readonly supplyKind: "unregulated-battery" | "regulated-rail";
+  readonly regulatedVoltageV?: number;
+  readonly regulatorPartId?: string;
+  readonly seriesSwitchIds: readonly string[];
+  readonly seriesFuseIds: readonly string[];
+}
+
+/**
+ * Compiled electrical system integration profile derived once from ElectricalConnection topology.
+ */
+export interface ElectricalSimulationProfile {
+  readonly mode: "mechanical-only" | "electrical-connected";
+  readonly auxiliaryLoadA: number;
+  readonly hasUnknownAuxiliaryLoad: boolean;
+  readonly auxiliaryLoads: readonly CompiledAuxiliaryLoad[];
+  readonly switches: readonly CompiledElectricalSwitch[];
+  readonly fuses: readonly CompiledElectricalFuse[];
+  readonly regulators: readonly CompiledElectricalRegulator[];
+  readonly motorPaths: readonly CompiledMotorElectricalPath[];
+  readonly unmappedWarnings: readonly string[];
+}
+
+/**
+ * Per-motor electrical telemetry & torque scaling override resolved each physics substep.
+ */
+export interface MotorRuntimeElectricalState {
+  readonly motorId: string;
+  readonly isPowered: boolean;
+  readonly operatingVoltageV: number;
+  readonly demandedCurrentA: number;
+  readonly currentDrawA: number;
+  readonly torqueScaleFactor: number;
+  readonly isCurrentLimited: boolean;
+  readonly faultReason?: string;
+}
+
+/**
+ * Runtime electrical snapshot stored in SimulationRunnerState & telemetry.
+ */
+export interface RuntimeElectricalState {
+  readonly switchStates: Readonly<Record<string, boolean>>;
+  readonly trippedFuseIds: readonly string[];
+  readonly totalMotorCurrentA: number;
+  readonly totalAuxiliaryCurrentA: number;
+  readonly isBatteryDischargeLimited: boolean;
+  readonly activeFaults: readonly string[];
+  readonly motorStates: readonly MotorRuntimeElectricalState[];
+}
+
+/**
  * Immutable compiled configuration of a robot ready for dynamic simulation.
  */
 export interface SimulationRobotConfig {
@@ -170,6 +285,8 @@ export interface SimulationRobotConfig {
   readonly wheels: readonly WheelSimulationConfig[];
   /** Primary battery specification */
   readonly battery: BatterySimulationConfig | null;
+  /** Compiled electrical integration profile (optional; null/omitted in legacy mechanical-only runs) */
+  readonly electrical?: ElectricalSimulationProfile | null;
   /** Baseline normal ground reactions from static stability analysis */
   readonly normalLoads: NormalLoadBaseline | null;
   /** Explicit simulation assumptions applied during compilation */
@@ -188,47 +305,6 @@ export interface DrivetrainInput {
   readonly leftThrottle: number;
   /** Right drive group normalized command in range [-1.0 (reverse) to +1.0 (forward)] */
   readonly rightThrottle: number;
-}
-
-/**
- * Minimal dynamic runtime state for a 2D differential-drive simulation.
- */
-export interface SimulationState {
-  readonly timeSeconds: number;
-  readonly stepCount: number;
-
-  // 2D Pose in arena world frame (+X = forward baseline, +Z = left baseline, heading θ in radians)
-  readonly xMeters: number;
-  readonly zMeters: number;
-  readonly headingRadians: number;
-
-  // 2D Chassis velocities (body-fixed frame)
-  readonly longitudinalVelocityMps: number;
-  readonly lateralVelocityMps: number;
-  readonly yawRateRadPerSec: number;
-
-  // Chassis accelerations
-  readonly longitudinalAccelerationMps2: number;
-  readonly angularAccelerationRadPerSec2: number;
-
-  // Wheel angular velocities & surface linear speeds
-  readonly leftWheelAngularVelocityRadPerSec: number;
-  readonly rightWheelAngularVelocityRadPerSec: number;
-  readonly leftWheelLinearSurfaceSpeedMps: number;
-  readonly rightWheelLinearSurfaceSpeedMps: number;
-
-  // Traction slip ratios
-  readonly leftSlipRatio: number;
-  readonly rightSlipRatio: number;
-
-  // Electrical runtime telemetry
-  readonly batteryTerminalVoltageV: number;
-  readonly totalCurrentDrawA: number;
-  readonly isBatteryCutoff?: boolean;
-
-  // Forces and torques
-  readonly netDriveForceN: number;
-  readonly netYawTorqueNm: number;
 }
 
 /**
@@ -289,6 +365,16 @@ export interface WheelDynamicsDiagnostic {
     readonly x: number;
     readonly z: number;
   };
+  /** Applied electrical supply voltage at this motor in Volts (V) */
+  readonly operatingVoltageV?: number;
+  /** Electrical current drawn by this motor in Amperes (A) */
+  readonly electricalCurrentA?: number;
+  /** Whether motor branch is electrically powered */
+  readonly isElectricalPowered?: boolean;
+  /** Whether motor torque/current is constrained by an upstream driver or battery discharge limit */
+  readonly isCurrentLimited?: boolean;
+  /** Explicit fault or interruption reason when motor lacks electrical power */
+  readonly electricalFaultReason?: string;
 }
 
 /**
@@ -352,6 +438,12 @@ export interface BatteryDynamicsDiagnostics {
   readonly isCutoff: boolean;
   readonly cutoffVoltageV: number;
   readonly nominalVoltageV: number;
+  readonly totalMotorCurrentA?: number;
+  readonly totalAuxiliaryCurrentA?: number;
+  readonly isBatteryDischargeLimited?: boolean;
+  readonly perMotorStates?: readonly MotorRuntimeElectricalState[];
+  readonly trippedFuseIds?: readonly string[];
+  readonly activeElectricalFaults?: readonly string[];
   readonly assumptions: readonly SimulationAssumption[];
 }
 
@@ -413,6 +505,8 @@ export interface SimulationRunnerState {
   readonly totalSimulatedTimeSeconds: number;
   /** Total physics integration steps executed by the runner */
   readonly totalPhysicsSteps: number;
+  /** Runtime electrical switch/fuse/current/fault tracking across physics steps */
+  readonly electricalState?: RuntimeElectricalState;
 }
 
 /**

@@ -16,8 +16,9 @@ import { analyzePowerDistribution } from "./powerDistributionAnalysis";
 export function validateElectricalAssembly(params: {
   readonly parts: readonly RobotPart[];
   readonly electricalConnections: readonly ElectricalConnection[];
+  readonly trippedFuseIds?: readonly string[];
 }): ElectricalValidationReport {
-  const { parts, electricalConnections } = params;
+  const { parts, electricalConnections, trippedFuseIds } = params;
   const diagnostics: ElectricalDiagnostic[] = [];
   const connectionResults: Record<string, ElectricalCompatibilityResult> = {};
 
@@ -429,6 +430,7 @@ export function validateElectricalAssembly(params: {
   const powerResult = analyzePowerDistribution({
     parts,
     electricalConnections,
+    trippedFuseIds,
   });
 
   // Merge power-path diagnostics while avoiding duplicate rail-load alerts

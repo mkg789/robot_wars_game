@@ -1,4 +1,5 @@
 import { resolveSurfaceAtPoint } from "../../simulation/logic/arenaModel";
+import { DEFAULT_GROUND_SURFACE } from "../../simulation/logic/surfaceModel";
 import type { ArenaBarrier, ArenaConfig } from "../../simulation/types/arena.types";
 import type { SimulationRobotConfig, SimulationState } from "../../simulation/types/simulation.types";
 import type {
@@ -400,29 +401,13 @@ export function simulateLineSensor(params: {
 
   const cosH = Math.cos(simState.headingRadians);
   const sinH = Math.sin(simState.headingRadians);
+  const sensorYaw = simState.headingRadians + descriptor.mountYawOffsetRadians;
+  const cosS = Math.cos(sensorYaw);
+  const sinS = Math.sin(sensorYaw);
   const fallbackSurfaceId =
     typeof arena.fallbackSurface === "string"
       ? arena.fallbackSurface
-      : arena.fallbackSurface?.id ?? "arena-steel-dry";
-
-  // 5 lateral probe channels evenly spanning the sensor array width (+Z left to -Z right)
-  const channelCount = 5;
-  const halfSpan = Math.min(0.12, descriptor.spanWidthMeters) * 0.5;
-  const channels: boolean[] = [];
-  const activePositions: number[] = [];
-
-  for (let i = 0; i < channelCount; i++) {
-    const frac = 1 - (2 * i) / (channelCount - 1); // +1 left .. -1 right
-    const lateralLocalZ = descriptor.localMountOffset.z + frac * halfSpan;
-    const sampleX =
-      simState.xMeters + descriptor.localMountOffset.x * cosH - lateralLocalZ * sinH;
-    const sampleZ =
-      simState.zMeters + descriptor.localMountOffset.x * sinH + lateralLocalZ * cosH;
-    const surf = resolveSurfaceAtPoint(arena, sampleX, sampleZ);
-    const hit = isSurfaceDarkOrLineZone(surf.id, surf.name, fallbackSurfaceId);
-    channels.push(hit);
-    if (hit) activePositions.push(frac);
-  }
+      : arena.fallbackSurface?.id ?? DEFAULT_GROUND_SURFACE.id;
 
   const centerX =
     simState.xMeters +
@@ -432,6 +417,24 @@ export function simulateLineSensor(params: {
     simState.zMeters +
     descriptor.localMountOffset.x * sinH +
     descriptor.localMountOffset.z * cosH;
+
+  // 5 lateral probe channels evenly spanning the mounted sensor array's local +Z axis
+  const channelCount = 5;
+  const halfSpan = Math.min(0.12, descriptor.spanWidthMeters) * 0.5;
+  const channels: boolean[] = [];
+  const activePositions: number[] = [];
+
+  for (let i = 0; i < channelCount; i++) {
+    const frac = 1 - (2 * i) / (channelCount - 1); // +1 left .. -1 right
+    const offset = frac * halfSpan;
+    const sampleX = centerX - offset * sinS;
+    const sampleZ = centerZ + offset * cosS;
+    const surf = resolveSurfaceAtPoint(arena, sampleX, sampleZ);
+    const hit = isSurfaceDarkOrLineZone(surf.id, surf.name, fallbackSurfaceId);
+    channels.push(hit);
+    if (hit) activePositions.push(frac);
+  }
+
   const centerSurface = resolveSurfaceAtPoint(arena, centerX, centerZ);
 
   const detected = channels.some(Boolean);

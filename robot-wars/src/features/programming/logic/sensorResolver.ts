@@ -49,11 +49,22 @@ export function classifyPartSensorKind(
 export function resolveRobotSensors(params: {
   readonly parts: readonly RobotPart[];
   readonly electricalConnections?: readonly ElectricalConnection[];
+  readonly trippedFuseIds?: readonly string[];
+  readonly isBatteryCutoff?: boolean;
 }): readonly SensorDescriptor[] {
-  const { parts, electricalConnections = [] } = params;
+  const {
+    parts,
+    electricalConnections = [],
+    trippedFuseIds,
+    isBatteryCutoff = false,
+  } = params;
   const hasAnyElectricalWiring = electricalConnections.length > 0;
   const validationReport = hasAnyElectricalWiring
-    ? validateElectricalAssembly({ parts, electricalConnections })
+    ? validateElectricalAssembly({
+        parts,
+        electricalConnections,
+        trippedFuseIds,
+      })
     : null;
 
   const descriptors: SensorDescriptor[] = [];
@@ -77,17 +88,66 @@ export function resolveRobotSensors(params: {
           (d.partId === part.id || d.relatedPartId === part.id)
       );
       const consumerState = validationReport.powerAnalysis?.consumerStates[part.id];
+      const signalConns = electricalConnections.filter(
+        (c) =>
+          (c.sourcePartId === part.id || c.targetPartId === part.id) &&
+          c.connectionType !== "power" &&
+          c.connectionType !== "ground"
+      );
+      const signalErrorConn = signalConns.find(
+        (c) => validationReport.connectionResults[c.id]?.status === "incompatible"
+      );
+      const linkedPeerFault = signalConns
+        .map((c) =>
+          c.sourcePartId === part.id ? c.targetPartId : c.sourcePartId
+        )
+        .map((peerId) => ({
+          peerId,
+          part: parts.find((p) => p.id === peerId),
+          peerPower: validationReport.powerAnalysis?.consumerStates[peerId],
+        }))
+        .find(
+          ({ part: peerPart, peerPower }) =>
+            peerPart?.type === "Controller" &&
+            peerPower &&
+            (!peerPower.energized || peerPower.hasPathFault)
+        );
 
       if (hardError) {
         availability = "unavailable-electrical-fault";
         availabilityReason = hardError.title;
+      } else if (consumerState?.hasPathFault) {
+        availability = "unavailable-electrical-fault";
+        availabilityReason =
+          consumerState.pathFaultReason ??
+          `${part.name} power supply path has an upstream electrical fault.`;
+      } else if (signalErrorConn) {
+        availability = "unavailable-electrical-fault";
+        availabilityReason =
+          validationReport.connectionResults[signalErrorConn.id].reason;
       } else if (!consumerState || !consumerState.energized) {
         availability = "unavailable-unpowered";
         availabilityReason = `${part.name} has no energized power supply path in electrical wiring.`;
-      } else if (consumerState.hasMissingGround) {
-        assumptions.push(
-          "Electrical warning: sensor lacks an explicit common ground return wire."
-        );
+      } else if (linkedPeerFault) {
+        const peerName = linkedPeerFault.part?.name ?? linkedPeerFault.peerId;
+        if (linkedPeerFault.peerPower?.hasPathFault) {
+          availability = "unavailable-electrical-fault";
+          availabilityReason = `${peerName} connected to ${part.name} has a power path fault.`;
+        } else {
+          availability = "unavailable-unpowered";
+          availabilityReason = `${peerName} connected to ${part.name} signal line is unpowered.`;
+        }
+      } else {
+        if (consumerState.hasMissingGround) {
+          assumptions.push(
+            "Electrical warning: sensor lacks an explicit common ground return wire."
+          );
+        }
+        if (signalConns.length === 0) {
+          assumptions.push(
+            "Electrical notice: sensor signal interface is not explicitly wired to a controller pin; assuming testbed telemetry link."
+          );
+        }
       }
     }
 
@@ -95,6 +155,9 @@ export function resolveRobotSensors(params: {
       availability = "unavailable-unsupported";
       availabilityReason =
         "Thermal simulation model is not yet implemented; temperature reading unavailable.";
+    } else if (isBatteryCutoff && availability === "ready") {
+      availability = "unavailable-unpowered";
+      availabilityReason = "Battery low-voltage cutoff active.";
     }
 
     descriptors.push({

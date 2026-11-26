@@ -13,6 +13,8 @@ import {
   resolveMotorEngineeringSpec,
   resolveWheelEngineeringSpec,
 } from "../../robot-builder/logic/engineeringAdapters";
+import { resolvePartElectricalSpec } from "../../electrical/logic/electricalComponentAdapters";
+import type { ElectricalConnection } from "../../electrical/types/electrical.types";
 import { resolveWheelDimensions } from "../../robot-builder/logic/geometryAdapters";
 import { resolveAssemblyMass } from "../../robot-builder/logic/massResolvers";
 import {
@@ -42,6 +44,7 @@ import type {
   SimulationRobotConfig,
   WheelSimulationConfig,
 } from "../types/simulation.types";
+import { compileElectricalSimulationProfile } from "./electricalSimulationCompiler";
 import { DEFAULT_GROUND_SURFACE } from "./surfaceModel";
 
 export interface CompileSimulationConfigOptions {
@@ -49,6 +52,7 @@ export interface CompileSimulationConfigOptions {
   readonly connections: readonly RobotConnection[];
   readonly drivetrain: DrivetrainConfiguration | null;
   readonly foundation?: FoundationConfig | null;
+  readonly electricalConnections?: readonly ElectricalConnection[];
   readonly stabilityProfile?: RobotStabilityProfile;
   readonly inertiaProfile?: RobotInertiaProfile;
 }
@@ -75,6 +79,7 @@ export function compileSimulationConfig(
   let connections: readonly RobotConnection[];
   let drivetrain: DrivetrainConfiguration | null;
   let foundation: FoundationConfig | null | undefined;
+  let electricalConnections: readonly ElectricalConnection[] | undefined;
   let stabilityProfile: RobotStabilityProfile | undefined;
   let inertiaProfile: RobotInertiaProfile | undefined;
 
@@ -83,6 +88,7 @@ export function compileSimulationConfig(
     connections = partsOrOptions.connections;
     drivetrain = partsOrOptions.drivetrain;
     foundation = partsOrOptions.foundation;
+    electricalConnections = partsOrOptions.electricalConnections;
     stabilityProfile = partsOrOptions.stabilityProfile;
     inertiaProfile = partsOrOptions.inertiaProfile;
   } else {
@@ -366,6 +372,16 @@ export function compileSimulationConfig(
         });
       }
 
+      if (motorSpec.electrical?.nominalVoltageV === undefined) {
+        assumptions.push({
+          id: `motor-${motor.id}-voltage-omitted`,
+          parameter: `motor.${motor.id}.nominalVoltageV`,
+          value: "omitted",
+          source: "catalogue-unverified",
+          description: `Motor "${motor.name}" omits an electrical nominal voltage rating; simulation scales voltage against installed battery nominal voltage unless electrical ratings are specified.`,
+        });
+      }
+
       compiledMotors.push({
         motorId: motor.id,
         name: motor.name,
@@ -375,6 +391,10 @@ export function compileSimulationConfig(
         noLoadRpm: validRpm,
         noLoadAngularVelocityRadPerSec,
         nominalVoltageV: motorSpec.electrical?.nominalVoltageV,
+        ratedCurrentA: motorSpec.electrical?.ratedCurrentA,
+        stallCurrentA: motorSpec.electrical?.stallCurrentA,
+        noLoadCurrentA: motorSpec.electrical?.noLoadCurrentA,
+        electricalSpecId: motor.electricalSpec?.specId ?? motor.electricalCatalogueId,
         provenance: {
           source,
           verified: isVerified,
@@ -463,6 +483,7 @@ export function compileSimulationConfig(
     );
   } else {
     const batterySpec = resolveBatteryEngineeringSpec(batteryPart);
+    const elecBat = resolvePartElectricalSpec(batteryPart)?.batterySpec;
     const nominalVoltageV = batterySpec.electrical?.nominalVoltageV;
 
     if (nominalVoltageV === undefined || nominalVoltageV <= 0 || !Number.isFinite(nominalVoltageV)) {
@@ -471,13 +492,31 @@ export function compileSimulationConfig(
       );
     }
 
-    assumptions.push({
-      id: `battery-${batteryPart.id}-internal-resistance-omitted`,
-      parameter: `battery.${batteryPart.id}.internalResistanceOhm`,
-      value: "omitted",
-      source: "catalogue-unverified",
-      description: `Battery "${batteryPart.name}" catalogue definition omits internal resistance and C-ratings to prevent fabrication; future dynamic voltage sag will require a configurable simulation parameter.`,
-    });
+    const explicitInternalR =
+      batterySpec.electrical?.internalResistanceOhm ?? elecBat?.internalResistanceOhm;
+    const capacityMah = batterySpec.electrical?.capacityMah ?? elecBat?.capacityMah;
+    const maxContinuousDischargeA =
+      elecBat?.maxContinuousDischargeA ??
+      (batterySpec.electrical?.continuousDischargeC !== undefined &&
+      capacityMah !== undefined
+        ? (capacityMah / 1000) * batterySpec.electrical.continuousDischargeC
+        : undefined);
+    const peakDischargeA =
+      elecBat?.peakDischargeA ??
+      (batterySpec.electrical?.burstDischargeC !== undefined &&
+      capacityMah !== undefined
+        ? (capacityMah / 1000) * batterySpec.electrical.burstDischargeC
+        : undefined);
+
+    if (explicitInternalR === undefined) {
+      assumptions.push({
+        id: `battery-${batteryPart.id}-internal-resistance-omitted`,
+        parameter: `battery.${batteryPart.id}.internalResistanceOhm`,
+        value: "omitted",
+        source: "catalogue-unverified",
+        description: `Battery "${batteryPart.name}" catalogue definition omits internal resistance and C-ratings to prevent fabrication; simulation uses standard default internal resistance unless configured explicitly.`,
+      });
+    }
 
     const batteryProv = batterySpec.electrical?.provenance;
     const batteryIsVerified = Boolean(batteryProv && "verified" in batteryProv && batteryProv.verified);
@@ -494,13 +533,36 @@ export function compileSimulationConfig(
       nominalVoltageV: nominalVoltageV ?? 0,
       fullyChargedVoltageV: batterySpec.electrical?.fullyChargedVoltageV,
       cutoffVoltageV: batterySpec.electrical?.cutoffVoltageV,
-      capacityMah: batterySpec.electrical?.capacityMah,
+      capacityMah,
+      maxContinuousDischargeA,
+      peakDischargeA,
+      internalResistanceOhm: explicitInternalR,
       provenance: {
         source: batterySource,
         verified: batteryIsVerified,
         notes: batteryProv?.notes,
       },
     };
+  }
+
+  // 10b. Electrical System Compilation (only when logical ElectricalConnections exist)
+  const compiledElectrical = compileElectricalSimulationProfile({
+    parts,
+    electricalConnections,
+    compiledMotors,
+  });
+  if (compiledElectrical?.unmappedWarnings.length) {
+    warnings.push(...compiledElectrical.unmappedWarnings);
+  }
+  if (compiledElectrical?.hasUnknownAuxiliaryLoad) {
+    assumptions.push({
+      id: "electrical-unknown-aux-load",
+      parameter: "electrical.auxiliaryLoadA",
+      value: "partial-unknown",
+      source: "catalogue-unverified",
+      description:
+        "One or more wired non-motor consumers omit current ratings; unverified loads are omitted from battery sag rather than fabricated.",
+    });
   }
 
   // 11. Normal Load Baseline
@@ -551,6 +613,7 @@ export function compileSimulationConfig(
     motors: compiledMotors,
     wheels: compiledWheels,
     battery: batteryConfig,
+    electrical: compiledElectrical,
     normalLoads,
     assumptions: uniqueAssumptions,
     validity,

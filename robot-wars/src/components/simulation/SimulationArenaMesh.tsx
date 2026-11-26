@@ -44,7 +44,10 @@ function BarrierMesh({
       : "#5b6d82";
 
   return (
-    <group position={[barrier.position.x, height / 2, barrier.position.z]}>
+    <group
+      position={[barrier.position.x, height / 2, barrier.position.z]}
+      rotation={[0, -(barrier.rotationRadians ?? 0), 0]}
+    >
       <mesh castShadow receiveShadow>
         <boxGeometry args={[barrier.sizeX, height, barrier.sizeZ]} />
         <meshStandardMaterial

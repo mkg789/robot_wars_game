@@ -9,7 +9,7 @@ import type {
   MeshAssetInspection,
 } from "../types/foundation.types";
 import { getMeshAssetRecord } from "./meshAssetRegistry";
-import { computeTransformedStlExtents, STL_UNIT_TO_METERS } from "./stlParser";
+import { computeLocalStlExtents, STL_UNIT_TO_METERS } from "./stlParser";
 
 export interface ImportedMaterialPreset {
   readonly id: ImportedMaterialId;
@@ -143,11 +143,12 @@ export function resolveImportedEngineeringProperties(params: {
         ? localCentroid
         : undefined;
 
-  const extents = computeTransformedStlExtents({
+  // Compute local unrotated SI extents so diagonal inertia tensor is expressed in the part's local frame
+  // (robotInertia.ts rotates the tensor into world frame via part.rotation once, preventing double rotation).
+  const localExtents = computeLocalStlExtents({
     rawDimensions: params.inspection.rawDimensions,
     unit: params.transform.unit,
     scale: scaleTuple,
-    orientationRotation: params.transform.orientationRotation,
   });
 
   let inertiaKgM2: readonly [number, number, number] | undefined;
@@ -158,7 +159,7 @@ export function resolveImportedEngineeringProperties(params: {
     resolvedMassKg !== undefined &&
     resolvedMassKg > 0
   ) {
-    const [L, H, W] = extents;
+    const [L, H, W] = localExtents;
     inertiaKgM2 = [
       Number(((resolvedMassKg * (H * H + W * W)) / 12).toFixed(6)),
       Number(((resolvedMassKg * (L * L + W * W)) / 12).toFixed(6)),

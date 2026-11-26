@@ -14,7 +14,7 @@ import type {
 } from "../types/robot.types";
 import { resolveWheelDimensions } from "./geometryAdapters";
 import { resolveComponentMass } from "./massResolvers";
-import { STANDARD_GRAVITY_MPS2 } from "./robotKinematics";
+import { STANDARD_GRAVITY_MPS2 } from "./robotConstants";
 
 export type CalculationValidity = "valid" | "marginal" | "invalid" | "unsupported";
 export type StabilityStatus = "stable" | "marginal" | "unstable" | "unsupported";
@@ -284,16 +284,24 @@ export function calculateCenterOfMass(
     let py = Number.isFinite(pos[1]) ? pos[1] : 0;
     let pz = Number.isFinite(pos[2]) ? pos[2] : 0;
 
-    // Incorporate user-entered or calculated local CoM offset for imported STL parts
+    // Rotate imported local CoM offset by XYZ Euler part.rotation before adding to part.position
     const localCom = part.importedEngineering?.centerOfMassLocal;
     if (
       localCom &&
       part.importedEngineering?.centerOfMassMode !== "unknown" &&
       localCom.every((v) => typeof v === "number" && Number.isFinite(v))
     ) {
-      px += localCom[0];
-      py += localCom[1];
-      pz += localCom[2];
+      const [rx, ry, rz] = part.rotation ?? [0, 0, 0];
+      const cx = Math.cos(rx), sx = Math.sin(rx);
+      const cy = Math.cos(ry), sy = Math.sin(ry);
+      const cz = Math.cos(rz), sz = Math.sin(rz);
+      const ae = cx * cz, af = cx * sz, be = sx * cz, bf = sx * sz;
+      const r00 = cy * cz, r01 = -cy * sz, r02 = sy;
+      const r10 = af + be * sy, r11 = ae - bf * sy, r12 = -sx * cy;
+      const r20 = bf - ae * sy, r21 = be + af * sy, r22 = cx * cy;
+      px += r00 * localCom[0] + r01 * localCom[1] + r02 * localCom[2];
+      py += r10 * localCom[0] + r11 * localCom[1] + r12 * localCom[2];
+      pz += r20 * localCom[0] + r21 * localCom[1] + r22 * localCom[2];
     }
 
     totalMass += massRes.massKg;

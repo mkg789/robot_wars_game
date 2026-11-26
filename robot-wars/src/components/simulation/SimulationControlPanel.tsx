@@ -31,6 +31,7 @@ export default function SimulationControlPanel({
     BUILTIN_CONTROL_ROUTINES[0];
 
   const { binding } = controlState;
+  const electricalState = world.getTelemetrySnapshot().electricalState;
 
   return (
     <div className="sim-inspector-section">
@@ -78,6 +79,12 @@ export default function SimulationControlPanel({
       {controlState.lastError && (
         <div className="sim-runtime-error" role="alert">
           Program Fault: {controlState.lastError}
+        </div>
+      )}
+
+      {electricalState && electricalState.activeFaults.length > 0 && (
+        <div className="sim-runtime-error" role="status">
+          Electrical Notice: {electricalState.activeFaults[0]}
         </div>
       )}
 

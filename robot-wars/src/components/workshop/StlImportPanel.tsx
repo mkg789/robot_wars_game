@@ -9,6 +9,7 @@ import {
   registerParsedStlAsset,
 } from "../../features/robot-builder/logic/meshAssetRegistry";
 import {
+  computeLocalStlExtents,
   computeTransformedStlExtents,
   parseStlArrayBuffer,
   type ParsedStlData,
@@ -150,14 +151,31 @@ export default function StlImportPanel({
     });
   }, [parsed, transform, materialId, massMode, userMassKg, comMode, inertiaMode]);
 
+  const localExtents = useMemo(() => {
+    if (!parsed) return null;
+    const scaleTuple =
+      transform.scaleMode === "uniform"
+        ? ([
+            transform.uniformScale,
+            transform.uniformScale,
+            transform.uniformScale,
+          ] as const)
+        : transform.nonUniformScale;
+    return computeLocalStlExtents({
+      rawDimensions: parsed.inspection.rawDimensions,
+      unit: transform.unit,
+      scale: scaleTuple,
+    });
+  }, [parsed, transform]);
+
   const collisionPreview = useMemo(() => {
-    if (!calculatedExtents || !previewAssetId) return null;
+    if (!localExtents || !previewAssetId) return null;
     return buildCustomCollisionConfig({
       mode: collisionMode,
-      extents: calculatedExtents,
+      extents: localExtents,
       assetId: previewAssetId,
     });
-  }, [calculatedExtents, collisionMode, previewAssetId]);
+  }, [localExtents, collisionMode, previewAssetId]);
 
   const handleConfirm = () => {
     if (!parsed || !previewAssetId || !engineeringPreview || !collisionPreview) return;
@@ -177,6 +195,8 @@ export default function StlImportPanel({
       collision: collisionPreview,
       name: partName.trim() || undefined,
     });
+    // Ownership has transferred to store; release the preview registration ref cleanly
+    releaseMeshAsset(confirmedAssetId);
     setParsed(null);
   };
 

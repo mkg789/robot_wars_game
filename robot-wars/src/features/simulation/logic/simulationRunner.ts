@@ -33,6 +33,7 @@
 import {
   calculateBatteryOperatingPoint,
   resolveBatteryOpenCircuitVoltage,
+  type ElectricalRuntimeControl,
 } from "./batteryDynamics";
 import {
   deriveRobotCollisionEnvelope,
@@ -51,6 +52,8 @@ import type {
   CollisionResponseResult,
   DrivetrainInput,
   DynamicsStepResult,
+  MotorRuntimeElectricalState,
+  RuntimeElectricalState,
   SimulationAdvanceResult,
   SimulationRobotConfig,
   SimulationRunnerOptions,
@@ -69,6 +72,157 @@ export const DEFAULT_FIXED_TIMESTEP_SECONDS = 1 / 120;
  */
 export const DEFAULT_MAX_SUB_STEPS = 120;
 
+function buildInitialElectricalState(
+  config: SimulationRobotConfig
+): RuntimeElectricalState | undefined {
+  const profile = config.electrical;
+  if (!profile || profile.mode !== "electrical-connected") {
+    return undefined;
+  }
+  const switchStates: Record<string, boolean> = {};
+  for (const sw of profile.switches) {
+    switchStates[sw.partId] = sw.defaultClosed;
+  }
+  const trippedFuseIds = profile.fuses
+    .filter((f) => f.initialTripped)
+    .map((f) => f.partId);
+
+  return {
+    switchStates,
+    trippedFuseIds,
+    totalMotorCurrentA: 0,
+    totalAuxiliaryCurrentA: profile.auxiliaryLoadA,
+    isBatteryDischargeLimited: false,
+    activeFaults: [...profile.unmappedWarnings],
+    motorStates: profile.motorPaths.map((mp) => ({
+      motorId: mp.motorId,
+      isPowered:
+        mp.canEnergize &&
+        !mp.hasCompileFault &&
+        !mp.seriesSwitchIds.some((id) => switchStates[id] === false) &&
+        !mp.seriesFuseIds.some((id) => trippedFuseIds.includes(id)),
+      operatingVoltageV: 0,
+      demandedCurrentA: 0,
+      currentDrawA: 0,
+      torqueScaleFactor: mp.canEnergize ? 1 : 0,
+      isCurrentLimited: false,
+      faultReason: mp.faultReason,
+    })),
+  };
+}
+
+export function buildUpdatedElectricalState(
+  prev: RuntimeElectricalState | undefined,
+  diag: BatteryDynamicsDiagnostics
+): RuntimeElectricalState | undefined {
+  if (!prev && !diag.perMotorStates && !diag.trippedFuseIds?.length) {
+    return undefined;
+  }
+  return {
+    switchStates: prev?.switchStates ?? {},
+    trippedFuseIds: diag.trippedFuseIds ?? prev?.trippedFuseIds ?? [],
+    totalMotorCurrentA: diag.totalMotorCurrentA ?? diag.currentDrawA,
+    totalAuxiliaryCurrentA: diag.totalAuxiliaryCurrentA ?? 0,
+    isBatteryDischargeLimited: Boolean(diag.isBatteryDischargeLimited),
+    activeFaults: diag.activeElectricalFaults ?? [],
+    motorStates: diag.perMotorStates ?? prev?.motorStates ?? [],
+  };
+}
+
+/**
+ * Sets a runtime switch state (closed/open) on a SimulationRunnerState cleanly
+ * and optionally refreshes electrical/battery operating telemetry immediately.
+ */
+export function setSimulationSwitchState(
+  runnerState: SimulationRunnerState,
+  switchPartId: string,
+  isClosed: boolean,
+  config?: SimulationRobotConfig,
+  options?: SimulationRunnerOptions
+): SimulationRunnerState {
+  const prevElec = runnerState.electricalState;
+  if (!prevElec) return runnerState;
+  const nextSwitchStates = {
+    ...prevElec.switchStates,
+    [switchPartId]: isClosed,
+  };
+  const baseRunner: SimulationRunnerState = {
+    ...runnerState,
+    electricalState: {
+      ...prevElec,
+      switchStates: nextSwitchStates,
+    },
+  };
+  if (!config) return baseRunner;
+
+  const diag = calculateBatteryOperatingPoint(
+    config,
+    runnerState.simulationState,
+    { leftThrottle: 0, rightThrottle: 0 },
+    options?.battery,
+    runnerState.isCutoff,
+    {
+      switchStates: nextSwitchStates,
+      trippedFuseIds: prevElec.trippedFuseIds,
+    }
+  );
+  return {
+    ...baseRunner,
+    isCutoff: diag.isCutoff,
+    simulationState: {
+      ...runnerState.simulationState,
+      batteryTerminalVoltageV: diag.terminalVoltageV,
+      totalCurrentDrawA: diag.currentDrawA,
+      isBatteryCutoff: diag.isCutoff,
+    },
+    electricalState: buildUpdatedElectricalState(baseRunner.electricalState, diag),
+  };
+}
+
+/**
+ * Clears runtime-tripped fuses on a SimulationRunnerState cleanly
+ * and optionally refreshes electrical/battery operating telemetry immediately.
+ */
+export function resetSimulationFuses(
+  runnerState: SimulationRunnerState,
+  config?: SimulationRobotConfig,
+  options?: SimulationRunnerOptions
+): SimulationRunnerState {
+  const prevElec = runnerState.electricalState;
+  if (!prevElec) return runnerState;
+  const baseRunner: SimulationRunnerState = {
+    ...runnerState,
+    electricalState: {
+      ...prevElec,
+      trippedFuseIds: [],
+    },
+  };
+  if (!config) return baseRunner;
+
+  const diag = calculateBatteryOperatingPoint(
+    config,
+    runnerState.simulationState,
+    { leftThrottle: 0, rightThrottle: 0 },
+    options?.battery,
+    runnerState.isCutoff,
+    {
+      switchStates: prevElec.switchStates,
+      trippedFuseIds: [],
+    }
+  );
+  return {
+    ...baseRunner,
+    isCutoff: diag.isCutoff,
+    simulationState: {
+      ...runnerState.simulationState,
+      batteryTerminalVoltageV: diag.terminalVoltageV,
+      totalCurrentDrawA: diag.currentDrawA,
+      isBatteryCutoff: diag.isCutoff,
+    },
+    electricalState: buildUpdatedElectricalState(baseRunner.electricalState, diag),
+  };
+}
+
 /**
  * Creates an initial persistent SimulationRunnerState.
  */
@@ -77,19 +231,38 @@ export function createInitialRunnerState(
   initialPose: { x?: number; z?: number; heading?: number } = {},
   options?: SimulationRunnerOptions
 ): SimulationRunnerState {
-  const initialV = resolveBatteryOpenCircuitVoltage(config.battery, options?.battery);
+  const initialElec = buildInitialElectricalState(config);
+  const initialBattDiag = calculateBatteryOperatingPoint(
+    config,
+    createInitialSimulationState(
+      initialPose,
+      resolveBatteryOpenCircuitVoltage(config.battery, options?.battery)
+    ),
+    { leftThrottle: 0, rightThrottle: 0 },
+    options?.battery,
+    false,
+    initialElec
+      ? {
+          switchStates: initialElec.switchStates,
+          trippedFuseIds: initialElec.trippedFuseIds,
+        }
+      : undefined
+  );
+  const initialV = initialBattDiag.terminalVoltageV;
   const initialState = createInitialSimulationState(initialPose, initialV);
 
   return {
     simulationState: {
       ...initialState,
       batteryTerminalVoltageV: initialV,
-      isBatteryCutoff: false,
+      totalCurrentDrawA: initialBattDiag.currentDrawA,
+      isBatteryCutoff: initialBattDiag.isCutoff,
     },
     accumulatorSeconds: 0,
-    isCutoff: false,
+    isCutoff: initialBattDiag.isCutoff,
     totalSimulatedTimeSeconds: 0,
     totalPhysicsSteps: 0,
+    electricalState: buildUpdatedElectricalState(initialElec, initialBattDiag),
   };
 }
 
@@ -118,7 +291,8 @@ export function stepSimulationFixed(
   input: DrivetrainInput,
   fixedTimestepSeconds: number,
   options?: SimulationRunnerOptions,
-  wasCutoff = false
+  wasCutoff = false,
+  electricalControl?: ElectricalRuntimeControl
 ): {
   state: SimulationState;
   diagnostics: DynamicsStepResult;
@@ -135,7 +309,8 @@ export function stepSimulationFixed(
     currentState,
     input,
     options?.battery,
-    wasCutoff
+    wasCutoff,
+    electricalControl
   );
 
   const isCutoff = batteryDiag.isCutoff;
@@ -148,7 +323,12 @@ export function stepSimulationFixed(
   const operatingVoltageV = isCutoff ? 0 : batteryDiag.terminalVoltageV;
   const currentDrawA = isCutoff ? 0 : batteryDiag.currentDrawA;
 
-  // 3. Step mechanical dynamics with voltage-scaled motor capabilities and spatial surface friction
+  const perMotorOverrides: Record<string, MotorRuntimeElectricalState> | undefined =
+    batteryDiag.perMotorStates && batteryDiag.perMotorStates.length > 0
+      ? Object.fromEntries(batteryDiag.perMotorStates.map((ms) => [ms.motorId, ms]))
+      : undefined;
+
+  // 3. Step mechanical dynamics with per-motor voltage/current capabilities and spatial surface friction
   const dynamicsRes = stepDrivetrainDynamics(
     config,
     currentState,
@@ -157,7 +337,8 @@ export function stepSimulationFixed(
     operatingVoltageV,
     currentDrawA,
     options?.surface,
-    options?.arena
+    options?.arena,
+    perMotorOverrides
   );
 
   // 4. Attach battery status to the post-drivetrain state
@@ -277,12 +458,20 @@ export function advanceSimulation(
 
   // 2. Fast-path: Zero duration request
   if (durationSeconds === 0) {
+    const elecControl: ElectricalRuntimeControl | undefined =
+      currentRunnerState.electricalState
+        ? {
+            switchStates: currentRunnerState.electricalState.switchStates,
+            trippedFuseIds: currentRunnerState.electricalState.trippedFuseIds,
+          }
+        : undefined;
     const batteryDiag = calculateBatteryOperatingPoint(
       config,
       currentRunnerState.simulationState,
       input,
       options?.battery,
-      currentRunnerState.isCutoff
+      currentRunnerState.isCutoff,
+      elecControl
     );
 
     return {
@@ -301,6 +490,7 @@ export function advanceSimulation(
   let accumulator = currentRunnerState.accumulatorSeconds + durationSeconds;
   let currentState = currentRunnerState.simulationState;
   let isCutoff = currentRunnerState.isCutoff;
+  let electricalState = currentRunnerState.electricalState;
   let stepsExecuted = 0;
   const stepDiagnostics: DynamicsStepResult[] = [];
 
@@ -309,7 +499,13 @@ export function advanceSimulation(
     currentState,
     input,
     options?.battery,
-    isCutoff
+    isCutoff,
+    electricalState
+      ? {
+          switchStates: electricalState.switchStates,
+          trippedFuseIds: electricalState.trippedFuseIds,
+        }
+      : undefined
   );
 
   // Epsilon threshold to handle floating-point precision at step boundaries
@@ -322,12 +518,19 @@ export function advanceSimulation(
       input,
       fixedTimestep,
       options,
-      isCutoff
+      isCutoff,
+      electricalState
+        ? {
+            switchStates: electricalState.switchStates,
+            trippedFuseIds: electricalState.trippedFuseIds,
+          }
+        : undefined
     );
 
     currentState = stepRes.state;
     isCutoff = stepRes.isCutoff;
     latestBatteryDiag = stepRes.batteryDiagnostics;
+    electricalState = buildUpdatedElectricalState(electricalState, latestBatteryDiag);
     stepDiagnostics.push(stepRes.diagnostics);
 
     accumulator -= fixedTimestep;
@@ -348,6 +551,7 @@ export function advanceSimulation(
     totalSimulatedTimeSeconds:
       currentRunnerState.totalSimulatedTimeSeconds + timeAdvancedSeconds,
     totalPhysicsSteps: currentRunnerState.totalPhysicsSteps + stepsExecuted,
+    ...(electricalState && { electricalState }),
   };
 
   return {

@@ -74,6 +74,37 @@ function getPowerRoleLabel(spec: ElectricalComponentSpec): string {
   return "Power Branch";
 }
 
+function isSwitchPart(spec: ElectricalComponentSpec): boolean {
+  return (
+    spec.componentType === "switch" ||
+    spec.driverOrRegulatorSpec?.powerRole === "switch"
+  );
+}
+
+function isFusePart(spec: ElectricalComponentSpec): boolean {
+  return (
+    spec.driverOrRegulatorSpec?.powerRole === "fuse" ||
+    spec.interfaces.some((iface) => iface.interfaceId.includes("fuse"))
+  );
+}
+
+function isBranchInterrupted(
+  part: RobotPart | undefined,
+  spec: ElectricalComponentSpec,
+  trippedFuseSet: ReadonlySet<string>
+): { readonly interrupted: boolean; readonly reason?: "switch-open" | "fuse-tripped" } {
+  if (part && isSwitchPart(spec) && part.electricalState?.switchClosed === false) {
+    return { interrupted: true, reason: "switch-open" };
+  }
+  if (
+    isFusePart(spec) &&
+    (Boolean(part?.electricalState?.fuseTripped) || (part ? trippedFuseSet.has(part.id) : false))
+  ) {
+    return { interrupted: true, reason: "fuse-tripped" };
+  }
+  return { interrupted: false };
+}
+
 function combineEnvelopes(envelopes: readonly VoltageEnvelope[]): VoltageEnvelope | null {
   if (envelopes.length === 0) return null;
   let minV = Number.POSITIVE_INFINITY;
@@ -114,11 +145,13 @@ function combineEnvelopes(envelopes: readonly VoltageEnvelope[]): VoltageEnvelop
 export function analyzePowerDistribution(params: {
   readonly parts: readonly RobotPart[];
   readonly electricalConnections: readonly ElectricalConnection[];
+  readonly trippedFuseIds?: readonly string[];
 }): {
   readonly analysis: ElectricalPowerPathAnalysis;
   readonly diagnostics: readonly ElectricalDiagnostic[];
 } {
-  const { parts, electricalConnections } = params;
+  const { parts, electricalConnections, trippedFuseIds = [] } = params;
+  const trippedFuseSet = new Set(trippedFuseIds);
   const diagnostics: ElectricalDiagnostic[] = [];
   const emittedDiagIds = new Set<string>();
   const pushDiag = (diag: ElectricalDiagnostic) => {
@@ -301,8 +334,10 @@ export function analyzePowerDistribution(params: {
         const outKey = `${partId}:${outIface.interfaceId}`;
 
         if (isPassThroughComponent(spec)) {
-          // Pass-through components forward upstream voltage only when fed!
-          if (combinedIn) {
+          // Pass-through components forward upstream voltage only when fed and neither switched open nor fuse-tripped
+          const part = partsById.get(partId);
+          const interruption = isBranchInterrupted(part, spec, trippedFuseSet);
+          if (combinedIn && !interruption.interrupted) {
             const prevOut = outputEnvelopeByKey.get(outKey);
             if (
               !prevOut ||
@@ -310,6 +345,25 @@ export function analyzePowerDistribution(params: {
               prevOut.maxV !== combinedIn.maxV
             ) {
               outputEnvelopeByKey.set(outKey, combinedIn);
+              changed = true;
+            }
+          }
+        } else if (
+          spec.componentType === "motor-driver" &&
+          !outIface.interfaceId.includes("bec")
+        ) {
+          // Unregulated motor-driver output stages forward upstream VM bus voltage when energized
+          if (combinedIn) {
+            const prevOut = outputEnvelopeByKey.get(outKey);
+            if (
+              !prevOut ||
+              prevOut.minV !== combinedIn.minV ||
+              prevOut.maxV !== combinedIn.maxV
+            ) {
+              outputEnvelopeByKey.set(outKey, {
+                ...combinedIn,
+                isRegulated: false,
+              });
               changed = true;
             }
           }
@@ -351,6 +405,40 @@ export function analyzePowerDistribution(params: {
     const part = partsById.get(partId)!;
     const incoming = incomingPowerByTargetPart.get(partId) ?? [];
     const inEnv = inputEnvelopeByPartId.get(partId);
+
+    // Emit switch-open / fuse-tripped interruption diagnostics on series protection/control components
+    const interruption = isBranchInterrupted(part, spec, trippedFuseSet);
+    if (interruption.reason === "switch-open") {
+      const outIface = spec.interfaces.find((i) => i.role === "power-output");
+      pushDiag({
+        id: `pwr-switch-open-${partId}`,
+        severity: "warning",
+        code: "switch-open",
+        title: `Power switch ${part.name} is OPEN`,
+        reason: `${part.name} is currently open, interrupting downstream power delivery until closed.`,
+        partId,
+        interfaceId: outIface?.interfaceId,
+        pinId: outIface?.pinIds[0],
+        conditionEvaluated: "Evaluated switchClosed hardware state during power propagation.",
+        correctiveAction: `Close ${part.name} to energize downstream branch loads.`,
+        provenance: spec.provenance,
+      });
+    } else if (interruption.reason === "fuse-tripped") {
+      const outIface = spec.interfaces.find((i) => i.role === "power-output");
+      pushDiag({
+        id: `pwr-fuse-tripped-${partId}`,
+        severity: "error",
+        code: "fuse-tripped",
+        title: `Fuse ${part.name} has TRIPPED`,
+        reason: `${part.name} tripped due to overcurrent and has isolated all downstream loads on this branch.`,
+        partId,
+        interfaceId: outIface?.interfaceId,
+        pinId: outIface?.pinIds[0],
+        conditionEvaluated: "Evaluated fuse state vs downstream overcurrent trip status.",
+        correctiveAction: `Reduce branch current below fuse rating and reset ${part.name}.`,
+        provenance: spec.provenance,
+      });
+    }
 
     // Check regulators & pass-throughs that have outgoing consumers but NO live upstream supply
     const hasOutConsumers = spec.interfaces.some(
@@ -447,14 +535,18 @@ export function analyzePowerDistribution(params: {
       const dstMin = targetRange?.minV ?? targetRange?.nominalV;
       const dstMax = targetRange?.maxV ?? targetRange?.nominalV;
 
-      // Only flag pass-through propagated faults when direct upstream wire was a pass-through node
-      // (direct battery -> load checks already emit `voltage-mismatch` in evaluateElectricalCompatibility)
-      const cameViaPassThrough = incoming.some((c) => {
+      // Flag pass-through & unregulated motor-driver propagated voltage faults
+      const cameViaUnregulatedFeed = incoming.some((c) => {
         const upSpec = specsByPartId.get(c.sourcePartId);
-        return upSpec ? isPassThroughComponent(upSpec) : false;
+        if (!upSpec) return false;
+        if (isPassThroughComponent(upSpec)) return true;
+        return (
+          upSpec.componentType === "motor-driver" &&
+          !c.sourceInterfaceId.includes("bec")
+        );
       });
 
-      if (cameViaPassThrough && dstMax !== undefined && dstMin !== undefined) {
+      if (cameViaUnregulatedFeed && dstMax !== undefined && dstMin !== undefined) {
         if (inEnv.maxV > dstMax + 0.05) {
           pushDiag({
             id: `pwr-pt-ov-${partId}`,
@@ -474,7 +566,7 @@ export function analyzePowerDistribution(params: {
           pushDiag({
             id: `pwr-pt-uv-${partId}`,
             severity: "error",
-            code: "pass-through-overvoltage",
+            code: "voltage-mismatch",
             title: `Propagated undervoltage on ${part.name}`,
             reason: `Energized upstream power path reaches only ${inEnv.maxV.toFixed(1)}V through pass-through distribution, below ${part.name} minimum (${dstMin.toFixed(1)}V).`,
             partId,
@@ -483,6 +575,21 @@ export function analyzePowerDistribution(params: {
             connectionId: incoming[0]?.id,
             conditionEvaluated: "Propagated upstream source voltage through pass-through nodes vs consumer minV.",
             correctiveAction: "Use a boost converter or higher-voltage supply rail.",
+            provenance: inEnv.provenance,
+          });
+        } else if (inEnv.minV < dstMin - 0.05) {
+          pushDiag({
+            id: `pwr-pt-uv-sag-${partId}`,
+            severity: "warning",
+            code: "voltage-mismatch",
+            title: `Propagated undervoltage sag risk on ${part.name}`,
+            reason: `Upstream minimum voltage (${inEnv.minV.toFixed(1)}V) drops below ${part.name} minimum rating (${dstMin.toFixed(1)}V) under discharge.`,
+            partId,
+            interfaceId: inIface?.interfaceId,
+            pinId: inIface?.pinIds[0],
+            connectionId: incoming[0]?.id,
+            conditionEvaluated: "Propagated upstream minV through pass-through nodes vs consumer minV.",
+            correctiveAction: "Ensure battery cutoff stays above load minimum or add a buck-boost regulator.",
             provenance: inEnv.provenance,
           });
         }
@@ -532,6 +639,11 @@ export function analyzePowerDistribution(params: {
       }
 
       if (isPassThroughComponent(dstSpec)) {
+        const dstPart = partsById.get(conn.targetPartId);
+        if (isBranchInterrupted(dstPart, dstSpec, trippedFuseSet).interrupted) {
+          // Open switch or tripped fuse interrupts circuit: zero downstream current drawn
+          continue;
+        }
         // Recurse through PDB/switch/fuse downstream outputs
         const outIfaces = dstSpec.interfaces.filter(
           (i) => i.role === "power-output" || i.role === "power-bidirectional"
@@ -544,6 +656,9 @@ export function analyzePowerDistribution(params: {
             knownLoadA += sub.knownLoadA;
             if (sub.hasUnknownLoad) hasUnknownLoad = true;
             if (!sub.groundVerified) groundVerified = false;
+            for (const cid of sub.consumerPartIds) {
+              if (!consumerPartIds.includes(cid)) consumerPartIds.push(cid);
+            }
           }
         }
       } else if (isRegulatorComponent(dstSpec)) {
@@ -562,6 +677,9 @@ export function analyzePowerDistribution(params: {
           regOutA += sub.knownLoadA;
           if (sub.hasUnknownLoad) regOutUnknown = true;
           if (!sub.groundVerified) groundVerified = false;
+          for (const cid of sub.consumerPartIds) {
+            if (!consumerPartIds.includes(cid)) consumerPartIds.push(cid);
+          }
         }
 
         const inEnv = inputEnvelopeByPartId.get(conn.targetPartId);
@@ -585,8 +703,38 @@ export function analyzePowerDistribution(params: {
           knownLoadA += regOutA;
           hasUnknownLoad = true;
         }
+      } else if (dstSpec.componentType === "motor-driver") {
+        // Recurse through motor-driver output stages to capture connected motor/actuator current draw
+        const drv = dstSpec.driverOrRegulatorSpec;
+        const outIfaces = dstSpec.interfaces.filter(
+          (i) => i.role === "power-output" || i.role === "power-bidirectional"
+        );
+        const quiescent = drv?.quiescentCurrentA ?? 0;
+        let hasConnectedDownstream = false;
+        for (const outIf of outIfaces) {
+          const outKey = `${conn.targetPartId}:${outIf.interfaceId}`;
+          if ((outgoingPowerBySourceKey.get(outKey)?.length ?? 0) > 0) {
+            hasConnectedDownstream = true;
+          }
+          const sub = computeRailLoad(conn.targetPartId, outIf.interfaceId, visitedEdges);
+          knownLoadA += sub.knownLoadA;
+          if (sub.hasUnknownLoad) hasUnknownLoad = true;
+          if (!sub.groundVerified) groundVerified = false;
+          for (const cid of sub.consumerPartIds) {
+            if (!consumerPartIds.includes(cid)) consumerPartIds.push(cid);
+          }
+        }
+        knownLoadA += quiescent;
+        if (!hasConnectedDownstream) {
+          const ownNominal = dstIface.currentSpec?.nominalA;
+          if (ownNominal !== undefined) {
+            knownLoadA += ownNominal;
+          } else if (drv?.quiescentCurrentA === undefined) {
+            hasUnknownLoad = true;
+          }
+        }
       } else {
-        // Direct leaf consumer (controller, sensor, motor, servo, motor-driver, actuator)
+        // Direct leaf consumer (controller, sensor, motor, servo, actuator)
         const cSpec = dstIface.currentSpec;
         const loadA = cSpec?.nominalA ?? cSpec?.maxContinuousA;
         if (loadA !== undefined) {
@@ -684,6 +832,37 @@ export function analyzePowerDistribution(params: {
     });
   }
 
+  // Propagate upstream error faults downstream along power edges so downstream consumers reflect faulted rails
+  const faultOriginReasonByPartId = new Map<string, string>();
+  const faultQueue: string[] = [];
+  for (const d of diagnostics) {
+    if (d.severity !== "error" || !d.partId) continue;
+    if (!faultOriginReasonByPartId.has(d.partId)) {
+      faultOriginReasonByPartId.set(d.partId, d.title);
+      faultQueue.push(d.partId);
+    }
+  }
+  while (faultQueue.length > 0) {
+    const faultNodeId = faultQueue.shift()!;
+    const reason = faultOriginReasonByPartId.get(faultNodeId)!;
+    const faultSpec = specsByPartId.get(faultNodeId);
+    if (!faultSpec) continue;
+    for (const outIf of faultSpec.interfaces) {
+      if (outIf.role !== "power-output" && outIf.role !== "power-bidirectional") continue;
+      const outConns =
+        outgoingPowerBySourceKey.get(`${faultNodeId}:${outIf.interfaceId}`) ?? [];
+      for (const conn of outConns) {
+        if (!faultOriginReasonByPartId.has(conn.targetPartId)) {
+          faultOriginReasonByPartId.set(
+            conn.targetPartId,
+            `Upstream power fault: ${reason}`
+          );
+          faultQueue.push(conn.targetPartId);
+        }
+      }
+    }
+  }
+
   // Build consumer energization & ground-state summary map
   const consumerStates: Record<string, ElectricalPowerRailConsumerState> = {};
   let ungroundedConsumerCount = 0;
@@ -706,11 +885,13 @@ export function analyzePowerDistribution(params: {
 
     if (missingGnd) ungroundedConsumerCount += 1;
 
-    const hasPathFault = diagnostics.some(
+    const directFault = diagnostics.find(
       (d) =>
         d.severity === "error" &&
         (d.partId === partId || d.relatedPartId === partId)
     );
+    const upstreamFaultReason = faultOriginReasonByPartId.get(partId);
+    const hasPathFault = Boolean(directFault || upstreamFaultReason);
 
     consumerStates[partId] = {
       partId,
@@ -723,6 +904,7 @@ export function analyzePowerDistribution(params: {
         : undefined,
       hasMissingGround: missingGnd,
       hasPathFault,
+      pathFaultReason: directFault?.title ?? upstreamFaultReason,
     };
   }
 

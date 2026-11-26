@@ -67,6 +67,7 @@ export class RobotControlController implements RobotControlApi {
   private programStatus: RobotProgramStatus = "idle";
   private routine: RobotControlRoutine | null = null;
   private target: NormalizedDriveTarget = NEUTRAL_NORMALIZED_TARGET;
+  private pausedTarget: NormalizedDriveTarget | null = null;
   private latestTimeSeconds = 0;
   private lastWarnings: readonly string[] = [];
   private commandLogCount = 0;
@@ -94,15 +95,20 @@ export class RobotControlController implements RobotControlApi {
     readonly robotConfig: SimulationRobotConfig;
     readonly parts?: readonly RobotPart[];
     readonly electricalConnections?: readonly ElectricalConnection[];
+    readonly trippedFuseIds?: readonly string[];
+    readonly isBatteryCutoff?: boolean;
   }): void {
     this.robotConfig = params.robotConfig;
     this.binding = resolveRobotHardwareBinding(params);
     this.sensorDescriptors = resolveRobotSensors({
       parts: params.parts ?? [],
       electricalConnections: params.electricalConnections,
+      trippedFuseIds: params.trippedFuseIds,
+      isBatteryCutoff: params.isBatteryCutoff,
     });
     if (!this.binding.canDrive) {
       this.target = NEUTRAL_NORMALIZED_TARGET;
+      this.pausedTarget = null;
     }
   }
 
@@ -248,7 +254,10 @@ export class RobotControlController implements RobotControlApi {
   }
 
   setControlSource(source: RobotControlSource): void {
-    if (source === "manual" && this.programStatus === "running") {
+    if (
+      source === "manual" &&
+      (this.programStatus === "running" || this.programStatus === "paused")
+    ) {
       this.stopProgram();
     }
     this.controlSource = source;
@@ -259,6 +268,7 @@ export class RobotControlController implements RobotControlApi {
   }
 
   setProgramRoutine(routine: RobotControlRoutine | null): void {
+    this.pausedTarget = null;
     if (this.programStatus === "running" || this.programStatus === "paused") {
       this.stopProgram();
     }
@@ -283,6 +293,8 @@ export class RobotControlController implements RobotControlApi {
     }
     this.controlSource = "program";
     this.programStatus = "running";
+    this.target = NEUTRAL_NORMALIZED_TARGET;
+    this.pausedTarget = null;
     this.lastError = null;
     this.executionTrace = null;
     try {
@@ -298,6 +310,7 @@ export class RobotControlController implements RobotControlApi {
     if (this.programStatus !== "running") {
       return false;
     }
+    this.pausedTarget = this.target;
     this.programStatus = "paused";
     this.stopRobot();
     if (this.executionTrace) {
@@ -323,6 +336,10 @@ export class RobotControlController implements RobotControlApi {
     }
     this.controlSource = "program";
     this.programStatus = "running";
+    if (this.pausedTarget) {
+      this.target = this.pausedTarget;
+      this.pausedTarget = null;
+    }
     this.lastError = null;
     try {
       this.routine.onResume?.(this);
@@ -368,9 +385,15 @@ export class RobotControlController implements RobotControlApi {
 
     try {
       if (wasIdle) {
+        this.target = NEUTRAL_NORMALIZED_TARGET;
+        this.pausedTarget = null;
         this.executionTrace = null;
         this.routine.onStart?.(this);
       } else if (!wasRunning) {
+        if (this.pausedTarget) {
+          this.target = this.pausedTarget;
+          this.pausedTarget = null;
+        }
         this.routine.onResume?.(this);
       }
 
@@ -408,6 +431,8 @@ export class RobotControlController implements RobotControlApi {
   stopProgram(): void {
     const wasActive =
       this.programStatus === "running" || this.programStatus === "paused";
+    const wasFault = this.programStatus === "fault";
+    this.pausedTarget = null;
     if (wasActive && this.routine?.onStop) {
       try {
         this.routine.onStop(this);
@@ -415,9 +440,11 @@ export class RobotControlController implements RobotControlApi {
         // Ignore user onStop cleanup exception while guaranteeing safe halt
       }
     }
-    this.programStatus = "stopped";
+    if (!wasFault) {
+      this.programStatus = "stopped";
+    }
     this.stopRobot();
-    if (this.executionTrace) {
+    if (this.executionTrace && !wasFault) {
       this.executionTrace = {
         ...this.executionTrace,
         activeInstructionId: null,
@@ -427,11 +454,14 @@ export class RobotControlController implements RobotControlApi {
   }
 
   completeProgram(): void {
+    this.pausedTarget = null;
     this.stopRobot();
     this.programStatus = "completed";
   }
 
   reset(): void {
+    this.pausedTarget = null;
+    this.controlSource = "manual";
     this.target = NEUTRAL_NORMALIZED_TARGET;
     this.latestTimeSeconds = 0;
     this.lastWarnings = [];
@@ -585,6 +615,7 @@ export class RobotControlController implements RobotControlApi {
     const message = error instanceof Error ? error.message : String(error);
     this.lastError = message;
     this.programStatus = "fault";
+    this.pausedTarget = null;
     this.target = NEUTRAL_NORMALIZED_TARGET;
     const prevTrace = this.executionTrace;
     const failedId = prevTrace?.activeInstructionId ?? null;

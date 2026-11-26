@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { useRobotStore } from "../../../store/robotStore";
 import { BUILTIN_CONTROL_ROUTINES } from "../data/builtInPrograms";
+import { resolveRobotSensors } from "./sensorResolver";
 import {
   createRectangularArena,
   createRectangularSurfaceZone,
@@ -283,5 +284,106 @@ describe("Phase 6.1: Sensor API & Sensor Simulation", () => {
     expect(finalControl.programStatus).toBe("completed");
     expect(finalControl.leftPower).toBe(0);
     expect(finalControl.rightPower).toBe(0);
+  });
+
+  it("handles default floor fallback without false line positives, respects mount yaw, and catches upstream/signal faults", () => {
+    const store = useRobotStore.getState();
+    const lineId = store.installElectricalCatalogueItem("elec-line-follower", {
+      position: [0, 0.02, 0],
+    })!;
+    // Rotate line sensor array 90 degrees so probes span along longitudinal X rather than lateral Z
+    useRobotStore
+      .getState()
+      .updatePartTransform(lineId, [0, 0.02, 0], [0, Math.PI / 2, 0]);
+
+    // Arena omitting explicit fallbackSurface (uses DEFAULT_GROUND_SURFACE id "steel") + strip at X in [0.005, 0.12]
+    const defaultFloorArena = createRectangularArena({
+      id: "default-floor-test",
+      name: "Default Steel Test",
+      lengthM: 6,
+      widthM: 6,
+      surfaceZones: [
+        createRectangularSurfaceZone({
+          id: "cross-line",
+          name: "Black Cross Strip",
+          bounds: { minX: 0.005, maxX: 0.12, minZ: -1.0, maxZ: 1.0 },
+          surface: "rubber-high-grip",
+          priority: 2,
+        }),
+      ],
+    });
+    const arenaWithoutFallbackProp = {
+      ...defaultFloorArena,
+      fallbackSurface: undefined,
+    };
+
+    // Pose off-strip first -> zero false line detection on default steel floor
+    const st0 = useRobotStore.getState();
+    const worldClear = SimulationWorld.fromAssembly({
+      parts: st0.parts,
+      connections: st0.connections,
+      drivetrain: st0.drivetrain,
+      foundation: st0.foundation,
+      arena: arenaWithoutFallbackProp,
+      initialPose: { x: -0.5, z: 0, heading: 0 },
+    }).world!;
+    expect(worldClear.getControlApi().readLineSensor(lineId).data?.detected).toBe(
+      false
+    );
+
+    // Move near strip edge: mounted yaw -PI/2 means half of the bar sits at -X (outside) and half at +X (inside strip)
+    const worldPartial = SimulationWorld.fromAssembly({
+      parts: st0.parts,
+      connections: st0.connections,
+      drivetrain: st0.drivetrain,
+      foundation: st0.foundation,
+      arena: arenaWithoutFallbackProp,
+      initialPose: { x: 0, z: 0, heading: 0 },
+    }).world!;
+    const partialRead = worldPartial.getControlApi().readLineSensor(lineId).data!;
+    expect(partialRead.detected).toBe(true);
+    expect(partialRead.channels.some((c) => !c)).toBe(true);
+    expect(partialRead.channels.some(Boolean)).toBe(true);
+
+    // Upstream regulator fault (4.8V AA -> 7805 dropout error -> Sonar) propagates to sensor readiness!
+    const aaId = useRobotStore.getState().installBattery("standard-lipo"); // Replace with low AA pack below
+    void aaId;
+    useRobotStore.getState().startNewBuild();
+    useRobotStore.getState().confirmFoundation();
+    const batAAId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-battery-pack-aa")!;
+    const reg7805Id = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-reg-7805")!;
+    const sonarId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-hcsr04-ultrasonic")!;
+    const addConn = useRobotStore.getState().addElectricalConnection;
+    addConn({
+      sourcePartId: batAAId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: reg7805Id,
+      targetInterfaceId: "elec-reg-7805-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: reg7805Id,
+      sourceInterfaceId: "elec-reg-7805-pwr-out",
+      targetPartId: sonarId,
+      targetInterfaceId: "elec-hcsr04-ultrasonic-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+
+    const faultSt = useRobotStore.getState();
+    const resolvedSensors = resolveRobotSensors({
+      parts: faultSt.parts,
+      electricalConnections: faultSt.electricalConnections,
+    });
+    const resolvedSonar = resolvedSensors.find((s) => s.sensorId === sonarId)!;
+    expect(resolvedSonar.availability).toBe("unavailable-electrical-fault");
+    expect(resolvedSonar.availabilityReason).toContain("dropout");
   });
 });

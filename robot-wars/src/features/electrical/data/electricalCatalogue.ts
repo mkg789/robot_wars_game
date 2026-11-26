@@ -1047,6 +1047,11 @@ export const electricalCatalogue: ElectricalCatalogueItem[] = [
         },
       ],
       connectors: [],
+      driverOrRegulatorSpec: {
+        powerRole: "fuse",
+        continuousCurrentPerChannelA: 20,
+        peakCurrentA: 20,
+      },
       assumptions: ["Interrupts continuous load above 20A nominal."],
       unknownFields: ["blowTimeCurve"],
       provenance: estimatedProv("ATO blade fuse"),

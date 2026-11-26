@@ -1,4 +1,4 @@
-import { Euler, Vector3 } from "three";
+import { Euler, Quaternion, Vector3 } from "three";
 import {
   getPartBoundingExtents,
   getPartBoxExtents,
@@ -590,9 +590,59 @@ export function hasAttachmentCycle(
   return false;
 }
 
+/** Composes parent and relative XYZ Euler rotations properly via Quaternion multiplication. */
+export function composeEulerRotations(
+  parentRotation: readonly [number, number, number],
+  relativeRotation: readonly [number, number, number]
+): [number, number, number] {
+  if (
+    Math.abs(parentRotation[0]) < 1e-12 &&
+    Math.abs(parentRotation[1]) < 1e-12 &&
+    Math.abs(parentRotation[2]) < 1e-12
+  ) {
+    return [relativeRotation[0], relativeRotation[1], relativeRotation[2]];
+  }
+  if (
+    Math.abs(relativeRotation[0]) < 1e-12 &&
+    Math.abs(relativeRotation[1]) < 1e-12 &&
+    Math.abs(relativeRotation[2]) < 1e-12
+  ) {
+    return [parentRotation[0], parentRotation[1], parentRotation[2]];
+  }
+  const qParent = new Quaternion().setFromEuler(
+    new Euler(parentRotation[0], parentRotation[1], parentRotation[2], "XYZ")
+  );
+  const qRel = new Quaternion().setFromEuler(
+    new Euler(
+      relativeRotation[0],
+      relativeRotation[1],
+      relativeRotation[2],
+      "XYZ"
+    )
+  );
+  const e = new Euler().setFromQuaternion(qParent.multiply(qRel), "XYZ");
+  return [e.x, e.y, e.z];
+}
+
+/** Computes child XYZ Euler rotation relative to parent via exact Quaternion inversion. */
+export function computeRelativeEulerRotation(
+  parentRotation: readonly [number, number, number],
+  worldRotation: readonly [number, number, number]
+): [number, number, number] {
+  const qParent = new Quaternion().setFromEuler(
+    new Euler(parentRotation[0], parentRotation[1], parentRotation[2], "XYZ")
+  );
+  const qWorld = new Quaternion().setFromEuler(
+    new Euler(worldRotation[0], worldRotation[1], worldRotation[2], "XYZ")
+  );
+  const qRel = qParent.invert().multiply(qWorld);
+  const e = new Euler().setFromQuaternion(qRel, "XYZ");
+  return [e.x, e.y, e.z];
+}
+
 /**
  * Computes relative & world transforms so that `childPart`'s mounting interface
- * rests flush at `parentPart`'s selected attachment interface.
+ * rests flush at `parentPart`'s selected attachment interface using quaternion rotation composition.
  */
 export function computeAttachedChildTransform(
   parentPart: RobotPart,
@@ -600,14 +650,22 @@ export function computeAttachedChildTransform(
   childPart: RobotPart,
   childInterface: AttachmentInterface
 ): AttachedTransformResult {
+  const qParentIface = new Quaternion().setFromEuler(
+    new Euler(...parentInterface.rotation, "XYZ")
+  );
+  const qChildIface = new Quaternion().setFromEuler(
+    new Euler(...childInterface.rotation, "XYZ")
+  );
+  const qRel = qParentIface.multiply(qChildIface.invert());
+  const relEuler = new Euler().setFromQuaternion(qRel, "XYZ");
   const relativeRotation: [number, number, number] = [
-    parentInterface.rotation[0] - childInterface.rotation[0],
-    parentInterface.rotation[1] - childInterface.rotation[1],
-    parentInterface.rotation[2] - childInterface.rotation[2],
+    relEuler.x,
+    relEuler.y,
+    relEuler.z,
   ];
 
-  const rotatedChildOffset = new Vector3(...childInterface.position).applyEuler(
-    new Euler(...relativeRotation, "XYZ")
+  const rotatedChildOffset = new Vector3(...childInterface.position).applyQuaternion(
+    qRel
   );
 
   const relativePosition: [number, number, number] = [
@@ -616,9 +674,9 @@ export function computeAttachedChildTransform(
     parentInterface.position[2] - rotatedChildOffset.z,
   ];
 
-  const worldOffset = new Vector3(...relativePosition).applyEuler(
-    new Euler(...(parentPart.rotation ?? [0, 0, 0]), "XYZ")
-  );
+  const parentRot = parentPart.rotation ?? [0, 0, 0];
+  const qParent = new Quaternion().setFromEuler(new Euler(...parentRot, "XYZ"));
+  const worldOffset = new Vector3(...relativePosition).applyQuaternion(qParent);
 
   const worldPosition: [number, number, number] = [
     parentPart.position[0] + worldOffset.x,
@@ -626,11 +684,7 @@ export function computeAttachedChildTransform(
     parentPart.position[2] + worldOffset.z,
   ];
 
-  const worldRotation: [number, number, number] = [
-    (parentPart.rotation?.[0] ?? 0) + relativeRotation[0],
-    (parentPart.rotation?.[1] ?? 0) + relativeRotation[1],
-    (parentPart.rotation?.[2] ?? 0) + relativeRotation[2],
-  ];
+  const worldRotation = composeEulerRotations(parentRot, relativeRotation);
 
   void childPart;
   return {
@@ -653,25 +707,18 @@ export function computeRelativeTransformBetweenParts(
   readonly relativePosition: [number, number, number];
   readonly relativeRotation: [number, number, number];
 } {
-  const parentEuler = new Euler(...(parentPart.rotation ?? [0, 0, 0]), "XYZ");
-  const inverseQuaternion = new Vector3(
+  const parentRot = parentPart.rotation ?? [0, 0, 0];
+  const qParentInv = new Quaternion()
+    .setFromEuler(new Euler(...parentRot, "XYZ"))
+    .invert();
+  const localPos = new Vector3(
     childWorldPosition[0] - parentPart.position[0],
     childWorldPosition[1] - parentPart.position[1],
     childWorldPosition[2] - parentPart.position[2]
-  ).applyEuler(
-    new Euler(-parentEuler.x, -parentEuler.y, -parentEuler.z, "ZYX")
-  );
+  ).applyQuaternion(qParentInv);
 
   return {
-    relativePosition: [
-      inverseQuaternion.x,
-      inverseQuaternion.y,
-      inverseQuaternion.z,
-    ],
-    relativeRotation: [
-      childWorldRotation[0] - (parentPart.rotation?.[0] ?? 0),
-      childWorldRotation[1] - (parentPart.rotation?.[1] ?? 0),
-      childWorldRotation[2] - (parentPart.rotation?.[2] ?? 0),
-    ],
+    relativePosition: [localPos.x, localPos.y, localPos.z],
+    relativeRotation: computeRelativeEulerRotation(parentRot, childWorldRotation),
   };
 }

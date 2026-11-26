@@ -51,6 +51,7 @@ export default function InstructionBlockCard({
   const isSkipped =
     !isActive &&
     !isFailed &&
+    !isCompleted &&
     trace.skippedInstructionIds.includes(instruction.id);
   const repeatProgress =
     instruction.kind === "repeat"

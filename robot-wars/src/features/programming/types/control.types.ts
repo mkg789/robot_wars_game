@@ -1,4 +1,4 @@
-import type { SimulationTelemetrySnapshot } from "../../simulation/types/simulationWorld.types";
+import type { SimulationTelemetrySnapshot } from "../../simulation/types/simulationTelemetry.types";
 import type {
   EncoderData,
   ImuData,

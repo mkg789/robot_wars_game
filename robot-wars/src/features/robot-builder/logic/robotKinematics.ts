@@ -20,8 +20,9 @@ import {
 import { resolveWheelDimensions } from "./geometryAdapters";
 import { resolveAssemblyMass } from "./massResolvers";
 import type { RobotStabilityProfile } from "./robotStability";
+import { STANDARD_GRAVITY_MPS2 } from "./robotConstants";
 
-export const STANDARD_GRAVITY_MPS2 = 9.80665;
+export { STANDARD_GRAVITY_MPS2 } from "./robotConstants";
 
 export type PushForceLimiter = "motor-torque" | "tire-traction" | "none";
 

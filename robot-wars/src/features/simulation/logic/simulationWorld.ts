@@ -37,6 +37,7 @@ import type {
   CollisionResponseResult,
   DrivetrainInput,
   DynamicsStepResult,
+  RuntimeElectricalState,
   SimulationAdvanceResult,
   SimulationRobotConfig,
   SimulationRunnerOptions,
@@ -70,9 +71,15 @@ import {
 import { compileSimulationConfig } from "./simulationConfigCompiler";
 import {
   advanceSimulation,
+  buildUpdatedElectricalState,
   createInitialRunnerState,
   DEFAULT_FIXED_TIMESTEP_SECONDS,
+  DEFAULT_MAX_SUB_STEPS,
+  resetSimulationFuses,
+  setSimulationSwitchState,
+  stepSimulationFixed,
 } from "./simulationRunner";
+import { calculateBatteryOperatingPoint } from "./batteryDynamics";
 
 /**
  * Default maximum frame delta passed into advanceSimulation per render tick (100 ms)
@@ -276,7 +283,8 @@ export function buildCollisionSnapshot(
 export function buildTelemetrySnapshot(
   lifecycleStatus: SimulationLifecycleStatus,
   state: SimulationState,
-  collision: SimulationCollisionSnapshot
+  collision: SimulationCollisionSnapshot,
+  electricalState?: RuntimeElectricalState
 ): SimulationTelemetrySnapshot {
   const radToDeg = 180 / Math.PI;
   return {
@@ -296,6 +304,7 @@ export function buildTelemetrySnapshot(
     batteryTerminalVoltageV: state.batteryTerminalVoltageV,
     totalCurrentDrawA: state.totalCurrentDrawA,
     isBatteryCutoff: Boolean(state.isBatteryCutoff),
+    ...(electricalState && { electricalState }),
     collision,
   };
 }
@@ -348,6 +357,9 @@ export class SimulationWorld {
   private lastError: string | null = null;
   private readonly listeners = new Set<SimulationWorldListener>();
   private readonly controlController: RobotControlController;
+  private readonly baseParts: readonly RobotPart[];
+  private readonly electricalConnections: readonly ElectricalConnection[];
+  private pausedByWorld = false;
   private encoderAccumulator: EncoderAccumulatorState = {
     leftRadians: 0,
     rightRadians: 0,
@@ -398,6 +410,8 @@ export class SimulationWorld {
 
     this.robotConfig = options.robotConfig;
     this.arena = options.arena;
+    this.baseParts = options.parts ?? [];
+    this.electricalConnections = options.electricalConnections ?? [];
     this.preferredInitialPose = options.initialPose
       ? {
           x: options.initialPose.x,
@@ -427,11 +441,60 @@ export class SimulationWorld {
       arena: this.arena,
       simState: this.runnerState.simulationState,
     });
+    this.syncRuntimeElectricalContext();
     this.controlController.updateSensorContext({
       arena: this.arena,
       simState: this.runnerState.simulationState,
       encoderAccumulator: this.encoderAccumulator,
     });
+  }
+
+  private syncRuntimeElectricalContext(): void {
+    const elecState = this.runnerState.electricalState;
+    const switchStates = elecState?.switchStates;
+    const effectiveParts =
+      switchStates && this.baseParts.length > 0
+        ? this.baseParts.map((part) => {
+            const runtimeClosed = switchStates[part.id];
+            if (runtimeClosed === undefined) return part;
+            return {
+              ...part,
+              electricalState: {
+                ...part.electricalState,
+                switchClosed: runtimeClosed,
+              },
+            };
+          })
+        : this.baseParts;
+
+    this.controlController.updateHardwareContext({
+      robotConfig: this.robotConfig,
+      parts: effectiveParts,
+      electricalConnections: this.electricalConnections,
+      trippedFuseIds: elecState?.trippedFuseIds,
+      isBatteryCutoff: this.runnerState.isCutoff,
+    });
+  }
+
+  private didElectricalStatusChange(
+    prevTripped: readonly string[] | undefined,
+    prevCutoff: boolean
+  ): boolean {
+    if (prevCutoff !== this.runnerState.isCutoff) {
+      return true;
+    }
+    const nextTripped = this.runnerState.electricalState?.trippedFuseIds;
+    const prevLen = prevTripped?.length ?? 0;
+    const nextLen = nextTripped?.length ?? 0;
+    if (prevLen !== nextLen) {
+      return true;
+    }
+    if (prevLen > 0 && prevTripped && nextTripped) {
+      for (let i = 0; i < prevLen; i++) {
+        if (prevTripped[i] !== nextTripped[i]) return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -455,6 +518,7 @@ export class SimulationWorld {
       connections: params.connections,
       drivetrain: params.drivetrain,
       foundation: params.foundation,
+      electricalConnections: params.electricalConnections,
     });
 
     if (!compilation.success || !compilation.config) {
@@ -584,8 +648,43 @@ export class SimulationWorld {
     return buildTelemetrySnapshot(
       this.lifecycleStatus,
       this.runnerState.simulationState,
-      this.latestCollision
+      this.latestCollision,
+      this.runnerState.electricalState
     );
+  }
+
+  getElectricalState(): RuntimeElectricalState | undefined {
+    return this.runnerState.electricalState;
+  }
+
+  /**
+   * Toggles a runtime power switch inside this simulation session (without requiring full rebuild).
+   */
+  setSwitchState(partId: string, isClosed: boolean): void {
+    this.runnerState = setSimulationSwitchState(
+      this.runnerState,
+      partId,
+      isClosed,
+      this.robotConfig,
+      this.runnerOptions
+    );
+    this.syncRuntimeElectricalContext();
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+  }
+
+  /**
+   * Clears runtime-tripped overcurrent fuses inside this simulation session.
+   */
+  resetFuses(): void {
+    this.runnerState = resetSimulationFuses(
+      this.runnerState,
+      this.robotConfig,
+      this.runnerOptions
+    );
+    this.syncRuntimeElectricalContext();
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
   }
 
   getDiagnostics(): SimulationWorldDiagnostics {
@@ -612,6 +711,7 @@ export class SimulationWorld {
   }
 
   setProgramRoutine(routine: RobotControlRoutine | null): void {
+    this.pausedByWorld = false;
     this.controlController.setProgramRoutine(routine);
     this.activeInput = this.controlController.getDrivetrainInput();
     this.notify();
@@ -619,6 +719,7 @@ export class SimulationWorld {
 
   startProgram(): boolean {
     if (this.lifecycleStatus === "error") return false;
+    this.pausedByWorld = false;
     this.activeControls = NEUTRAL_DRIVE_CONTROLS;
     const started = this.controlController.startProgram();
     this.activeInput = this.controlController.getDrivetrainInput();
@@ -630,6 +731,7 @@ export class SimulationWorld {
   }
 
   pauseProgram(): boolean {
+    this.pausedByWorld = false;
     const paused = this.controlController.pauseProgram();
     this.activeControls = NEUTRAL_DRIVE_CONTROLS;
     this.activeInput = NEUTRAL_DRIVETRAIN_INPUT;
@@ -639,6 +741,7 @@ export class SimulationWorld {
 
   resumeProgram(): boolean {
     if (this.lifecycleStatus === "error") return false;
+    this.pausedByWorld = false;
     this.activeControls = NEUTRAL_DRIVE_CONTROLS;
     const resumed = this.controlController.resumeProgram();
     this.activeInput = this.controlController.getDrivetrainInput();
@@ -661,6 +764,10 @@ export class SimulationWorld {
 
     const clampedDelta = Math.min(stepDtSeconds, this.maxFrameDeltaSeconds);
     try {
+      this.pausedByWorld = false;
+      if (this.lifecycleStatus === "running") {
+        this.lifecycleStatus = "paused";
+      }
       this.activeControls = NEUTRAL_DRIVE_CONTROLS;
       const stepInput = this.controlController.stepProgramInstruction(
         this.getTelemetrySnapshot(),
@@ -680,6 +787,7 @@ export class SimulationWorld {
   }
 
   stopProgram(): void {
+    this.pausedByWorld = false;
     this.controlController.stopProgram();
     this.activeControls = NEUTRAL_DRIVE_CONTROLS;
     this.activeInput = NEUTRAL_DRIVETRAIN_INPUT;
@@ -687,6 +795,7 @@ export class SimulationWorld {
   }
 
   setManualControlMode(): void {
+    this.pausedByWorld = false;
     this.controlController.setControlSource("manual");
     this.activeInput = this.controlController.getDrivetrainInput();
     this.notify();
@@ -696,6 +805,20 @@ export class SimulationWorld {
     target: MotorChannelTarget,
     power: number
   ): CommandNormalizationResult {
+    if (this.lifecycleStatus === "error") {
+      return {
+        accepted: false,
+        leftPower: 0,
+        rightPower: 0,
+        clamped: false,
+        warnings: ["Simulation is in error state; reset before issuing motor commands."],
+      };
+    }
+    this.pausedByWorld = false;
+    const progStatus = this.controlController.getState().programStatus;
+    if (progStatus === "running" || progStatus === "paused") {
+      this.controlController.stopProgram();
+    }
     if (this.controlController.getControlSource() === "manual") {
       this.controlController.setControlSource("program");
     }
@@ -722,7 +845,11 @@ export class SimulationWorld {
   }
 
   start(): void {
-    if (this.lifecycleStatus === "error") {
+    if (this.lifecycleStatus === "error" || this.lifecycleStatus === "running") {
+      return;
+    }
+    if (this.lifecycleStatus === "paused") {
+      this.resume();
       return;
     }
     this.lifecycleStatus = "running";
@@ -733,7 +860,15 @@ export class SimulationWorld {
     if (this.lifecycleStatus !== "running") {
       return;
     }
-    this.clearInputs();
+    if (this.controlController.getState().programStatus === "running") {
+      this.controlController.pauseProgram();
+      this.pausedByWorld = true;
+      this.activeControls = NEUTRAL_DRIVE_CONTROLS;
+      this.activeInput = NEUTRAL_DRIVETRAIN_INPUT;
+    } else {
+      this.pausedByWorld = false;
+      this.clearInputs();
+    }
     this.lifecycleStatus = "paused";
     this.notify();
   }
@@ -741,6 +876,11 @@ export class SimulationWorld {
   resume(): void {
     if (this.lifecycleStatus !== "paused") {
       return;
+    }
+    if (this.pausedByWorld) {
+      this.pausedByWorld = false;
+      this.controlController.resumeProgram();
+      this.activeInput = this.controlController.getDrivetrainInput();
     }
     this.lifecycleStatus = "running";
     this.notify();
@@ -751,6 +891,7 @@ export class SimulationWorld {
    * and collision diagnostics cleanly and deterministically.
    */
   reset(): void {
+    this.pausedByWorld = false;
     this.encoderAccumulator = {
       leftRadians: 0,
       rightRadians: 0,
@@ -764,6 +905,7 @@ export class SimulationWorld {
       this.resolvedInitialPose,
       this.runnerOptions
     );
+    this.syncRuntimeElectricalContext();
     this.controlController.updateSensorContext({
       arena: this.arena,
       simState: this.runnerState.simulationState,
@@ -802,6 +944,10 @@ export class SimulationWorld {
   }
 
   setDriveControls(controls: Partial<SimulationDriveControls>): void {
+    if (this.lifecycleStatus === "error") {
+      return;
+    }
+    this.pausedByWorld = false;
     this.controlController.setControlSource("manual");
     const next: SimulationDriveControls = {
       forward: Boolean(controls.forward ?? this.activeControls.forward),
@@ -824,22 +970,13 @@ export class SimulationWorld {
     this.activeInput = NEUTRAL_DRIVETRAIN_INPUT;
   }
 
-  private integratePhysicsStep(
-    input: DrivetrainInput,
-    clampedDelta: number
-  ): SimulationAdvanceResult {
-    const result = advanceSimulation(
-      this.robotConfig,
-      this.runnerState,
-      input,
-      clampedDelta,
-      this.runnerOptions
-    );
-
-    this.runnerState = result.runnerState;
-
-    if (result.stepDiagnostics.length > 0) {
-      for (const step of result.stepDiagnostics) {
+  private recordStepDiagnostics(
+    steps: readonly DynamicsStepResult[],
+    prevTripped: readonly string[] | undefined,
+    prevCutoff: boolean
+  ): void {
+    if (steps.length > 0) {
+      for (const step of steps) {
         const stepDt = step.diagnostics.timestepSeconds;
         this.encoderAccumulator = {
           leftRadians:
@@ -857,12 +994,12 @@ export class SimulationWorld {
         };
       }
 
-      const lastStep = result.stepDiagnostics[result.stepDiagnostics.length - 1];
+      const lastStep = steps[steps.length - 1];
       this.latestStepDiagnostics = lastStep;
       let collidingStep: DynamicsStepResult | undefined;
-      for (let i = result.stepDiagnostics.length - 1; i >= 0; i--) {
-        if (result.stepDiagnostics[i].collisionResponse?.hasCollisions) {
-          collidingStep = result.stepDiagnostics[i];
+      for (let i = steps.length - 1; i >= 0; i--) {
+        if (steps[i].collisionResponse?.hasCollisions) {
+          collidingStep = steps[i];
           break;
         }
       }
@@ -871,17 +1008,41 @@ export class SimulationWorld {
       );
     }
 
+    if (this.didElectricalStatusChange(prevTripped, prevCutoff)) {
+      this.syncRuntimeElectricalContext();
+    }
+
     this.controlController.updateSensorContext({
       arena: this.arena,
       simState: this.runnerState.simulationState,
       encoderAccumulator: this.encoderAccumulator,
     });
+  }
+
+  private integratePhysicsStep(
+    input: DrivetrainInput,
+    clampedDelta: number
+  ): SimulationAdvanceResult {
+    const prevTripped = this.runnerState.electricalState?.trippedFuseIds;
+    const prevCutoff = this.runnerState.isCutoff;
+    const result = advanceSimulation(
+      this.robotConfig,
+      this.runnerState,
+      input,
+      clampedDelta,
+      this.runnerOptions
+    );
+
+    this.runnerState = result.runnerState;
+    this.recordStepDiagnostics(result.stepDiagnostics, prevTripped, prevCutoff);
 
     return result;
   }
 
   /**
    * Advances simulation physics via advanceSimulation using the configured fixed timestep.
+   * When an autonomous/visual program is actively running, steps program logic at the exact
+   * fixed physics timestep so timed blocks and sensor checks remain frame-rate independent.
    * No-ops when paused, ready, or in error state.
    */
   stepFrame(frameDeltaSeconds: number): SimulationAdvanceResult | null {
@@ -895,11 +1056,109 @@ export class SimulationWorld {
     const clampedDelta = Math.min(frameDeltaSeconds, this.maxFrameDeltaSeconds);
 
     try {
-      this.activeInput = this.controlController.beforePhysicsStep(
-        this.getTelemetrySnapshot(),
-        clampedDelta
+      const ctrlState = this.controlController.getState();
+      const isProgramActivelyRunning =
+        ctrlState.controlSource !== "manual" && ctrlState.programStatus === "running";
+
+      if (!isProgramActivelyRunning) {
+        this.activeInput = this.controlController.beforePhysicsStep(
+          this.getTelemetrySnapshot(),
+          clampedDelta
+        );
+        return this.integratePhysicsStep(this.activeInput, clampedDelta);
+      }
+
+      const fixedTimestep =
+        this.runnerOptions.fixedTimestepSeconds ?? DEFAULT_FIXED_TIMESTEP_SECONDS;
+      const maxSubSteps = this.runnerOptions.maxSubSteps ?? DEFAULT_MAX_SUB_STEPS;
+      let accumulator = this.runnerState.accumulatorSeconds + clampedDelta;
+      const stepThreshold = fixedTimestep - 1e-9;
+      let stepsExecuted = 0;
+      const stepDiagnostics: DynamicsStepResult[] = [];
+      let latestBatteryDiag = calculateBatteryOperatingPoint(
+        this.robotConfig,
+        this.runnerState.simulationState,
+        this.activeInput,
+        this.runnerOptions.battery,
+        this.runnerState.isCutoff,
+        this.runnerState.electricalState
+          ? {
+              switchStates: this.runnerState.electricalState.switchStates,
+              trippedFuseIds: this.runnerState.electricalState.trippedFuseIds,
+            }
+          : undefined
       );
-      return this.integratePhysicsStep(this.activeInput, clampedDelta);
+
+      while (accumulator >= stepThreshold && stepsExecuted < maxSubSteps) {
+        const prevTripped = this.runnerState.electricalState?.trippedFuseIds;
+        const prevCutoff = this.runnerState.isCutoff;
+        this.activeInput = this.controlController.beforePhysicsStep(
+          this.getTelemetrySnapshot(),
+          fixedTimestep
+        );
+        const elecControl = this.runnerState.electricalState
+          ? {
+              switchStates: this.runnerState.electricalState.switchStates,
+              trippedFuseIds: this.runnerState.electricalState.trippedFuseIds,
+            }
+          : undefined;
+        const stepRes = stepSimulationFixed(
+          this.robotConfig,
+          this.runnerState.simulationState,
+          this.activeInput,
+          fixedTimestep,
+          this.runnerOptions,
+          this.runnerState.isCutoff,
+          elecControl
+        );
+
+        latestBatteryDiag = stepRes.batteryDiagnostics;
+        const updatedElec = buildUpdatedElectricalState(
+          this.runnerState.electricalState,
+          latestBatteryDiag
+        );
+        this.runnerState = {
+          simulationState: stepRes.state,
+          accumulatorSeconds: accumulator - fixedTimestep,
+          isCutoff: stepRes.isCutoff,
+          totalSimulatedTimeSeconds:
+            this.runnerState.totalSimulatedTimeSeconds + fixedTimestep,
+          totalPhysicsSteps: this.runnerState.totalPhysicsSteps + 1,
+          ...(updatedElec && { electricalState: updatedElec }),
+        };
+        stepDiagnostics.push(stepRes.diagnostics);
+        this.recordStepDiagnostics(
+          [stepRes.diagnostics],
+          prevTripped,
+          prevCutoff
+        );
+
+        accumulator -= fixedTimestep;
+        stepsExecuted++;
+      }
+
+      if (accumulator < 1e-9) {
+        accumulator = 0;
+      }
+
+      if (this.runnerState.accumulatorSeconds !== accumulator) {
+        this.runnerState = {
+          ...this.runnerState,
+          accumulatorSeconds: accumulator,
+        };
+      }
+
+      const timeAdvancedSeconds = stepsExecuted * fixedTimestep;
+      return {
+        runnerState: this.runnerState,
+        durationRequestedSeconds: clampedDelta,
+        timeAdvancedSeconds,
+        stepsExecuted,
+        fixedTimestepSeconds: fixedTimestep,
+        accumulatorRemainderSeconds: accumulator,
+        batteryDiagnostics: latestBatteryDiag,
+        stepDiagnostics,
+      };
     } catch (error) {
       this.clearInputs();
       this.lastError = error instanceof Error ? error.message : String(error);

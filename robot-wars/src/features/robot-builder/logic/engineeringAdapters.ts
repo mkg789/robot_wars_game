@@ -66,32 +66,81 @@ export function resolveMotorEngineeringSpec(
     part.engineeringSpec?.category === "motor" ? part.engineeringSpec : undefined;
   const catSpec = catItem?.engineeringSpec;
 
-  // Electrical specs resolution
+  // Electrical specs resolution (prefers runtime engineeringSpec, catalogue, legacy part.electrical, or attached electricalSpec.motorSpec)
+  const elecMotorSpec = part.electricalSpec?.motorSpec;
   const nominalVoltageV =
     runtimeSpec?.electrical?.nominalVoltageV ??
     catSpec?.electrical?.nominalVoltageV ??
-    part.electrical?.nominalVoltageV;
+    part.electrical?.nominalVoltageV ??
+    elecMotorSpec?.nominalVoltageV;
 
   const minVoltageV =
-    runtimeSpec?.electrical?.minVoltageV ?? catSpec?.electrical?.minVoltageV;
+    runtimeSpec?.electrical?.minVoltageV ??
+    catSpec?.electrical?.minVoltageV ??
+    elecMotorSpec?.minVoltageV;
   const maxVoltageV =
-    runtimeSpec?.electrical?.maxVoltageV ?? catSpec?.electrical?.maxVoltageV;
+    runtimeSpec?.electrical?.maxVoltageV ??
+    catSpec?.electrical?.maxVoltageV ??
+    elecMotorSpec?.maxVoltageV;
   const noLoadCurrentA =
-    runtimeSpec?.electrical?.noLoadCurrentA ?? catSpec?.electrical?.noLoadCurrentA;
+    runtimeSpec?.electrical?.noLoadCurrentA ??
+    catSpec?.electrical?.noLoadCurrentA ??
+    elecMotorSpec?.noLoadCurrentA;
   const ratedCurrentA =
-    runtimeSpec?.electrical?.ratedCurrentA ?? catSpec?.electrical?.ratedCurrentA;
+    runtimeSpec?.electrical?.ratedCurrentA ??
+    catSpec?.electrical?.ratedCurrentA ??
+    elecMotorSpec?.ratedCurrentA;
   const stallCurrentA =
-    runtimeSpec?.electrical?.stallCurrentA ?? catSpec?.electrical?.stallCurrentA;
+    runtimeSpec?.electrical?.stallCurrentA ??
+    catSpec?.electrical?.stallCurrentA ??
+    elecMotorSpec?.stallCurrentA;
   const terminalResistanceOhm =
     runtimeSpec?.electrical?.terminalResistanceOhm ??
     catSpec?.electrical?.terminalResistanceOhm;
+
+  const elecSpecProv: ProvenanceMeta | undefined =
+    elecMotorSpec !== undefined && part.electricalSpec
+      ? (() => {
+          const p = part.electricalSpec.provenance;
+          if (p.method === "datasheet") {
+            return {
+              method: "datasheet" as const,
+              verified: "verified" in p ? Boolean(p.verified) : false,
+              source: "source" in p && p.source ? p.source : "electricalSpec",
+              ...(p.notes && { notes: p.notes }),
+            };
+          }
+          if (p.method === "estimated") {
+            return {
+              method: "estimated" as const,
+              basis:
+                "basis" in p && p.basis
+                  ? p.basis
+                  : "Adapted from part.electricalSpec.motorSpec",
+              ...(p.notes && { notes: p.notes }),
+            };
+          }
+          if (p.method === "user-supplied") {
+            return {
+              method: "measured" as const,
+              verified: false,
+              source: "user-supplied",
+              ...(p.notes && { notes: p.notes }),
+            };
+          }
+          return {
+            method: "unknown" as const,
+            ...(p.notes && { notes: p.notes }),
+          };
+        })()
+      : undefined;
 
   const electricalProvenance: ProvenanceMeta | undefined =
     runtimeSpec?.electrical?.provenance ??
     catSpec?.electrical?.provenance ??
     (part.electrical?.nominalVoltageV !== undefined
       ? { method: "datasheet", verified: false, source: "legacy:part.electrical" }
-      : undefined);
+      : elecSpecProv);
 
   const hasElectrical =
     nominalVoltageV !== undefined ||
@@ -347,6 +396,8 @@ export function resolveBatteryEngineeringSpec(
     part.engineeringSpec?.category === "battery" ? part.engineeringSpec : undefined;
   const catSpec = catItem?.engineeringSpec;
 
+  const elecBatSpec = part.electricalSpec?.batterySpec;
+
   const chemistry: BatteryChemistryType | undefined =
     runtimeSpec?.chemistry ??
     catSpec?.chemistry ??
@@ -356,6 +407,7 @@ export function resolveBatteryEngineeringSpec(
     runtimeSpec?.electrical?.nominalVoltageV ??
     catSpec?.electrical?.nominalVoltageV ??
     part.electrical?.nominalVoltageV ??
+    elecBatSpec?.nominalVoltageV ??
     catItem?.electrical?.nominalVoltageV ??
     catItem?.voltage;
 
@@ -363,28 +415,42 @@ export function resolveBatteryEngineeringSpec(
     runtimeSpec?.electrical?.capacityMah ??
     catSpec?.electrical?.capacityMah ??
     part.electrical?.capacityMah ??
+    elecBatSpec?.capacityMah ??
     catItem?.electrical?.capacityMah ??
     catItem?.capacityMah;
 
   const fullyChargedVoltageV =
     runtimeSpec?.electrical?.fullyChargedVoltageV ??
-    catSpec?.electrical?.fullyChargedVoltageV;
+    catSpec?.electrical?.fullyChargedVoltageV ??
+    elecBatSpec?.maxVoltageV;
 
   const cutoffVoltageV =
     runtimeSpec?.electrical?.cutoffVoltageV ??
-    catSpec?.electrical?.cutoffVoltageV;
+    catSpec?.electrical?.cutoffVoltageV ??
+    elecBatSpec?.minOperatingVoltageV;
 
   const continuousDischargeC =
     runtimeSpec?.electrical?.continuousDischargeC ??
-    catSpec?.electrical?.continuousDischargeC;
+    catSpec?.electrical?.continuousDischargeC ??
+    (elecBatSpec?.maxContinuousDischargeA !== undefined &&
+    capacityMah !== undefined &&
+    capacityMah > 0
+      ? elecBatSpec.maxContinuousDischargeA / (capacityMah / 1000)
+      : undefined);
 
   const burstDischargeC =
     runtimeSpec?.electrical?.burstDischargeC ??
-    catSpec?.electrical?.burstDischargeC;
+    catSpec?.electrical?.burstDischargeC ??
+    (elecBatSpec?.peakDischargeA !== undefined &&
+    capacityMah !== undefined &&
+    capacityMah > 0
+      ? elecBatSpec.peakDischargeA / (capacityMah / 1000)
+      : undefined);
 
   const internalResistanceOhm =
     runtimeSpec?.electrical?.internalResistanceOhm ??
-    catSpec?.electrical?.internalResistanceOhm;
+    catSpec?.electrical?.internalResistanceOhm ??
+    elecBatSpec?.internalResistanceOhm;
 
   const electricalProvenance: ProvenanceMeta | undefined =
     runtimeSpec?.electrical?.provenance ??

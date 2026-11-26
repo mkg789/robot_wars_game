@@ -65,8 +65,16 @@ export function resolveRobotHardwareBinding(params: {
   readonly robotConfig: SimulationRobotConfig;
   readonly parts?: readonly RobotPart[];
   readonly electricalConnections?: readonly ElectricalConnection[];
+  readonly trippedFuseIds?: readonly string[];
+  readonly isBatteryCutoff?: boolean;
 }): MotorHardwareBinding {
-  const { robotConfig, parts = [], electricalConnections = [] } = params;
+  const {
+    robotConfig,
+    parts = [],
+    electricalConnections = [],
+    trippedFuseIds,
+    isBatteryCutoff = false,
+  } = params;
 
   const leftMotorIds = (robotConfig.motors ?? [])
     .filter((m) => m.side === "left")
@@ -85,6 +93,19 @@ export function resolveRobotHardwareBinding(params: {
     warnings.push("No right drive motors bound in drivetrain configuration.");
   }
 
+  if (isBatteryCutoff) {
+    return {
+      leftMotorIds,
+      rightMotorIds,
+      hasLeftMotors,
+      hasRightMotors,
+      canDrive: false,
+      electricalMode: "electrical-fault",
+      faultReason: "Battery low-voltage cutoff active.",
+      warnings,
+    };
+  }
+
   if (parts.length === 0 || electricalConnections.length === 0) {
     return {
       leftMotorIds,
@@ -100,6 +121,7 @@ export function resolveRobotHardwareBinding(params: {
   const report = validateElectricalAssembly({
     parts,
     electricalConnections,
+    trippedFuseIds,
   });
 
   for (const diag of report.diagnostics) {
@@ -109,30 +131,52 @@ export function resolveRobotHardwareBinding(params: {
   }
 
   const allMotorIds = new Set([...leftMotorIds, ...rightMotorIds]);
-  const motorErrorDiag = report.diagnostics.find(
-    (d) =>
-      d.severity === "error" &&
-      ((d.partId && allMotorIds.has(d.partId)) ||
-        (d.relatedPartId && allMotorIds.has(d.relatedPartId)) ||
-        d.code === "voltage-mismatch" ||
-        d.code === "pass-through-overvoltage" ||
-        d.code === "missing-component")
+  const isMotorErrorDiag = (d: (typeof report.diagnostics)[number]) =>
+    d.severity === "error" &&
+    ((d.partId && allMotorIds.has(d.partId)) ||
+      (d.relatedPartId && allMotorIds.has(d.relatedPartId)) ||
+      d.code === "missing-component");
+
+  const motorErrorDiag = report.diagnostics.find(isMotorErrorDiag);
+
+  const motorStatesList = [...allMotorIds].map((motorId) => ({
+    motorId,
+    state: report.powerAnalysis?.consumerStates[motorId],
+    directError: report.diagnostics.find(
+      (d) =>
+        d.severity === "error" &&
+        (d.partId === motorId || d.relatedPartId === motorId)
+    ),
+  }));
+
+  const healthyMotors = motorStatesList.filter(
+    ({ state, directError }) =>
+      !directError && Boolean(state && state.energized && !state.hasPathFault)
+  );
+  const faultedOrUnpoweredMotors = motorStatesList.filter(
+    ({ state, directError }) =>
+      Boolean(directError) || !state || !state.energized || state.hasPathFault
   );
 
-  // Check if any wired motor sits on an explicitly unfed/unpowered branch
-  const unpoweredWiredMotorId = [...allMotorIds].find((motorId) => {
-    const isWired = electricalConnections.some(
-      (c) => c.sourcePartId === motorId || c.targetPartId === motorId
-    );
-    if (!isWired) return false;
-    const state = report.powerAnalysis?.consumerStates[motorId];
-    return Boolean(state && !state.energized);
-  });
+  // Branch-local isolation: only block driving completely when ZERO bound drive motors are healthy
+  // or a fatal missing-component error compromises the assembly. If one motor branch stays healthy,
+  // allow actuation with explicit branch warnings while physics zeroes unpowered/faulted motors.
+  const hasGlobalMissingComponentError = report.diagnostics.some(
+    (d) => d.severity === "error" && d.code === "missing-component"
+  );
 
-  if (motorErrorDiag || unpoweredWiredMotorId) {
+  if (
+    hasGlobalMissingComponentError ||
+    (motorStatesList.length > 0 && healthyMotors.length === 0)
+  ) {
+    const firstFault = faultedOrUnpoweredMotors[0];
     const reason =
       motorErrorDiag?.title ??
-      `Drive motor "${unpoweredWiredMotorId}" is wired to an unpowered branch.`;
+      firstFault?.directError?.title ??
+      (firstFault?.state?.hasPathFault
+        ? firstFault.state.pathFaultReason ??
+          `Drive motor "${firstFault.motorId}" has an electrical path fault.`
+        : `Drive motor "${firstFault?.motorId}" has no energized power supply path in electrical wiring.`);
     return {
       leftMotorIds,
       rightMotorIds,
@@ -143,6 +187,14 @@ export function resolveRobotHardwareBinding(params: {
       faultReason: reason,
       warnings,
     };
+  }
+
+  for (const degraded of faultedOrUnpoweredMotors) {
+    warnings.push(
+      degraded.directError?.title ??
+        degraded.state?.pathFaultReason ??
+        `Drive motor "${degraded.motorId}" branch is currently unpowered or faulted; remaining healthy motors stay active.`
+    );
   }
 
   return {

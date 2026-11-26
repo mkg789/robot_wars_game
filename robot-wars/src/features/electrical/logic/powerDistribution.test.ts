@@ -312,4 +312,117 @@ describe("Phase 5.3: Power Distribution & Voltage Regulation", () => {
     expect(analysis.ungroundedConsumerCount).toBeGreaterThanOrEqual(4);
     expect(analysis.consumerStates[servo1].hasMissingGround).toBe(true);
   });
+
+  it("detects pass-through undervoltage sag/errors, propagates upstream regulator faults, and aggregates motor-driver loads recursively", () => {
+    const store = useRobotStore.getState();
+    const bat2sId = store.installElectricalCatalogueItem("elec-lipo-2s")!; // 6.0-8.4V
+    const pdbId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-pdb-xt60")!;
+    const ctrlId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-arduino-uno")!; // VIN min 7V max 12V -> 2S min 6V causes partial sag warning!
+    const driverId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-l298n-hbridge")!;
+    const motorId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-dc-motor-actuator")!; // 1.4A nominal
+
+    const addConn = useRobotStore.getState().addElectricalConnection;
+    addConn({
+      sourcePartId: bat2sId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: pdbId,
+      targetInterfaceId: "pdb-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: pdbId,
+      sourceInterfaceId: "pdb-bus-out",
+      targetPartId: ctrlId,
+      targetInterfaceId: "ctrl-power-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: pdbId,
+      sourceInterfaceId: "pdb-bus-out",
+      targetPartId: driverId,
+      targetInterfaceId: "l298n-vm-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: driverId,
+      sourceInterfaceId: "l298n-motor-out",
+      targetPartId: motorId,
+      targetInterfaceId: "motor-drive-input",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+
+    const st = useRobotStore.getState();
+    const report = validateElectricalAssembly({
+      parts: st.parts,
+      electricalConnections: st.electricalConnections,
+    });
+
+    // Pass-through partial undervoltage sag warning fires for Arduino Uno fed by 2S LiPo via PDB
+    expect(
+      report.diagnostics.some(
+        (d) =>
+          d.code === "voltage-mismatch" &&
+          d.severity === "warning" &&
+          d.partId === ctrlId &&
+          d.id === `pwr-pt-uv-sag-${ctrlId}`
+      )
+    ).toBe(true);
+
+    // Battery and PDB aggregate motor load (1.4A) recursively through the L298N motor-driver
+    const batRail = report.powerAnalysis!.rails.find((r) => r.sourcePartId === bat2sId)!;
+    expect(batRail.totalKnownLoadA).toBeGreaterThanOrEqual(1.4);
+    expect(batRail.consumerPartIds).toContain(motorId);
+
+    // Separate upstream regulator fault (AA 4.8V -> 7805 dropout) propagates `hasPathFault` to downstream sonar
+    useRobotStore.getState().startNewBuild();
+    useRobotStore.getState().confirmFoundation();
+    const batAAId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-battery-pack-aa")!;
+    const reg7805Id = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-reg-7805")!;
+    const sonarId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-hcsr04-ultrasonic")!;
+    const addConn2 = useRobotStore.getState().addElectricalConnection;
+    addConn2({
+      sourcePartId: batAAId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: reg7805Id,
+      targetInterfaceId: "elec-reg-7805-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn2({
+      sourcePartId: reg7805Id,
+      sourceInterfaceId: "elec-reg-7805-pwr-out",
+      targetPartId: sonarId,
+      targetInterfaceId: "elec-hcsr04-ultrasonic-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+
+    const st2 = useRobotStore.getState();
+    const faultReport = validateElectricalAssembly({
+      parts: st2.parts,
+      electricalConnections: st2.electricalConnections,
+    });
+    expect(faultReport.powerAnalysis!.consumerStates[sonarId].hasPathFault).toBe(true);
+    expect(faultReport.powerAnalysis!.consumerStates[sonarId].pathFaultReason).toContain(
+      "dropout"
+    );
+  });
 });

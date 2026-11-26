@@ -1,10 +1,8 @@
 import { Canvas } from "@react-three/fiber";
-import { useEffect, useMemo, useRef, useState } from "react";
-import { createStarterPresets } from "../../features/programming/logic/programPersistence";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EMPTY_VISUAL_TRACE } from "../../features/programming/logic/programWorkspaceCompiler";
 import type {
   VisualProgramExecutionTrace,
-  VisualRobotProgram,
 } from "../../features/programming/types/programWorkspace.types";
 import { buildAssemblyInspectionSummary } from "../../features/simulation/logic/simulationAssembly";
 import {
@@ -74,16 +72,18 @@ export default function SimulationView({
   const electricalConnections = useRobotStore(
     (state) => state.electricalConnections
   );
+  const selectedArenaId = useRobotStore((state) => state.selectedArenaId);
+  const setSelectedArenaId = useRobotStore((state) => state.setSelectedArenaId);
+  const visualProgram = useRobotStore((state) => state.visualProgram);
+  const setVisualProgram = useRobotStore((state) => state.setVisualProgram);
 
-  const [selectedArenaId, setSelectedArenaId] = useState(
-    SIMULATION_ARENA_PRESETS[0].id
-  );
   const selectedPreset = useMemo(
     () =>
       SIMULATION_ARENA_PRESETS.find((p) => p.id === selectedArenaId) ??
       SIMULATION_ARENA_PRESETS[0],
     [selectedArenaId]
   );
+  const selectedArenaRef = useRef(selectedPreset.arena);
 
   // Compile robot configuration once per assembly session
   const initResult = useMemo(
@@ -116,9 +116,6 @@ export default function SimulationView({
   const [simViewMode, setSimViewMode] = useState<"arena" | "programming">(
     "arena"
   );
-  const [visualProgram, setVisualProgram] = useState<VisualRobotProgram>(
-    () => createStarterPresets()[0]
-  );
   const [visualTrace, setVisualTrace] =
     useState<VisualProgramExecutionTrace>(EMPTY_VISUAL_TRACE);
   const [cameraMode, setCameraMode] = useState<SimulationCameraMode>("orbit");
@@ -147,16 +144,32 @@ export default function SimulationView({
       ? selectedPartId
       : null;
 
+  useEffect(() => {
+    selectedArenaRef.current = selectedPreset.arena;
+  }, [selectedPreset.arena]);
+
   // Lifecycle subscription & cleanup on unmount
   useEffect(() => {
     if (!world) return;
+    if (world.getArena().id !== selectedArenaRef.current.id) {
+      world.setArena(selectedArenaRef.current);
+    }
     const pressedKeys = pressedKeysRef.current;
-    const unsubscribe = world.subscribe(() => {
+    const syncFromWorld = () => {
+      const nextControl = world.getControlState();
       setTelemetry(world.getTelemetrySnapshot());
       setDriveControls(world.getActiveControls());
-      setControlState(world.getControlState());
+      setControlState(nextControl);
       setSensorsSnapshot(world.getSensorsSnapshot());
-    });
+      if (
+        nextControl.executionTrace === null &&
+        nextControl.programStatus === "idle"
+      ) {
+        setVisualTrace(EMPTY_VISUAL_TRACE);
+      }
+    };
+    syncFromWorld();
+    const unsubscribe = world.subscribe(syncFromWorld);
     return () => {
       unsubscribe();
       pressedKeys.clear();
@@ -164,9 +177,9 @@ export default function SimulationView({
     };
   }, [world]);
 
-  // Keyboard drive bindings + blur / visibility loss protection
+  // Keyboard drive bindings + blur / visibility loss protection (3D Arena mode only)
   useEffect(() => {
-    if (!world) return;
+    if (!world || simViewMode !== "arena") return;
     const pressedKeys = pressedKeysRef.current;
 
     const applyKeysToWorld = () => {
@@ -230,25 +243,55 @@ export default function SimulationView({
       window.removeEventListener("keyup", handleKeyUp);
       window.removeEventListener("blur", clearAllInputs);
       document.removeEventListener("visibilitychange", handleVisibilityChange);
+      const hadPressed = pressedKeys.size > 0;
       pressedKeys.clear();
-      world.clearInputs();
+      if (hadPressed || world.getControlState().controlSource === "manual") {
+        world.clearInputs();
+      }
     };
-  }, [world]);
+  }, [world, simViewMode]);
 
   // Keep simulation ticking when executing visual routines inside the Program Builder view
   useEffect(() => {
     if (!world || simViewMode !== "programming") return;
     let rafId = 0;
     let prevTs = performance.now();
+    let telemetryAcc = 0;
+    let lastProgramStatus = world.getControlState().programStatus;
+    let lastLifecycleStatus = world.getLifecycleStatus();
+    let lastHistoryLen = world.getControlState().executionTrace?.history.length ?? 0;
+    let lastActiveInstr =
+      world.getControlState().executionTrace?.activeInstructionId ?? null;
 
     const tick = (now: number) => {
       const dt = Math.min(0.1, Math.max(0.001, (now - prevTs) / 1000));
       prevTs = now;
       if (world.getLifecycleStatus() === "running") {
         world.stepFrame(dt);
-        setTelemetry(world.getTelemetrySnapshot());
-        setControlState(world.getControlState());
-        setSensorsSnapshot(world.getSensorsSnapshot());
+        telemetryAcc += dt;
+        const nextControl = world.getControlState();
+        const nextLifecycle = world.getLifecycleStatus();
+        const nextHistoryLen = nextControl.executionTrace?.history.length ?? 0;
+        const nextActiveInstr =
+          nextControl.executionTrace?.activeInstructionId ?? null;
+        const stateChanged =
+          nextControl.programStatus !== lastProgramStatus ||
+          nextLifecycle !== lastLifecycleStatus ||
+          nextHistoryLen !== lastHistoryLen ||
+          nextActiveInstr !== lastActiveInstr;
+
+        if (stateChanged || telemetryAcc >= 0.08) {
+          telemetryAcc = 0;
+          lastProgramStatus = nextControl.programStatus;
+          lastLifecycleStatus = nextLifecycle;
+          lastHistoryLen = nextHistoryLen;
+          lastActiveInstr = nextActiveInstr;
+          setTelemetry(world.getTelemetrySnapshot());
+          setControlState(nextControl);
+          setSensorsSnapshot(world.getSensorsSnapshot());
+        }
+      } else {
+        telemetryAcc = 0;
       }
       rafId = requestAnimationFrame(tick);
     };
@@ -256,6 +299,23 @@ export default function SimulationView({
     rafId = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(rafId);
   }, [world, simViewMode]);
+
+  const handleTelemetryTick = useCallback(
+    (t: SimulationTelemetrySnapshot) => {
+      setTelemetry(t);
+      if (world) {
+        setControlState(world.getControlState());
+        setSensorsSnapshot(world.getSensorsSnapshot());
+      }
+    },
+    [world]
+  );
+
+  const arenaForCamera = world ? world.getArena() : selectedPreset.arena;
+  const initialCameraPose = useMemo(
+    () => computeDefaultSimulationCameraPose(arenaForCamera),
+    [arenaForCamera]
+  );
 
   const setDirectionalControl = (action: KeyAction, active: boolean) => {
     if (!world) return;
@@ -341,7 +401,6 @@ export default function SimulationView({
   const arena = world.getArena();
   const status = telemetry.lifecycleStatus;
   const runtimeError = world.getLastError();
-  const initialCameraPose = computeDefaultSimulationCameraPose(arena);
 
   const handleSelectCameraPreset = (preset: SimulationCameraPreset) => {
     setCameraPreset(preset);
@@ -742,11 +801,7 @@ export default function SimulationView({
               cameraMode={cameraMode}
               cameraPreset={cameraPreset}
               cameraResetKey={cameraResetKey}
-              onTelemetryTick={(t) => {
-                setTelemetry(t);
-                setControlState(world.getControlState());
-                setSensorsSnapshot(world.getSensorsSnapshot());
-              }}
+              onTelemetryTick={handleTelemetryTick}
               assemblyParts={parts}
               connections={connections}
               drivetrain={drivetrain}
@@ -893,7 +948,10 @@ export default function SimulationView({
             <div className="section-label">POWER &amp; BATTERY</div>
             <div
               className={`motor-spec-card ${
-                telemetry.isBatteryCutoff ? "sim-card-alert" : ""
+                telemetry.isBatteryCutoff ||
+                (telemetry.electricalState?.trippedFuseIds.length ?? 0) > 0
+                  ? "sim-card-alert"
+                  : ""
               }`}
             >
               <div className="property-row">
@@ -904,6 +962,15 @@ export default function SimulationView({
                 <span>Current Draw</span>
                 <span className="sim-mono-val">{telemetry.totalCurrentDrawA.toFixed(2)} A</span>
               </div>
+              {telemetry.electricalState && (
+                <div className="property-row">
+                  <span>Motor / Aux Load</span>
+                  <span className="sim-mono-val">
+                    {telemetry.electricalState.totalMotorCurrentA.toFixed(2)} A /{" "}
+                    {telemetry.electricalState.totalAuxiliaryCurrentA.toFixed(2)} A
+                  </span>
+                </div>
+              )}
               <div className="property-row">
                 <span>Cutoff Status</span>
                 <span
@@ -914,6 +981,52 @@ export default function SimulationView({
                   {telemetry.isBatteryCutoff ? "CUTOFF ACTIVE" : "NORMAL"}
                 </span>
               </div>
+              {telemetry.electricalState?.isBatteryDischargeLimited && (
+                <div className="property-row">
+                  <span>Discharge Limit</span>
+                  <span className="sim-badge-warn">CLAMPED</span>
+                </div>
+              )}
+              {(world.getRobotConfig().electrical?.switches.length ?? 0) > 0 && (
+                <div style={{ marginTop: 6 }}>
+                  {world.getRobotConfig().electrical!.switches.map((sw) => {
+                    const isClosed =
+                      telemetry.electricalState?.switchStates[sw.partId] ??
+                      sw.defaultClosed;
+                    return (
+                      <div className="property-row" key={sw.partId}>
+                        <span>{sw.name}</span>
+                        <button
+                          type="button"
+                          className="sim-clear-selection-btn"
+                          onClick={() => world.setSwitchState(sw.partId, !isClosed)}
+                        >
+                          {isClosed ? "CLOSED" : "OPEN"}
+                        </button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+              {(telemetry.electricalState?.trippedFuseIds.length ?? 0) > 0 && (
+                <div className="property-row" style={{ marginTop: 6 }}>
+                  <span className="sim-badge-warn">
+                    FUSE TRIPPED ({telemetry.electricalState!.trippedFuseIds.length})
+                  </span>
+                  <button
+                    type="button"
+                    className="sim-clear-selection-btn"
+                    onClick={() => world.resetFuses()}
+                  >
+                    Reset Fuse
+                  </button>
+                </div>
+              )}
+              {(telemetry.electricalState?.activeFaults.length ?? 0) > 0 && (
+                <small className="builder-intro" style={{ display: "block", marginTop: 6, color: "#fbbf24" }}>
+                  {telemetry.electricalState!.activeFaults[0]}
+                </small>
+              )}
             </div>
 
             <div className="section-label">COLLISION DIAGNOSTICS</div>

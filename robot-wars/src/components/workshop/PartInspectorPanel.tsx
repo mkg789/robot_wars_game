@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { structuralCatalogue } from "../../features/robot-builder/data/structuralCatalogue";
 import type { AssemblyDiagnostic } from "../../features/robot-builder/logic/assemblyValidation";
 import { getPartBoxExtents } from "../../features/robot-builder/logic/geometryAdapters";
@@ -84,6 +84,14 @@ function roundTo(val: number, decimals = 3): number {
   return Math.round(val * factor) / factor;
 }
 
+function serializeTransformSignature(
+  pos: readonly [number, number, number],
+  rot: readonly [number, number, number],
+  size: readonly [number, number, number]
+): string {
+  return `${pos[0].toFixed(5)},${pos[1].toFixed(5)},${pos[2].toFixed(5)}|${rot[0].toFixed(5)},${rot[1].toFixed(5)},${rot[2].toFixed(5)}|${size[0].toFixed(5)},${size[1].toFixed(5)},${size[2].toFixed(5)}`;
+}
+
 export default function PartInspectorPanel({
   part,
   parts,
@@ -108,15 +116,22 @@ export default function PartInspectorPanel({
     NonNullable<AttachmentInterface["interfaceCategory"]>
   >("generic");
   const [newIfacePos, setNewIfacePos] = useState<[number, number, number]>([0, 0.1, 0]);
-  const initialExtents = getPartBoxExtents(part);
+  const currentExtents = getPartBoxExtents(part);
+  const partRot = part.rotation ?? ([0, 0, 0] as const);
+  const currentSignature = serializeTransformSignature(
+    part.position,
+    partRot,
+    currentExtents
+  );
+
   const [baseline, setBaseline] = useState<{
     position: [number, number, number];
     rotation: [number, number, number];
     size: [number, number, number];
   }>(() => ({
     position: [...part.position],
-    rotation: [...(part.rotation ?? [0, 0, 0])],
-    size: [...initialExtents],
+    rotation: [...partRot],
+    size: [...currentExtents],
   }));
 
   const [draftPos, setDraftPos] = useState<[number, number, number]>(
@@ -124,15 +139,73 @@ export default function PartInspectorPanel({
   );
   const [draftRotDeg, setDraftRotDeg] = useState<[number, number, number]>(
     () => [
-      roundTo((part.rotation?.[0] ?? 0) * RAD_TO_DEG, 1),
-      roundTo((part.rotation?.[1] ?? 0) * RAD_TO_DEG, 1),
-      roundTo((part.rotation?.[2] ?? 0) * RAD_TO_DEG, 1),
+      roundTo(partRot[0] * RAD_TO_DEG, 1),
+      roundTo(partRot[1] * RAD_TO_DEG, 1),
+      roundTo(partRot[2] * RAD_TO_DEG, 1),
     ]
   );
   const [draftSize, setDraftSize] = useState<[number, number, number]>(
-    () => [...initialExtents]
+    () => [...currentExtents]
   );
   const [isDirty, setIsDirty] = useState(false);
+
+  const isDirtyRef = useRef(isDirty);
+  const baselineRef = useRef(baseline);
+  const applyingRef = useRef(false);
+  const expectedPreviewSigRef = useRef<string | null>(null);
+  const previewCallbackRef = useRef(onPreviewTransform);
+
+  useEffect(() => {
+    isDirtyRef.current = isDirty;
+    baselineRef.current = baseline;
+    previewCallbackRef.current = onPreviewTransform;
+  }, [isDirty, baseline, onPreviewTransform]);
+
+  // Synchronize draft/baseline when transform changes externally (e.g., undo/redo or gizmo commit)
+  useEffect(() => {
+    if (
+      expectedPreviewSigRef.current &&
+      expectedPreviewSigRef.current === currentSignature
+    ) {
+      return;
+    }
+    expectedPreviewSigRef.current = null;
+    setBaseline({
+      position: [...part.position],
+      rotation: [...partRot],
+      size: [...currentExtents],
+    });
+    setDraftPos([...part.position]);
+    setDraftRotDeg([
+      roundTo(partRot[0] * RAD_TO_DEG, 1),
+      roundTo(partRot[1] * RAD_TO_DEG, 1),
+      roundTo(partRot[2] * RAD_TO_DEG, 1),
+    ]);
+    setDraftSize([...currentExtents]);
+    setIsDirty(false);
+  }, [currentSignature, part.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Revert unapplied live preview cleanly when switching parts or unmounting inspector
+  const revertPreviewDims =
+    !part.id.startsWith("foundation-") &&
+    part.type !== "Battery" &&
+    part.type !== "Controller" &&
+    part.type !== "Motor" &&
+    part.type !== "Wheel";
+  useEffect(() => {
+    const activePartId = part.id;
+    return () => {
+      if (isDirtyRef.current && !applyingRef.current) {
+        const base = baselineRef.current;
+        previewCallbackRef.current(
+          activePartId,
+          base.position,
+          base.rotation,
+          revertPreviewDims ? base.size : undefined
+        );
+      }
+    };
+  }, [part.id, revertPreviewDims]);
 
   const activeConnection = connections.find(
     (conn) => (conn.childId ?? conn.targetId) === part.id
@@ -251,11 +324,18 @@ export default function PartInspectorPanel({
     nextDeg: [number, number, number],
     nextSize: [number, number, number]
   ) => {
+    const nextRot = toRadTuple(nextDeg);
+    const effectiveSize = canEditDimensions ? nextSize : baselineRef.current.size;
+    expectedPreviewSigRef.current = serializeTransformSignature(
+      nextPos,
+      nextRot,
+      effectiveSize
+    );
     setIsDirty(true);
     onPreviewTransform(
       part.id,
       nextPos,
-      toRadTuple(nextDeg),
+      nextRot,
       canEditDimensions ? nextSize : undefined
     );
   };
@@ -285,6 +365,14 @@ export default function PartInspectorPanel({
   };
 
   const handleApply = () => {
+    applyingRef.current = true;
+    const nextRot = toRadTuple(draftRotDeg);
+    const nextSz = canEditDimensions ? draftSize : undefined;
+    expectedPreviewSigRef.current = serializeTransformSignature(
+      draftPos,
+      nextRot,
+      nextSz ?? baseline.size
+    );
     // Restore baseline cleanly before recording one undoable commit
     onPreviewTransform(
       part.id,
@@ -292,18 +380,18 @@ export default function PartInspectorPanel({
       baseline.rotation,
       canEditDimensions ? baseline.size : undefined
     );
-    const nextRot = toRadTuple(draftRotDeg);
-    const nextSz = canEditDimensions ? draftSize : undefined;
     onApplyTransform(part.id, draftPos, nextRot, nextSz);
     setBaseline({
       position: [...draftPos],
       rotation: [...nextRot],
-      size: [...draftSize],
+      size: [...(nextSz ?? baseline.size)],
     });
     setIsDirty(false);
+    applyingRef.current = false;
   };
 
   const handleCancel = () => {
+    expectedPreviewSigRef.current = null;
     onPreviewTransform(
       part.id,
       baseline.position,

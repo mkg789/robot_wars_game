@@ -219,4 +219,84 @@ describe("Phase 6.0: Robot Programming & Control Foundation", () => {
     expect(blocked.accepted).toBe(false);
     expect(world.getActiveInput()).toEqual({ leftThrottle: 0, rightThrottle: 0 });
   });
+
+  it("enforces consistent motor readiness when electrical wiring exists without letting unrelated sensor errors block healthy wired drive motors", () => {
+    const { leftMotorId, rightMotorId } = buildStandardDrivableAssembly();
+    const st0 = useRobotStore.getState();
+    const batId = st0.parts.find((p) => p.type === "Battery")!.id;
+    const sonarId = st0.installElectricalCatalogueItem("elec-hcsr04-ultrasonic")!;
+    const pdbId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-pdb-xt60")!;
+
+    const addConn = useRobotStore.getState().addElectricalConnection;
+    // Wire Battery -> PDB -> both Drive Motors, leaving unrelated 5V Sonar directly wired to 11.1V PDB (sensor overvoltage!)
+    addConn({
+      sourcePartId: batId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: pdbId,
+      targetInterfaceId: "pdb-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    for (const mId of [leftMotorId, rightMotorId]) {
+      addConn({
+        sourcePartId: pdbId,
+        sourceInterfaceId: "pdb-bus-out",
+        targetPartId: mId,
+        targetInterfaceId: "motor-drive-input",
+        connectionType: "power",
+        provenance: { method: "user-supplied" },
+      });
+    }
+    addConn({
+      sourcePartId: pdbId,
+      sourceInterfaceId: "pdb-bus-out",
+      targetPartId: sonarId,
+      targetInterfaceId: "elec-hcsr04-ultrasonic-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+
+    const st1 = useRobotStore.getState();
+    const world = SimulationWorld.fromAssembly({
+      parts: st1.parts,
+      connections: st1.connections,
+      drivetrain: st1.drivetrain,
+      foundation: st1.foundation,
+      electricalConnections: st1.electricalConnections,
+    }).world!;
+
+    const isolatedBinding = resolveRobotHardwareBinding({
+      robotConfig: world.getRobotConfig(),
+      parts: st1.parts,
+      electricalConnections: st1.electricalConnections,
+    });
+    // Wired drive motors stay operational even when an unrelated sensor branch has an overvoltage fault
+    expect(isolatedBinding.canDrive).toBe(true);
+    // While the overvolted sonar itself stays gated unavailable
+    expect(world.getControlApi().readUltrasonic(sonarId).ok).toBe(false);
+
+    // If only a controller/sensor is wired leaving drive motors unwired, motor readiness rejects unwired motors consistently with sensors
+    const { leftMotorId: unwiredLeft } = buildStandardDrivableAssembly();
+    void unwiredLeft;
+    const bat2 = useRobotStore.getState().parts.find((p) => p.type === "Battery")!.id;
+    const ctrl2 = useRobotStore.getState().parts.find((p) => p.type === "Controller")!.id;
+    useRobotStore.getState().addElectricalConnection({
+      sourcePartId: bat2,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: ctrl2,
+      targetInterfaceId: "ctrl-power-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    const st2 = useRobotStore.getState();
+    const unwiredBinding = resolveRobotHardwareBinding({
+      robotConfig: world.getRobotConfig(),
+      parts: st2.parts,
+      electricalConnections: st2.electricalConnections,
+    });
+    expect(unwiredBinding.canDrive).toBe(false);
+    expect(unwiredBinding.electricalMode).toBe("electrical-fault");
+  });
 });

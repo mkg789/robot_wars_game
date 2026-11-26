@@ -2,12 +2,14 @@ import { useMemo, useState } from "react";
 import { resolvePartElectricalSpec } from "../../features/electrical/logic/electricalComponentAdapters";
 import type { ElectricalConnection } from "../../features/electrical/types/electrical.types";
 import type { RobotPart } from "../../features/robot-builder/types/robot.types";
+import { useRobotStore } from "../../store/robotStore";
 
 interface ElectricalInspectorSectionProps {
   readonly part: RobotPart;
   readonly parts: readonly RobotPart[];
   readonly electricalConnections: readonly ElectricalConnection[];
   readonly onRemoveElectricalConnection?: (connectionId: string) => void;
+  readonly onToggleSwitch?: (partId: string, switchClosed: boolean) => void;
 }
 
 export default function ElectricalInspectorSection({
@@ -15,9 +17,13 @@ export default function ElectricalInspectorSection({
   parts,
   electricalConnections,
   onRemoveElectricalConnection,
+  onToggleSwitch,
 }: ElectricalInspectorSectionProps) {
   const [showPinDetails, setShowPinDetails] = useState(false);
   const spec = useMemo(() => resolvePartElectricalSpec(part), [part]);
+  const setElectricalSwitchState = useRobotStore(
+    (state) => state.setElectricalSwitchState
+  );
 
   const relatedConnections = useMemo(
     () =>
@@ -30,6 +36,17 @@ export default function ElectricalInspectorSection({
   if (!spec) return null;
 
   const partById = new Map(parts.map((p) => [p.id, p]));
+  const isSwitch =
+    spec.componentType === "switch" ||
+    spec.driverOrRegulatorSpec?.powerRole === "switch";
+  const isSwitchClosed = part.electricalState?.switchClosed !== false;
+  const isFuse =
+    spec.driverOrRegulatorSpec?.powerRole === "fuse" ||
+    spec.interfaces.some((i) => i.interfaceId.includes("fuse"));
+  const fuseRatingA =
+    spec.driverOrRegulatorSpec?.continuousCurrentPerChannelA ??
+    spec.interfaces.find((i) => i.currentSpec?.maxContinuousA !== undefined)
+      ?.currentSpec?.maxContinuousA;
 
   return (
     <div className="workshop-mount-target">
@@ -98,6 +115,31 @@ export default function ElectricalInspectorSection({
             </span>
           </div>
         </>
+      )}
+
+      {isSwitch && (
+        <div className="property-row" style={{ alignItems: "center", marginTop: 4 }}>
+          <span>Switch State</span>
+          <button
+            type="button"
+            className="sim-clear-selection-btn"
+            onClick={() =>
+              (onToggleSwitch ?? setElectricalSwitchState)(part.id, !isSwitchClosed)
+            }
+          >
+            {isSwitchClosed ? "CLOSED (Open Switch)" : "OPEN (Close Switch)"}
+          </button>
+        </div>
+      )}
+
+      {isFuse && (
+        <div className="property-row" style={{ marginTop: 4 }}>
+          <span>Fuse Rating</span>
+          <span>
+            {fuseRatingA !== undefined ? `${fuseRatingA} A` : "Unknown"}
+            {part.electricalState?.fuseTripped ? " · TRIPPED" : " · INTACT"}
+          </span>
+        </div>
       )}
 
       <div className="section-label" style={{ marginTop: 8 }}>

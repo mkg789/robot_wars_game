@@ -42,6 +42,7 @@ import type {
   DrivetrainInput,
   DynamicsStepResult,
   GroundSurface,
+  MotorRuntimeElectricalState,
   MotorSimulationConfig,
   SimulationRobotConfig,
   SimulationState,
@@ -393,7 +394,8 @@ export function stepDrivetrainDynamics(
   operatingVoltageV?: number,
   totalCurrentDrawA?: number,
   surface?: GroundSurface,
-  arena?: ArenaConfig
+  arena?: ArenaConfig,
+  perMotorElectrical?: Readonly<Record<string, MotorRuntimeElectricalState>>
 ): DynamicsStepResult {
   // 1. Validation & Safety
   if (!Number.isFinite(dt) || dt <= 0) {
@@ -497,26 +499,42 @@ export function stepDrivetrainDynamics(
       ? currentState.leftWheelAngularVelocityRadPerSec
       : currentState.rightWheelAngularVelocityRadPerSec;
 
-    // Voltage scaling of motor capability
+    const motorElec = perMotorElectrical?.[motor.motorId];
+    const effectiveOperatingVoltageV =
+      motorElec !== undefined
+        ? motorElec.isPowered
+          ? motorElec.operatingVoltageV
+          : 0
+        : operatingVoltageV;
+
+    // Voltage scaling of motor capability (supports per-motor regulated/unpowered branches)
     const nominalVoltageV =
       motor.nominalVoltageV ?? config.battery?.nominalVoltageV ?? 12.0;
     const voltageRatio =
-      operatingVoltageV !== undefined
+      effectiveOperatingVoltageV !== undefined
         ? nominalVoltageV > 0
-          ? Math.max(0, operatingVoltageV / nominalVoltageV)
+          ? Math.max(0, effectiveOperatingVoltageV / nominalVoltageV)
           : 1.0
         : 1.0;
 
     const effectiveStallTorqueNm = motor.stallTorqueNm * voltageRatio;
     const effectiveNoLoadOmega = motor.noLoadAngularVelocityRadPerSec * voltageRatio;
 
-    // Motor torque calculation
-    const motorRes = calculateMotorTorque(
-      effectiveStallTorqueNm,
-      effectiveNoLoadOmega,
-      throttle,
-      currentWheelOmega
-    );
+    // Motor torque calculation (zero electrical torque when unpowered; scaled when driver/battery current-limited)
+    const rawMotorRes =
+      motorElec && !motorElec.isPowered
+        ? { torqueNm: 0 }
+        : calculateMotorTorque(
+            effectiveStallTorqueNm,
+            effectiveNoLoadOmega,
+            throttle,
+            currentWheelOmega
+          );
+    const scaledTorqueNm =
+      motorElec && motorElec.isPowered
+        ? rawMotorRes.torqueNm * motorElec.torqueScaleFactor
+        : rawMotorRes.torqueNm;
+    const motorRes = { torqueNm: scaledTorqueNm };
 
     // Longitudinal drive force transmitted to the wheel rim: F = τ / r
     const wheelDriveForceN = motorRes.torqueNm / wheel.radiusM;
@@ -579,6 +597,13 @@ export function stepDrivetrainDynamics(
       surfaceId: resolvedSurface.id,
       effectiveFrictionCoeff: frictionCoeff,
       contactWorldPosition,
+      ...(motorElec && {
+        operatingVoltageV: motorElec.operatingVoltageV,
+        electricalCurrentA: motorElec.currentDrawA,
+        isElectricalPowered: motorElec.isPowered,
+        isCurrentLimited: motorElec.isCurrentLimited,
+        electricalFaultReason: motorElec.faultReason,
+      }),
     });
   }
 
@@ -639,16 +664,32 @@ export function stepDrivetrainDynamics(
     let sumSlip = 0;
 
     for (const { wheel, motor, tractionLimitN } of wheels) {
+      const motorElec = perMotorElectrical?.[motor.motorId];
+      const isMotorPowered = motorElec ? motorElec.isPowered : true;
+      const effectiveWheelVoltageV = motorElec
+        ? isMotorPowered
+          ? motorElec.operatingVoltageV
+          : 0
+        : operatingVoltageV;
+      const torqueScale = motorElec
+        ? isMotorPowered
+          ? motorElec.torqueScaleFactor
+          : 0
+        : 1.0;
+
       const nominalVoltageV =
         motor.nominalVoltageV ?? config.battery?.nominalVoltageV ?? 12.0;
       const voltageRatio =
-        operatingVoltageV !== undefined
+        effectiveWheelVoltageV !== undefined
           ? nominalVoltageV > 0
-            ? Math.max(0, operatingVoltageV / nominalVoltageV)
+            ? Math.max(0, effectiveWheelVoltageV / nominalVoltageV)
             : 1.0
           : 1.0;
-      const effectiveStallTorqueNm = motor.stallTorqueNm * voltageRatio;
-      const effectiveNoLoadOmega = motor.noLoadAngularVelocityRadPerSec * voltageRatio;
+      const effectiveStallTorqueNm =
+        (isMotorPowered ? motor.stallTorqueNm * voltageRatio : 0) * torqueScale;
+      const effectiveNoLoadOmega = isMotorPowered
+        ? motor.noLoadAngularVelocityRadPerSec * voltageRatio
+        : 0;
 
       const maxDriveForceN = effectiveStallTorqueNm / wheel.radiusM;
 

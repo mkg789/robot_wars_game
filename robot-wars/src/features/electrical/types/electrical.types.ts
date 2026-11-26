@@ -366,7 +366,9 @@ export type ElectricalDiagnosticCode =
   | "missing-upstream-source"
   | "missing-power-connection"
   | "missing-electrical-spec"
-  | "missing-ground-reference";
+  | "missing-ground-reference"
+  | "switch-open"
+  | "fuse-tripped";
 
 export interface ElectricalDiagnostic {
   readonly id: string;
@@ -433,6 +435,7 @@ export interface ElectricalPowerRailConsumerState {
   };
   readonly hasMissingGround: boolean;
   readonly hasPathFault: boolean;
+  readonly pathFaultReason?: string;
 }
 
 export interface ElectricalPowerRailSummary {

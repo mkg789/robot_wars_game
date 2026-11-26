@@ -64,7 +64,9 @@ export default function CustomMeshModel({
   customInterfaces,
   mountingPatterns,
 }: CustomMeshModelProps) {
-  const geometry = useMemo(() => getOrCreateThreeBufferGeometry(assetId), [assetId]);
+  // Registry memoizes the singleton BufferGeometry per assetId; direct lookup avoids
+  // holding stale references if an asset record is restored under the same id.
+  const geometry = getOrCreateThreeBufferGeometry(assetId);
 
   const unitFactor = meshTransform ? STL_UNIT_TO_METERS[meshTransform.unit] : 0.001;
   const scaleTuple: [number, number, number] = meshTransform
@@ -92,7 +94,9 @@ export default function CustomMeshModel({
 
   return (
     <group>
-      <mesh geometry={geometry} scale={scaleTuple} castShadow receiveShadow>
+      <mesh scale={scaleTuple} castShadow receiveShadow>
+        {/* Opt shared registry BufferGeometry out of R3F unmount disposal while keeping instance material disposable */}
+        <primitive object={geometry} attach="geometry" dispose={null} />
         <meshStandardMaterial
           color={selected ? "#f59e0b" : color}
           metalness={0.62}

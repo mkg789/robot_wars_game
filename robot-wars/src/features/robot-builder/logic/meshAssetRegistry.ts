@@ -4,7 +4,6 @@ import { parseStlArrayBuffer, type ParsedStlData } from "./stlParser";
 
 export interface MeshAssetRecord {
   readonly assetId: string;
-  readonly positions: Float32Array;
   readonly normals: Float32Array;
   readonly inspection: MeshAssetInspection;
   /** Centers vertices symmetrically around raw bounding box center for clean robot anchoring */
@@ -14,6 +13,19 @@ export interface MeshAssetRecord {
 }
 
 const meshAssetMap = new Map<string, MeshAssetRecord>();
+const intentionalRegistryDisposals = new WeakSet<THREE.BufferGeometry>();
+
+function disposeCachedGeometry(rec: MeshAssetRecord): void {
+  const geometry = rec.cachedThreeGeometry;
+  if (!geometry) return;
+  rec.cachedThreeGeometry = null;
+  intentionalRegistryDisposals.add(geometry);
+  try {
+    geometry.dispose();
+  } finally {
+    intentionalRegistryDisposals.delete(geometry);
+  }
+}
 
 function centerPositionsToBounds(positions: Float32Array, inspection: MeshAssetInspection): Float32Array {
   const cx = (inspection.rawBoundsMin[0] + inspection.rawBoundsMax[0]) * 0.5;
@@ -41,7 +53,6 @@ export function registerParsedStlAsset(
   const centeredPositions = centerPositionsToBounds(parsed.positions, parsed.inspection);
   const record: MeshAssetRecord = {
     assetId,
-    positions: parsed.positions,
     normals: parsed.normals,
     centeredPositions,
     inspection: parsed.inspection,
@@ -80,8 +91,7 @@ export function releaseMeshAsset(assetId: string | undefined): void {
   if (!rec) return;
   rec.refCount = Math.max(0, rec.refCount - 1);
   if (rec.refCount === 0) {
-    rec.cachedThreeGeometry?.dispose();
-    rec.cachedThreeGeometry = null;
+    disposeCachedGeometry(rec);
     meshAssetMap.delete(assetId);
   }
 }
@@ -90,8 +100,7 @@ export function syncActiveAssetRefs(activeAssetIds: Iterable<string>): void {
   const activeSet = new Set(activeAssetIds);
   for (const [assetId, rec] of meshAssetMap.entries()) {
     if (!activeSet.has(assetId)) {
-      rec.cachedThreeGeometry?.dispose();
-      rec.cachedThreeGeometry = null;
+      disposeCachedGeometry(rec);
       meshAssetMap.delete(assetId);
     }
   }
@@ -101,6 +110,8 @@ export function syncActiveAssetRefs(activeAssetIds: Iterable<string>): void {
  * Lazily builds and caches a single reusable Three.js BufferGeometry per STL asset.
  * Callers must apply unit scale, transform, and orientation via parent Group transforms
  * rather than mutating this cached BufferGeometry in place.
+ * Accidental external `.dispose()` calls are blocked so individual R3F mesh unmounts
+ * cannot free GPU buffers while the asset remains retained by the registry.
  */
 export function getOrCreateThreeBufferGeometry(
   assetId: string
@@ -120,6 +131,14 @@ export function getOrCreateThreeBufferGeometry(
   );
   geometry.computeBoundingBox();
   geometry.computeBoundingSphere();
+  geometry.dispose = function disposeRegistryCachedGeometry(
+    this: THREE.BufferGeometry
+  ): void {
+    if (!intentionalRegistryDisposals.has(this)) {
+      return;
+    }
+    THREE.BufferGeometry.prototype.dispose.call(this);
+  };
   rec.cachedThreeGeometry = geometry;
   return geometry;
 }
@@ -130,8 +149,73 @@ export function getRegisteredAssetCount(): number {
 
 export function clearMeshAssets(): void {
   for (const rec of meshAssetMap.values()) {
-    rec.cachedThreeGeometry?.dispose();
-    rec.cachedThreeGeometry = null;
+    disposeCachedGeometry(rec);
   }
   meshAssetMap.clear();
+}
+
+/**
+ * Restores a previously serialized STL mesh asset directly from its centered vertex/normal buffers
+ * without re-applying centroid subtraction. Starts at refCount = 0 so store retention sync
+ * establishes the exact reference count for active parts and history snapshots.
+ */
+export function restoreMeshAssetRecord(params: {
+  readonly assetId: string;
+  readonly centeredPositions: Float32Array;
+  readonly normals: Float32Array;
+  readonly inspection: MeshAssetInspection;
+}): MeshAssetRecord {
+  const existing = meshAssetMap.get(params.assetId);
+  if (existing) {
+    disposeCachedGeometry(existing);
+  }
+  const record: MeshAssetRecord = {
+    assetId: params.assetId,
+    centeredPositions: new Float32Array(params.centeredPositions),
+    normals: new Float32Array(params.normals),
+    inspection: structuredClone(params.inspection),
+    refCount: existing ? existing.refCount : 0,
+    cachedThreeGeometry: null,
+  };
+  meshAssetMap.set(params.assetId, record);
+  return record;
+}
+
+/**
+ * Encodes a Float32Array buffer deterministically as base64 in both browser and Node environments.
+ */
+export function encodeFloat32ArrayBase64(data: Float32Array): string {
+  const bytes = new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize));
+  }
+  return btoa(binary);
+}
+
+/**
+ * Decodes and validates a base64-encoded Float32Array buffer (little-endian IEEE 754 floats).
+ */
+export function decodeFloat32ArrayBase64(encoded: string): Float32Array {
+  if (typeof encoded !== "string" || encoded.length === 0) {
+    throw new Error("Mesh buffer base64 payload must be a non-empty string.");
+  }
+  const binary = atob(encoded);
+  if (binary.length === 0 || binary.length % 4 !== 0) {
+    throw new Error(
+      `Invalid Float32 byte length (${binary.length}): expected a non-zero multiple of 4.`
+    );
+  }
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  const floats = new Float32Array(bytes.buffer);
+  for (let i = 0; i < floats.length; i += 1) {
+    if (!Number.isFinite(floats[i])) {
+      throw new Error(`Mesh buffer contains non-finite float value at index ${i}.`);
+    }
+  }
+  return floats;
 }
