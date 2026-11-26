@@ -11,12 +11,14 @@ interface SimulationControlPanelProps {
   readonly world: SimulationWorld;
   readonly controlState: RobotProgramControllerState;
   readonly sensorsSnapshot: RobotSensorsSnapshot | null;
+  readonly onOpenVisualBuilder?: () => void;
 }
 
 export default function SimulationControlPanel({
   world,
   controlState,
   sensorsSnapshot,
+  onOpenVisualBuilder,
 }: SimulationControlPanelProps) {
   const [selectedRoutineId, setSelectedRoutineId] = useState(
     BUILTIN_CONTROL_ROUTINES[0].id
@@ -127,6 +129,17 @@ export default function SimulationControlPanel({
           Manual
         </button>
       </div>
+
+      {onOpenVisualBuilder && (
+        <button
+          type="button"
+          className="top-button"
+          style={{ width: "100%", marginBottom: 8 }}
+          onClick={onOpenVisualBuilder}
+        >
+          ◫ Open Visual Program Workspace
+        </button>
+      )}
 
       <div className="section-label" style={{ marginTop: 10 }}>
         DIRECT MOTOR COMMAND API

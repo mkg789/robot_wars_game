@@ -1,5 +1,10 @@
 import { Canvas } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createStarterPresets } from "../../features/programming/logic/programPersistence";
+import type {
+  VisualProgramExecutionTrace,
+  VisualRobotProgram,
+} from "../../features/programming/types/programWorkspace.types";
 import { buildAssemblyInspectionSummary } from "../../features/simulation/logic/simulationAssembly";
 import {
   computeDefaultSimulationCameraPose,
@@ -17,6 +22,7 @@ import type {
   SimulationTelemetrySnapshot,
 } from "../../features/simulation/types/simulationWorld.types";
 import { useRobotStore } from "../../store/robotStore";
+import VisualProgrammingWorkspace from "../programming/VisualProgrammingWorkspace";
 import SimulationControlPanel from "./SimulationControlPanel";
 import SimulationScene from "./SimulationScene";
 
@@ -106,6 +112,18 @@ export default function SimulationView({
   const [sensorsSnapshot, setSensorsSnapshot] = useState(() =>
     world ? world.getSensorsSnapshot() : null
   );
+  const [simViewMode, setSimViewMode] = useState<"arena" | "programming">(
+    "arena"
+  );
+  const [visualProgram, setVisualProgram] = useState<VisualRobotProgram>(
+    () => createStarterPresets()[0]
+  );
+  const [visualTrace, setVisualTrace] = useState<VisualProgramExecutionTrace>({
+    activeInstructionId: null,
+    completedInstructionIds: [],
+    lastSensorSummary: null,
+    statusMessage: null,
+  });
   const [cameraMode, setCameraMode] = useState<SimulationCameraMode>("orbit");
   const [cameraPreset, setCameraPreset] =
     useState<SimulationCameraPreset>("overview");
@@ -219,6 +237,28 @@ export default function SimulationView({
       world.clearInputs();
     };
   }, [world]);
+
+  // Keep simulation ticking when executing visual routines inside the Program Builder view
+  useEffect(() => {
+    if (!world || simViewMode !== "programming") return;
+    let rafId = 0;
+    let prevTs = performance.now();
+
+    const tick = (now: number) => {
+      const dt = Math.min(0.1, Math.max(0.001, (now - prevTs) / 1000));
+      prevTs = now;
+      if (world.getLifecycleStatus() === "running") {
+        world.stepFrame(dt);
+        setTelemetry(world.getTelemetrySnapshot());
+        setControlState(world.getControlState());
+        setSensorsSnapshot(world.getSensorsSnapshot());
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [world, simViewMode]);
 
   const setDirectionalControl = (action: KeyAction, active: boolean) => {
     if (!world) return;
@@ -342,6 +382,20 @@ export default function SimulationView({
         <div className="topbar-actions">
           <button
             type="button"
+            className={`top-button ${simViewMode === "arena" ? "active-mode" : ""}`}
+            onClick={() => setSimViewMode("arena")}
+          >
+            3D Arena
+          </button>
+          <button
+            type="button"
+            className={`top-button ${simViewMode === "programming" ? "active-mode" : ""}`}
+            onClick={() => setSimViewMode("programming")}
+          >
+            ◫ Program Builder
+          </button>
+          <button
+            type="button"
             className="top-button"
             onClick={() => {
               pressedKeysRef.current.clear();
@@ -356,6 +410,19 @@ export default function SimulationView({
 
       {/* MAIN LAYOUT */}
       <div className="main-layout">
+        {simViewMode === "programming" ? (
+          <VisualProgrammingWorkspace
+            world={world}
+            program={visualProgram}
+            onProgramChange={setVisualProgram}
+            controlState={controlState ?? world.getControlState()}
+            sensorsSnapshot={sensorsSnapshot}
+            trace={visualTrace}
+            onTraceChange={setVisualTrace}
+            onSwitchTo3DArena={() => setSimViewMode("arena")}
+          />
+        ) : (
+        <>
         {/* LEFT CONTROL & INSPECTION PANEL */}
         <aside className="left-panel">
           <div className="panel-heading">SIMULATION &amp; ASSEMBLY</div>
@@ -565,6 +632,7 @@ export default function SimulationView({
                   world={world}
                   controlState={controlState}
                   sensorsSnapshot={sensorsSnapshot}
+                  onOpenVisualBuilder={() => setSimViewMode("programming")}
                 />
               ) : null
             ) : (
@@ -756,6 +824,8 @@ export default function SimulationView({
             <span>Drive: WASD / Arrows</span>
           </div>
         </main>
+        </>
+        )}
 
         {/* RIGHT TELEMETRY PANEL */}
         <aside className="right-panel">
