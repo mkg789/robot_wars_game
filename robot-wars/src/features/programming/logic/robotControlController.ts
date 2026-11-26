@@ -45,6 +45,7 @@ import type {
   SensorReadResult,
   UltrasonicDistanceData,
 } from "../types/sensor.types";
+import type { VisualProgramExecutionTrace } from "../types/programWorkspace.types";
 
 /**
  * Encapsulates user/autonomous robot program execution, typed control commands,
@@ -70,6 +71,7 @@ export class RobotControlController implements RobotControlApi {
   private lastWarnings: readonly string[] = [];
   private commandLogCount = 0;
   private lastError: string | null = null;
+  private executionTrace: VisualProgramExecutionTrace | null = null;
 
   constructor(params: {
     readonly robotConfig: SimulationRobotConfig;
@@ -252,31 +254,37 @@ export class RobotControlController implements RobotControlApi {
     this.controlSource = source;
   }
 
+  reportExecutionTrace(trace: VisualProgramExecutionTrace): void {
+    this.executionTrace = trace;
+  }
+
   setProgramRoutine(routine: RobotControlRoutine | null): void {
-    if (this.programStatus === "running") {
+    if (this.programStatus === "running" || this.programStatus === "paused") {
       this.stopProgram();
     }
     this.routine = routine;
     this.programStatus = "idle";
     this.lastError = null;
+    this.executionTrace = null;
   }
 
   startProgram(): boolean {
     if (!this.routine) {
-      this.lastError = "No robot program selected to run.";
-      this.programStatus = "fault";
+      this.handleFault(new Error("No robot program selected to run."));
       return false;
     }
     if (!this.binding.canDrive) {
-      this.lastError =
-        this.binding.faultReason ?? "Robot hardware binding cannot drive motors.";
-      this.programStatus = "fault";
-      this.stopRobot();
+      this.handleFault(
+        new Error(
+          this.binding.faultReason ?? "Robot hardware binding cannot drive motors."
+        )
+      );
       return false;
     }
     this.controlSource = "program";
     this.programStatus = "running";
     this.lastError = null;
+    this.executionTrace = null;
     try {
       this.routine.onStart?.(this);
       return true;
@@ -286,9 +294,121 @@ export class RobotControlController implements RobotControlApi {
     }
   }
 
-  stopProgram(): void {
+  pauseProgram(): boolean {
+    if (this.programStatus !== "running") {
+      return false;
+    }
+    this.programStatus = "paused";
+    this.stopRobot();
+    if (this.executionTrace) {
+      this.executionTrace = {
+        ...this.executionTrace,
+        statusMessage: "Paused by user",
+      };
+    }
+    return true;
+  }
+
+  resumeProgram(): boolean {
+    if (this.programStatus !== "paused" || !this.routine) {
+      return false;
+    }
+    if (!this.binding.canDrive) {
+      this.handleFault(
+        new Error(
+          this.binding.faultReason ?? "Robot hardware binding cannot drive motors."
+        )
+      );
+      return false;
+    }
+    this.controlSource = "program";
+    this.programStatus = "running";
+    this.lastError = null;
+    try {
+      this.routine.onResume?.(this);
+      return true;
+    } catch (error) {
+      this.handleFault(error);
+      return false;
+    }
+  }
+
+  stepProgramInstruction(
+    telemetry: SimulationTelemetrySnapshot,
+    dtSeconds: number
+  ): DrivetrainInput {
+    this.latestTimeSeconds = telemetry.timeSeconds;
+
+    if (!this.routine) {
+      this.handleFault(new Error("No robot program selected to step."));
+      return { leftThrottle: 0, rightThrottle: 0 };
+    }
+    if (
+      this.programStatus === "completed" ||
+      this.programStatus === "stopped" ||
+      this.programStatus === "fault"
+    ) {
+      return { leftThrottle: 0, rightThrottle: 0 };
+    }
+    if (!this.binding.canDrive) {
+      this.handleFault(
+        new Error(
+          this.binding.faultReason ??
+            "Electrical or drivetrain fault prevented actuator command execution."
+        )
+      );
+      return { leftThrottle: 0, rightThrottle: 0 };
+    }
+
+    const wasIdle = this.programStatus === "idle";
     const wasRunning = this.programStatus === "running";
-    if (wasRunning && this.routine?.onStop) {
+    this.controlSource = "program";
+    this.programStatus = "paused";
+    this.lastError = null;
+
+    try {
+      if (wasIdle) {
+        this.executionTrace = null;
+        this.routine.onStart?.(this);
+      } else if (!wasRunning) {
+        this.routine.onResume?.(this);
+      }
+
+      const ctx = buildProgramStepContext(
+        telemetry,
+        dtSeconds,
+        this.readSensorsSnapshot() ?? undefined,
+        true
+      );
+      this.routine.onTick(ctx, this);
+    } catch (error) {
+      this.handleFault(error);
+      return { leftThrottle: 0, rightThrottle: 0 };
+    }
+
+    if ((this.programStatus as RobotProgramStatus) === "completed") {
+      return { leftThrottle: 0, rightThrottle: 0 };
+    }
+    if ((this.programStatus as RobotProgramStatus) === "fault") {
+      return { leftThrottle: 0, rightThrottle: 0 };
+    }
+    if (this.executionTrace) {
+      this.executionTrace = {
+        ...this.executionTrace,
+        statusMessage: `Paused (single-step @ ${telemetry.timeSeconds.toFixed(2)}s)`,
+      };
+    }
+
+    return {
+      leftThrottle: this.target.leftPower,
+      rightThrottle: this.target.rightPower,
+    };
+  }
+
+  stopProgram(): void {
+    const wasActive =
+      this.programStatus === "running" || this.programStatus === "paused";
+    if (wasActive && this.routine?.onStop) {
       try {
         this.routine.onStop(this);
       } catch {
@@ -297,6 +417,13 @@ export class RobotControlController implements RobotControlApi {
     }
     this.programStatus = "stopped";
     this.stopRobot();
+    if (this.executionTrace) {
+      this.executionTrace = {
+        ...this.executionTrace,
+        activeInstructionId: null,
+        statusMessage: "Stopped by user",
+      };
+    }
   }
 
   completeProgram(): void {
@@ -311,6 +438,7 @@ export class RobotControlController implements RobotControlApi {
     this.lastError = null;
     this.commandLogCount = 0;
     this.programStatus = "idle";
+    this.executionTrace = null;
   }
 
   dispatchCommand(command: RobotActuatorCommand): CommandNormalizationResult {
@@ -408,6 +536,12 @@ export class RobotControlController implements RobotControlApi {
     if (!this.binding.canDrive) {
       return { leftThrottle: 0, rightThrottle: 0 };
     }
+    if (
+      this.controlSource !== "manual" &&
+      this.programStatus === "paused"
+    ) {
+      return { leftThrottle: 0, rightThrottle: 0 };
+    }
 
     return {
       leftThrottle: this.target.leftPower,
@@ -417,6 +551,12 @@ export class RobotControlController implements RobotControlApi {
 
   getDrivetrainInput(): DrivetrainInput {
     if (!this.binding.canDrive) {
+      return { leftThrottle: 0, rightThrottle: 0 };
+    }
+    if (
+      this.controlSource !== "manual" &&
+      this.programStatus === "paused"
+    ) {
       return { leftThrottle: 0, rightThrottle: 0 };
     }
     return {
@@ -437,12 +577,41 @@ export class RobotControlController implements RobotControlApi {
       lastWarnings: this.lastWarnings,
       commandLogCount: this.commandLogCount,
       lastError: this.lastError,
+      executionTrace: this.executionTrace,
     };
   }
 
   private handleFault(error: unknown): void {
-    this.lastError = error instanceof Error ? error.message : String(error);
+    const message = error instanceof Error ? error.message : String(error);
+    this.lastError = message;
     this.programStatus = "fault";
     this.target = NEUTRAL_NORMALIZED_TARGET;
+    const prevTrace = this.executionTrace;
+    const failedId = prevTrace?.activeInstructionId ?? null;
+    const faultEntry = {
+      id: `fault-${(prevTrace?.history.length ?? 0) + 1}`,
+      instructionId: failedId ?? "__runtime__",
+      instructionKind: "stop" as const,
+      title: failedId ? "Instruction Execution Fault" : "Program Runtime Fault",
+      paramsSummary: "Isolated runtime exception",
+      outcome: "fault" as const,
+      details: message,
+      timestampSeconds: this.latestTimeSeconds,
+      motorPower: { left: 0, right: 0 },
+    };
+    const nextHistory = [...(prevTrace?.history ?? []), faultEntry].slice(-40);
+    this.executionTrace = {
+      activeInstructionId: null,
+      completedInstructionIds: prevTrace?.completedInstructionIds ?? [],
+      skippedInstructionIds: prevTrace?.skippedInstructionIds ?? [],
+      failedInstructionId: failedId,
+      repeatProgressById: prevTrace?.repeatProgressById ?? {},
+      lastSensorSummary: prevTrace?.lastSensorSummary ?? null,
+      lastSensorStatus: prevTrace?.lastSensorStatus ?? null,
+      lastBranchOutcome: prevTrace?.lastBranchOutcome ?? null,
+      statusMessage: `Fault: ${message}`,
+      errorMessage: message,
+      history: nextHistory,
+    };
   }
 }

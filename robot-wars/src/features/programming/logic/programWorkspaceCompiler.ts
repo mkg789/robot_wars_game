@@ -3,10 +3,26 @@ import type { SensorDescriptor } from "../types/sensor.types";
 import type {
   ProgramInstruction,
   ProgramInstructionKind,
+  ProgramTraceHistoryEntry,
   ProgramValidationIssue,
+  TraceSensorStatus,
   VisualProgramExecutionTrace,
   VisualRobotProgram,
 } from "../types/programWorkspace.types";
+
+export const EMPTY_VISUAL_TRACE: VisualProgramExecutionTrace = Object.freeze({
+  activeInstructionId: null,
+  completedInstructionIds: [],
+  skippedInstructionIds: [],
+  failedInstructionId: null,
+  repeatProgressById: {},
+  lastSensorSummary: null,
+  lastSensorStatus: null,
+  lastBranchOutcome: null,
+  statusMessage: null,
+  errorMessage: null,
+  history: [],
+});
 
 let idCounter = 0;
 export function nextInstructionId(prefix = "instr"): string {
@@ -336,7 +352,65 @@ interface ExecutionFrame {
   readonly list: readonly ProgramInstruction[];
   index: number;
   repeatOwnerId?: string;
+  totalRepeats?: number;
   remainingRepeats?: number;
+}
+
+const MAX_TRACE_HISTORY = 40;
+
+function formatInstructionTitle(instr: ProgramInstruction): string {
+  switch (instr.kind) {
+    case "drive":
+      return `Drive ${instr.direction}`;
+    case "turn":
+      return `Turn ${instr.direction}`;
+    case "set-motors":
+      return "Set Motors";
+    case "stop":
+      return `Stop (${instr.target})`;
+    case "wait":
+      return "Wait";
+    case "read-ultrasonic":
+      return "Read Ultrasonic";
+    case "if-ultrasonic":
+      return "If Ultrasonic";
+    case "repeat":
+      return "Repeat Loop";
+  }
+}
+
+function formatInstructionParams(instr: ProgramInstruction): string {
+  switch (instr.kind) {
+    case "drive":
+    case "turn":
+      return `pwr=${instr.power.toFixed(2)}, ${instr.durationSeconds.toFixed(2)}s`;
+    case "set-motors":
+      return `L=${instr.leftPower.toFixed(2)}, R=${instr.rightPower.toFixed(2)}`;
+    case "stop":
+      return instr.target;
+    case "wait":
+      return `${instr.durationSeconds.toFixed(2)}s`;
+    case "read-ultrasonic":
+      return instr.sensorId ?? "default";
+    case "if-ultrasonic":
+      return `${instr.operator} ${instr.thresholdMeters.toFixed(2)}m`;
+    case "repeat":
+      return `×${instr.count}`;
+  }
+}
+
+function collectNestedIds(list: readonly ProgramInstruction[]): string[] {
+  const out: string[] = [];
+  for (const item of list) {
+    out.push(item.id);
+    if (item.kind === "if-ultrasonic") {
+      out.push(...collectNestedIds(item.thenInstructions));
+      out.push(...collectNestedIds(item.elseInstructions));
+    } else if (item.kind === "repeat") {
+      out.push(...collectNestedIds(item.bodyInstructions));
+    }
+  }
+  return out;
 }
 
 /**
@@ -350,19 +424,51 @@ export function compileVisualProgramToRoutine(
   let stack: ExecutionFrame[] = [];
   let activeTimerRemaining = 0;
   let activeTimedId: string | null = null;
+  let activeTimedInstr: ProgramInstruction | null = null;
+  let activeTimedMotors: { readonly left: number; readonly right: number } | null = null;
   let completedIds: string[] = [];
+  let skippedIds: string[] = [];
+  let repeatProgressById: Record<
+    string,
+    { readonly currentIteration: number; readonly totalIterations: number }
+  > = {};
   let lastSensorSummary: string | null = null;
+  let lastSensorStatus: TraceSensorStatus | null = null;
+  let lastBranchOutcome: string | null = null;
+  let history: ProgramTraceHistoryEntry[] = [];
+  let traceCounter = 0;
+  let currentLeft = 0;
+  let currentRight = 0;
+  let latestTimestamp = 0;
+
+  const pushHistory = (entry: Omit<ProgramTraceHistoryEntry, "id">) => {
+    traceCounter += 1;
+    history = [
+      ...history.slice(-(MAX_TRACE_HISTORY - 1)),
+      { ...entry, id: `trace-${traceCounter}` },
+    ];
+  };
 
   const emitTrace = (
+    api: RobotControlApi | null,
     activeInstructionId: string | null,
     statusMessage: string | null
   ) => {
-    onTrace?.({
+    const snapshot: VisualProgramExecutionTrace = {
       activeInstructionId,
       completedInstructionIds: [...completedIds],
+      skippedInstructionIds: [...skippedIds],
+      failedInstructionId: null,
+      repeatProgressById: { ...repeatProgressById },
       lastSensorSummary,
+      lastSensorStatus,
+      lastBranchOutcome,
       statusMessage,
-    });
+      errorMessage: null,
+      history: [...history],
+    };
+    onTrace?.(snapshot);
+    api?.reportExecutionTrace?.(snapshot);
   };
 
   const resetVm = () => {
@@ -372,8 +478,18 @@ export function compileVisualProgramToRoutine(
         : [];
     activeTimerRemaining = 0;
     activeTimedId = null;
+    activeTimedInstr = null;
+    activeTimedMotors = null;
     completedIds = [];
+    skippedIds = [];
+    repeatProgressById = {};
     lastSensorSummary = null;
+    lastSensorStatus = null;
+    lastBranchOutcome = null;
+    history = [];
+    currentLeft = 0;
+    currentRight = 0;
+    latestTimestamp = 0;
   };
 
   const markCompleted = (id: string) => {
@@ -382,7 +498,63 @@ export function compileVisualProgramToRoutine(
     }
   };
 
-  const stepInstructionPointer = (api: RobotControlApi): "yield" | "done" => {
+  const markSkipped = (list: readonly ProgramInstruction[]) => {
+    for (const item of list) {
+      if (!skippedIds.includes(item.id)) {
+        skippedIds.push(item.id);
+      }
+      pushHistory({
+        instructionId: item.id,
+        instructionKind: item.kind,
+        title: formatInstructionTitle(item),
+        paramsSummary: formatInstructionParams(item),
+        outcome: "skipped",
+        details: "Branch not taken",
+        timestampSeconds: latestTimestamp,
+        motorPower: { left: currentLeft, right: currentRight },
+      });
+      if (item.kind === "if-ultrasonic") {
+        markSkipped(item.thenInstructions);
+        markSkipped(item.elseInstructions);
+      } else if (item.kind === "repeat") {
+        markSkipped(item.bodyInstructions);
+      }
+    }
+  };
+
+  const finishActiveTimedBlock = (api: RobotControlApi) => {
+    if (!activeTimedId || !activeTimedInstr) return;
+    if (
+      activeTimedInstr.kind === "drive" ||
+      activeTimedInstr.kind === "turn"
+    ) {
+      const stopRes = api.stopMotors("both");
+      currentLeft = stopRes.leftPower;
+      currentRight = stopRes.rightPower;
+    }
+    markCompleted(activeTimedId);
+    pushHistory({
+      instructionId: activeTimedInstr.id,
+      instructionKind: activeTimedInstr.kind,
+      title: formatInstructionTitle(activeTimedInstr),
+      paramsSummary: formatInstructionParams(activeTimedInstr),
+      outcome: "completed",
+      details: "Timed instruction finished",
+      timestampSeconds: latestTimestamp,
+      motorPower: { left: currentLeft, right: currentRight },
+    });
+    const top = stack[stack.length - 1];
+    if (top) top.index += 1;
+    activeTimedId = null;
+    activeTimedInstr = null;
+    activeTimedMotors = null;
+    activeTimerRemaining = 0;
+  };
+
+  const stepInstructionPointer = (
+    api: RobotControlApi,
+    isSingleStep: boolean
+  ): "yield" | "done" => {
     let guardSteps = 0;
     while (stack.length > 0 && guardSteps < 200) {
       guardSteps += 1;
@@ -392,6 +564,12 @@ export function compileVisualProgramToRoutine(
         if (top.repeatOwnerId && top.remainingRepeats && top.remainingRepeats > 1) {
           top.remainingRepeats -= 1;
           top.index = 0;
+          const total = top.totalRepeats ?? top.remainingRepeats;
+          const curIter = total - top.remainingRepeats + 1;
+          repeatProgressById[top.repeatOwnerId] = {
+            currentIteration: curIter,
+            totalIterations: total,
+          };
           continue;
         }
         if (top.repeatOwnerId) {
@@ -407,81 +585,184 @@ export function compileVisualProgramToRoutine(
           const sign = instr.direction === "backward" ? -1 : 1;
           const pwr = Math.max(0, Math.min(1, Math.abs(instr.power))) * sign;
           const dur = Math.max(0.01, instr.durationSeconds);
-          api.setDifferentialPower(pwr, pwr);
+          const res = api.setDifferentialPower(pwr, pwr);
+          currentLeft = res.leftPower;
+          currentRight = res.rightPower;
           activeTimedId = instr.id;
+          activeTimedInstr = instr;
+          activeTimedMotors = { left: res.leftPower, right: res.rightPower };
           activeTimerRemaining = dur;
-          emitTrace(instr.id, `Driving ${instr.direction} at ${pwr.toFixed(2)}`);
+          pushHistory({
+            instructionId: instr.id,
+            instructionKind: instr.kind,
+            title: formatInstructionTitle(instr),
+            paramsSummary: formatInstructionParams(instr),
+            outcome: "active",
+            details: `Driving ${instr.direction} (${pwr.toFixed(2)})`,
+            timestampSeconds: latestTimestamp,
+            motorPower: { left: currentLeft, right: currentRight },
+          });
+          emitTrace(api, instr.id, `Driving ${instr.direction} at ${pwr.toFixed(2)}`);
           return "yield";
         }
         case "turn": {
           const mag = Math.max(0, Math.min(1, Math.abs(instr.power)));
           const dur = Math.max(0.01, instr.durationSeconds);
-          // Heading +theta turns Left (+Z), -theta turns Right (-Z):
-          // right turn => left positive, right negative; left turn => left negative, right positive
           const leftP = instr.direction === "right" ? mag : -mag;
           const rightP = instr.direction === "right" ? -mag : mag;
-          api.setDifferentialPower(leftP, rightP);
+          const res = api.setDifferentialPower(leftP, rightP);
+          currentLeft = res.leftPower;
+          currentRight = res.rightPower;
           activeTimedId = instr.id;
+          activeTimedInstr = instr;
+          activeTimedMotors = { left: res.leftPower, right: res.rightPower };
           activeTimerRemaining = dur;
-          emitTrace(instr.id, `Turning ${instr.direction} at ${mag.toFixed(2)}`);
+          pushHistory({
+            instructionId: instr.id,
+            instructionKind: instr.kind,
+            title: formatInstructionTitle(instr),
+            paramsSummary: formatInstructionParams(instr),
+            outcome: "active",
+            details: `Turning ${instr.direction} (${mag.toFixed(2)})`,
+            timestampSeconds: latestTimestamp,
+            motorPower: { left: currentLeft, right: currentRight },
+          });
+          emitTrace(api, instr.id, `Turning ${instr.direction} at ${mag.toFixed(2)}`);
           return "yield";
         }
         case "wait": {
           const dur = Math.max(0.01, instr.durationSeconds);
           activeTimedId = instr.id;
+          activeTimedInstr = instr;
+          activeTimedMotors = null;
           activeTimerRemaining = dur;
-          emitTrace(instr.id, `Waiting ${dur.toFixed(2)}s`);
+          pushHistory({
+            instructionId: instr.id,
+            instructionKind: instr.kind,
+            title: formatInstructionTitle(instr),
+            paramsSummary: formatInstructionParams(instr),
+            outcome: "active",
+            details: `Waiting ${dur.toFixed(2)}s`,
+            timestampSeconds: latestTimestamp,
+            motorPower: { left: currentLeft, right: currentRight },
+          });
+          emitTrace(api, instr.id, `Waiting ${dur.toFixed(2)}s`);
           return "yield";
         }
         case "set-motors": {
-          api.setDifferentialPower(instr.leftPower, instr.rightPower);
+          const res = api.setDifferentialPower(instr.leftPower, instr.rightPower);
+          currentLeft = res.leftPower;
+          currentRight = res.rightPower;
           markCompleted(instr.id);
           top.index += 1;
-          emitTrace(instr.id, `Set motors L=${instr.leftPower.toFixed(2)} R=${instr.rightPower.toFixed(2)}`);
+          pushHistory({
+            instructionId: instr.id,
+            instructionKind: instr.kind,
+            title: formatInstructionTitle(instr),
+            paramsSummary: formatInstructionParams(instr),
+            outcome: "completed",
+            details: `Set L=${currentLeft.toFixed(2)} R=${currentRight.toFixed(2)}`,
+            timestampSeconds: latestTimestamp,
+            motorPower: { left: currentLeft, right: currentRight },
+          });
+          emitTrace(api, instr.id, `Set motors L=${currentLeft.toFixed(2)} R=${currentRight.toFixed(2)}`);
+          if (isSingleStep) return "yield";
           continue;
         }
         case "stop": {
-          if (instr.target === "robot") {
-            api.stopRobot();
-          } else {
-            api.stopMotors(instr.target);
-          }
+          const res =
+            instr.target === "robot"
+              ? api.stopRobot()
+              : api.stopMotors(instr.target);
+          currentLeft = res.leftPower;
+          currentRight = res.rightPower;
           markCompleted(instr.id);
           top.index += 1;
-          emitTrace(instr.id, `Stopped ${instr.target}`);
+          pushHistory({
+            instructionId: instr.id,
+            instructionKind: instr.kind,
+            title: formatInstructionTitle(instr),
+            paramsSummary: formatInstructionParams(instr),
+            outcome: "completed",
+            details: `Stopped ${instr.target}`,
+            timestampSeconds: latestTimestamp,
+            motorPower: { left: currentLeft, right: currentRight },
+          });
+          emitTrace(api, instr.id, `Stopped ${instr.target}`);
+          if (isSingleStep) return "yield";
           continue;
         }
         case "read-ultrasonic": {
           const res = api.readUltrasonic(instr.sensorId);
+          lastSensorStatus = res.ok
+            ? "normal"
+            : res.status === "unavailable-electrical-fault"
+              ? "error"
+              : "unavailable";
           lastSensorSummary =
             res.ok && res.data
               ? `${res.sensorName ?? "Ultrasonic"}: ${res.data.distanceCm.toFixed(1)} cm${res.data.inRange ? "" : " (max)"}`
               : `Ultrasonic unavailable (${res.reason ?? res.status})`;
           markCompleted(instr.id);
           top.index += 1;
-          emitTrace(instr.id, lastSensorSummary);
+          pushHistory({
+            instructionId: instr.id,
+            instructionKind: instr.kind,
+            title: formatInstructionTitle(instr),
+            paramsSummary: formatInstructionParams(instr),
+            outcome: "completed",
+            details: lastSensorSummary,
+            timestampSeconds: latestTimestamp,
+            motorPower: { left: currentLeft, right: currentRight },
+            sensorValueSummary: lastSensorSummary,
+            sensorStatus: lastSensorStatus,
+          });
+          emitTrace(api, instr.id, lastSensorSummary);
+          if (isSingleStep) return "yield";
           continue;
         }
         case "if-ultrasonic": {
           const res = api.readUltrasonic(instr.sensorId);
           let branch = false;
           if (res.ok && res.data) {
+            lastSensorStatus = "normal";
             const dist = res.data.distanceMeters;
             branch =
               instr.operator === "below"
                 ? dist < instr.thresholdMeters
                 : dist > instr.thresholdMeters;
-            lastSensorSummary = `If Ultrasonic (${dist.toFixed(2)}m ${instr.operator} ${instr.thresholdMeters.toFixed(2)}m) -> ${branch ? "TRUE" : "FALSE"}`;
+            lastSensorSummary = `${res.sensorName ?? "Ultrasonic"}: ${dist.toFixed(2)} m (${branch ? "TRUE" : "FALSE"})`;
+            lastBranchOutcome = `IF ${branch ? "TRUE" : "FALSE"} (${dist.toFixed(2)}m ${instr.operator} ${instr.thresholdMeters.toFixed(2)}m) -> ${branch ? "THEN" : "ELSE"}`;
           } else {
-            lastSensorSummary = `If Ultrasonic unavailable (${res.status}) -> ELSE`;
+            lastSensorStatus =
+              res.status === "unavailable-electrical-fault" ? "error" : "unavailable";
+            lastSensorSummary = `Ultrasonic unavailable (${res.status})`;
+            lastBranchOutcome = `IF unavailable (${res.status}) -> ELSE`;
           }
           markCompleted(instr.id);
           top.index += 1;
           const chosenList = branch ? instr.thenInstructions : instr.elseInstructions;
+          const skippedList = branch ? instr.elseInstructions : instr.thenInstructions;
+          if (skippedList.length > 0) {
+            markSkipped(skippedList);
+          }
           if (chosenList.length > 0) {
             stack.push({ list: chosenList, index: 0 });
           }
-          emitTrace(instr.id, lastSensorSummary);
+          pushHistory({
+            instructionId: instr.id,
+            instructionKind: instr.kind,
+            title: formatInstructionTitle(instr),
+            paramsSummary: formatInstructionParams(instr),
+            outcome: "completed",
+            details: lastBranchOutcome,
+            timestampSeconds: latestTimestamp,
+            motorPower: { left: currentLeft, right: currentRight },
+            sensorValueSummary: lastSensorSummary,
+            sensorStatus: lastSensorStatus,
+          });
+          emitTrace(api, instr.id, lastBranchOutcome);
+          if (isSingleStep) return "yield";
           continue;
         }
         case "repeat": {
@@ -491,21 +772,39 @@ export function compileVisualProgramToRoutine(
           );
           top.index += 1;
           if (count > 0 && instr.bodyInstructions.length > 0) {
+            repeatProgressById[instr.id] = {
+              currentIteration: 1,
+              totalIterations: count,
+            };
             stack.push({
               list: instr.bodyInstructions,
               index: 0,
               repeatOwnerId: instr.id,
+              totalRepeats: count,
               remainingRepeats: count,
             });
           } else {
             markCompleted(instr.id);
           }
-          emitTrace(instr.id, `Repeat ×${count}`);
+          pushHistory({
+            instructionId: instr.id,
+            instructionKind: instr.kind,
+            title: formatInstructionTitle(instr),
+            paramsSummary: formatInstructionParams(instr),
+            outcome: "completed",
+            details: `Enter loop ×${count}`,
+            timestampSeconds: latestTimestamp,
+            motorPower: { left: currentLeft, right: currentRight },
+          });
+          emitTrace(api, instr.id, `Repeat ×${count}`);
+          if (isSingleStep) return "yield";
           continue;
         }
       }
     }
 
+    // Also include helper use to avoid unused lint if needed
+    void collectNestedIds;
     return "done";
   };
 
@@ -513,37 +812,49 @@ export function compileVisualProgramToRoutine(
     id: program.id,
     name: program.name,
     description: `Visual routine (${program.instructions.length} top-level step${program.instructions.length === 1 ? "" : "s"})`,
-    onStart: () => {
+    onStart: (api) => {
       resetVm();
-      emitTrace(null, "Program started");
+      emitTrace(api, null, "Program started");
+    },
+    onResume: (api) => {
+      if (
+        activeTimedId &&
+        activeTimedMotors &&
+        (activeTimedInstr?.kind === "drive" || activeTimedInstr?.kind === "turn")
+      ) {
+        const res = api.setDifferentialPower(
+          activeTimedMotors.left,
+          activeTimedMotors.right
+        );
+        currentLeft = res.leftPower;
+        currentRight = res.rightPower;
+      }
+      emitTrace(api, activeTimedId, "Program resumed");
     },
     onTick: (ctx, api) => {
+      latestTimestamp = ctx.timeSeconds;
+
       if (activeTimedId !== null) {
-        activeTimerRemaining -= ctx.dtSeconds;
-        if (activeTimerRemaining > 1e-6) {
-          return;
+        if (ctx.isSingleStep) {
+          finishActiveTimedBlock(api);
+        } else {
+          activeTimerRemaining -= ctx.dtSeconds;
+          if (activeTimerRemaining > 1e-6) {
+            return;
+          }
+          finishActiveTimedBlock(api);
         }
-        // Timed step finished cleanly: stop drive motors after timed drive/turn before continuing
-        const top = stack[stack.length - 1];
-        const finishedInstr = top?.list[top.index];
-        if (finishedInstr && (finishedInstr.kind === "drive" || finishedInstr.kind === "turn")) {
-          api.stopMotors("both");
-        }
-        markCompleted(activeTimedId);
-        if (top) top.index += 1;
-        activeTimedId = null;
-        activeTimerRemaining = 0;
       }
 
-      const outcome = stepInstructionPointer(api);
+      const outcome = stepInstructionPointer(api, Boolean(ctx.isSingleStep));
       if (outcome === "done") {
         api.completeProgram();
-        emitTrace(null, "Routine completed");
+        emitTrace(api, null, "Routine completed");
       }
     },
-    onStop: () => {
+    onStop: (api) => {
       resetVm();
-      emitTrace(null, "Program stopped");
+      emitTrace(api, null, "Program stopped");
     },
   };
 }

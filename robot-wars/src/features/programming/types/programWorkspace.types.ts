@@ -84,11 +84,45 @@ export interface ProgramValidationIssue {
   readonly message: string;
 }
 
+export type ProgramTraceOutcome =
+  | "active"
+  | "completed"
+  | "skipped"
+  | "fault";
+
+export type TraceSensorStatus = "normal" | "unavailable" | "error";
+
+export interface ProgramTraceHistoryEntry {
+  readonly id: string;
+  readonly instructionId: string;
+  readonly instructionKind: ProgramInstructionKind;
+  readonly title: string;
+  readonly paramsSummary: string;
+  readonly outcome: ProgramTraceOutcome;
+  readonly details: string;
+  readonly timestampSeconds: number;
+  readonly motorPower: {
+    readonly left: number;
+    readonly right: number;
+  };
+  readonly sensorValueSummary?: string;
+  readonly sensorStatus?: TraceSensorStatus;
+}
+
 export interface VisualProgramExecutionTrace {
   readonly activeInstructionId: string | null;
   readonly completedInstructionIds: readonly string[];
+  readonly skippedInstructionIds: readonly string[];
+  readonly failedInstructionId: string | null;
+  readonly repeatProgressById: Readonly<
+    Record<string, { readonly currentIteration: number; readonly totalIterations: number }>
+  >;
   readonly lastSensorSummary: string | null;
+  readonly lastSensorStatus: TraceSensorStatus | null;
+  readonly lastBranchOutcome: string | null;
   readonly statusMessage: string | null;
+  readonly errorMessage: string | null;
+  readonly history: readonly ProgramTraceHistoryEntry[];
 }
 
 export function getInstructionCategory(

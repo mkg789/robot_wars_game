@@ -9,12 +9,14 @@ import type {
   SensorReadResult,
   UltrasonicDistanceData,
 } from "./sensor.types";
+import type { VisualProgramExecutionTrace } from "./programWorkspace.types";
 
 export type RobotControlSource = "manual" | "program" | "autonomous";
 
 export type RobotProgramStatus =
   | "idle"
   | "running"
+  | "paused"
   | "stopped"
   | "fault"
   | "completed";
@@ -103,6 +105,8 @@ export interface RobotProgramStepContext {
   };
   /** Typed simulated sensor snapshot from actual installed robot sensors. */
   readonly sensors?: RobotSensorsSnapshot;
+  /** True when invoked from single-step debugger control. */
+  readonly isSingleStep?: boolean;
 }
 
 export interface RobotControlApi {
@@ -120,6 +124,7 @@ export interface RobotControlApi {
   stopRobot: () => CommandNormalizationResult;
   dispatchCommand: (command: RobotActuatorCommand) => CommandNormalizationResult;
   completeProgram: () => void;
+  reportExecutionTrace?: (trace: VisualProgramExecutionTrace) => void;
   getInstalledSensors: () => readonly SensorDescriptor[];
   readUltrasonic: (sensorId?: string) => SensorReadResult<UltrasonicDistanceData>;
   readProximity: (sensorId?: string) => SensorReadResult<IrProximityData>;
@@ -136,6 +141,7 @@ export interface RobotControlRoutine {
   readonly name: string;
   readonly description: string;
   readonly onStart?: (api: RobotControlApi) => void;
+  readonly onResume?: (api: RobotControlApi) => void;
   readonly onTick: (ctx: RobotProgramStepContext, api: RobotControlApi) => void;
   readonly onStop?: (api: RobotControlApi) => void;
 }
@@ -151,12 +157,14 @@ export interface RobotProgramControllerState {
   readonly lastWarnings: readonly string[];
   readonly commandLogCount: number;
   readonly lastError: string | null;
+  readonly executionTrace: VisualProgramExecutionTrace | null;
 }
 
 export function buildProgramStepContext(
   telemetry: SimulationTelemetrySnapshot,
   dtSeconds: number,
-  sensors?: RobotSensorsSnapshot
+  sensors?: RobotSensorsSnapshot,
+  isSingleStep = false
 ): RobotProgramStepContext {
   return {
     timeSeconds: telemetry.timeSeconds,
@@ -184,5 +192,6 @@ export function buildProgramStepContext(
       collidedBarrierIds: telemetry.collision.collidedBarrierIds,
     },
     sensors,
+    isSingleStep,
   };
 }

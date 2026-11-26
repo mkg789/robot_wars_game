@@ -2644,3 +2644,123 @@
   gap: 2px;
   font-size: 10.5px;
 }
+
+.prog-block.is-skipped {
+  opacity: 0.65;
+  border-color: #334155;
+  border-style: dashed;
+}
+
+.prog-block.is-failed {
+  border-color: #ef4444;
+  box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.45);
+}
+
+.prog-exec-pill.skipped {
+  background: #1e293b;
+  color: #94a3b8;
+}
+
+.prog-exec-pill.fault {
+  background: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+}
+
+.prog-exec-pill.repeat {
+  background: rgba(168, 85, 247, 0.2);
+  color: #d8b4fe;
+}
+
+.prog-exec-pill.completed {
+  background: #14532d;
+  color: #86efac;
+}
+
+.prog-exec-pill.active {
+  background: #14532d;
+  color: #86efac;
+}
+
+.prog-fault-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 10px 14px;
+  border-bottom: 1px solid #7f1d1d;
+  background: rgba(127, 29, 29, 0.35);
+  color: #fecaca;
+  font-size: 12px;
+}
+
+.prog-trace-panel {
+  margin-top: 16px;
+  padding: 12px;
+  border-radius: 8px;
+  border: 1px solid #263242;
+  background: #121923;
+  display: grid;
+  gap: 10px;
+}
+
+.prog-trace-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 12px;
+  color: #e2e8f0;
+}
+
+.prog-trace-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+  font-size: 11px;
+  color: #cbd5e1;
+}
+
+.prog-trace-summary-grid small {
+  display: block;
+  font-size: 10px;
+  color: #94a3b8;
+  margin-bottom: 2px;
+}
+
+.prog-trace-history {
+  display: grid;
+  gap: 4px;
+  max-height: 220px;
+  overflow-y: auto;
+}
+
+.prog-trace-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 5px;
+  background: #0f151e;
+  border: 1px solid #1f2937;
+  font-size: 11px;
+  color: #cbd5e1;
+}
+
+.prog-trace-row.outcome-fault {
+  border-color: #7f1d1d;
+  background: rgba(127, 29, 29, 0.22);
+}
+
+.prog-trace-time {
+  font-family: monospace;
+  color: #94a3b8;
+}
+
+.prog-trace-title {
+  font-weight: 600;
+  color: #f1f5f9;
+}
+
+.prog-trace-details {
+  color: #94a3b8;
+}

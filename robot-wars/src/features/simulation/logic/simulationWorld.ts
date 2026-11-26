@@ -629,6 +629,56 @@ export class SimulationWorld {
     return started;
   }
 
+  pauseProgram(): boolean {
+    const paused = this.controlController.pauseProgram();
+    this.activeControls = NEUTRAL_DRIVE_CONTROLS;
+    this.activeInput = NEUTRAL_DRIVETRAIN_INPUT;
+    this.notify();
+    return paused;
+  }
+
+  resumeProgram(): boolean {
+    if (this.lifecycleStatus === "error") return false;
+    this.activeControls = NEUTRAL_DRIVE_CONTROLS;
+    const resumed = this.controlController.resumeProgram();
+    this.activeInput = this.controlController.getDrivetrainInput();
+    if (resumed && this.lifecycleStatus !== "running") {
+      this.lifecycleStatus = "running";
+    }
+    this.notify();
+    return resumed;
+  }
+
+  /**
+   * Executes one deterministic single-step debugger tick and integrates one physics slice,
+   * leaving the program safely paused with zero held throttle afterward.
+   */
+  stepProgram(
+    stepDtSeconds = DEFAULT_FIXED_TIMESTEP_SECONDS
+  ): SimulationAdvanceResult | null {
+    if (this.lifecycleStatus === "error") return null;
+    if (!Number.isFinite(stepDtSeconds) || stepDtSeconds <= 0) return null;
+
+    const clampedDelta = Math.min(stepDtSeconds, this.maxFrameDeltaSeconds);
+    try {
+      this.activeControls = NEUTRAL_DRIVE_CONTROLS;
+      const stepInput = this.controlController.stepProgramInstruction(
+        this.getTelemetrySnapshot(),
+        clampedDelta
+      );
+      const result = this.integratePhysicsStep(stepInput, clampedDelta);
+      this.activeInput = this.controlController.getDrivetrainInput();
+      this.notify();
+      return result;
+    } catch (error) {
+      this.clearInputs();
+      this.lastError = error instanceof Error ? error.message : String(error);
+      this.lifecycleStatus = "error";
+      this.notify();
+      return null;
+    }
+  }
+
   stopProgram(): void {
     this.controlController.stopProgram();
     this.activeControls = NEUTRAL_DRIVE_CONTROLS;
@@ -774,6 +824,62 @@ export class SimulationWorld {
     this.activeInput = NEUTRAL_DRIVETRAIN_INPUT;
   }
 
+  private integratePhysicsStep(
+    input: DrivetrainInput,
+    clampedDelta: number
+  ): SimulationAdvanceResult {
+    const result = advanceSimulation(
+      this.robotConfig,
+      this.runnerState,
+      input,
+      clampedDelta,
+      this.runnerOptions
+    );
+
+    this.runnerState = result.runnerState;
+
+    if (result.stepDiagnostics.length > 0) {
+      for (const step of result.stepDiagnostics) {
+        const stepDt = step.diagnostics.timestepSeconds;
+        this.encoderAccumulator = {
+          leftRadians:
+            this.encoderAccumulator.leftRadians +
+            step.state.leftWheelAngularVelocityRadPerSec * stepDt,
+          rightRadians:
+            this.encoderAccumulator.rightRadians +
+            step.state.rightWheelAngularVelocityRadPerSec * stepDt,
+          leftDistanceMeters:
+            this.encoderAccumulator.leftDistanceMeters +
+            step.state.leftWheelLinearSurfaceSpeedMps * stepDt,
+          rightDistanceMeters:
+            this.encoderAccumulator.rightDistanceMeters +
+            step.state.rightWheelLinearSurfaceSpeedMps * stepDt,
+        };
+      }
+
+      const lastStep = result.stepDiagnostics[result.stepDiagnostics.length - 1];
+      this.latestStepDiagnostics = lastStep;
+      let collidingStep: DynamicsStepResult | undefined;
+      for (let i = result.stepDiagnostics.length - 1; i >= 0; i--) {
+        if (result.stepDiagnostics[i].collisionResponse?.hasCollisions) {
+          collidingStep = result.stepDiagnostics[i];
+          break;
+        }
+      }
+      this.latestCollision = buildCollisionSnapshot(
+        collidingStep?.collisionResponse ?? lastStep.collisionResponse
+      );
+    }
+
+    this.controlController.updateSensorContext({
+      arena: this.arena,
+      simState: this.runnerState.simulationState,
+      encoderAccumulator: this.encoderAccumulator,
+    });
+
+    return result;
+  }
+
   /**
    * Advances simulation physics via advanceSimulation using the configured fixed timestep.
    * No-ops when paused, ready, or in error state.
@@ -793,57 +899,7 @@ export class SimulationWorld {
         this.getTelemetrySnapshot(),
         clampedDelta
       );
-
-      const result = advanceSimulation(
-        this.robotConfig,
-        this.runnerState,
-        this.activeInput,
-        clampedDelta,
-        this.runnerOptions
-      );
-
-      this.runnerState = result.runnerState;
-
-      if (result.stepDiagnostics.length > 0) {
-        for (const step of result.stepDiagnostics) {
-          const stepDt = step.diagnostics.timestepSeconds;
-          this.encoderAccumulator = {
-            leftRadians:
-              this.encoderAccumulator.leftRadians +
-              step.state.leftWheelAngularVelocityRadPerSec * stepDt,
-            rightRadians:
-              this.encoderAccumulator.rightRadians +
-              step.state.rightWheelAngularVelocityRadPerSec * stepDt,
-            leftDistanceMeters:
-              this.encoderAccumulator.leftDistanceMeters +
-              step.state.leftWheelLinearSurfaceSpeedMps * stepDt,
-            rightDistanceMeters:
-              this.encoderAccumulator.rightDistanceMeters +
-              step.state.rightWheelLinearSurfaceSpeedMps * stepDt,
-          };
-        }
-
-        const lastStep = result.stepDiagnostics[result.stepDiagnostics.length - 1];
-        this.latestStepDiagnostics = lastStep;
-        let collidingStep: DynamicsStepResult | undefined;
-        for (let i = result.stepDiagnostics.length - 1; i >= 0; i--) {
-          if (result.stepDiagnostics[i].collisionResponse?.hasCollisions) {
-            collidingStep = result.stepDiagnostics[i];
-            break;
-          }
-        }
-        this.latestCollision = buildCollisionSnapshot(
-          collidingStep?.collisionResponse ?? lastStep.collisionResponse
-        );
-      }
-
-      this.controlController.updateSensorContext({
-        arena: this.arena,
-        simState: this.runnerState.simulationState,
-        encoderAccumulator: this.encoderAccumulator,
-      });
-
-      return result;
+      return this.integratePhysicsStep(this.activeInput, clampedDelta);
     } catch (error) {
       this.clearInputs();
       this.lastError = error instanceof Error ? error.message : String(error);

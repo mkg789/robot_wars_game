@@ -1,6 +1,7 @@
 import { Canvas } from "@react-three/fiber";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createStarterPresets } from "../../features/programming/logic/programPersistence";
+import { EMPTY_VISUAL_TRACE } from "../../features/programming/logic/programWorkspaceCompiler";
 import type {
   VisualProgramExecutionTrace,
   VisualRobotProgram,
@@ -118,12 +119,8 @@ export default function SimulationView({
   const [visualProgram, setVisualProgram] = useState<VisualRobotProgram>(
     () => createStarterPresets()[0]
   );
-  const [visualTrace, setVisualTrace] = useState<VisualProgramExecutionTrace>({
-    activeInstructionId: null,
-    completedInstructionIds: [],
-    lastSensorSummary: null,
-    statusMessage: null,
-  });
+  const [visualTrace, setVisualTrace] =
+    useState<VisualProgramExecutionTrace>(EMPTY_VISUAL_TRACE);
   const [cameraMode, setCameraMode] = useState<SimulationCameraMode>("orbit");
   const [cameraPreset, setCameraPreset] =
     useState<SimulationCameraPreset>("overview");
@@ -417,7 +414,11 @@ export default function SimulationView({
             onProgramChange={setVisualProgram}
             controlState={controlState ?? world.getControlState()}
             sensorsSnapshot={sensorsSnapshot}
-            trace={visualTrace}
+            trace={
+              controlState?.executionTrace ??
+              world.getControlState().executionTrace ??
+              visualTrace
+            }
             onTraceChange={setVisualTrace}
             onSwitchTo3DArena={() => setSimViewMode("arena")}
           />

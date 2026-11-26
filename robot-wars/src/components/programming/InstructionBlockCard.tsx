@@ -46,7 +46,16 @@ export default function InstructionBlockCard({
 }: InstructionBlockCardProps) {
   const category = getInstructionCategory(instruction.kind);
   const isActive = trace.activeInstructionId === instruction.id;
+  const isFailed = trace.failedInstructionId === instruction.id;
   const isCompleted = trace.completedInstructionIds.includes(instruction.id);
+  const isSkipped =
+    !isActive &&
+    !isFailed &&
+    trace.skippedInstructionIds.includes(instruction.id);
+  const repeatProgress =
+    instruction.kind === "repeat"
+      ? trace.repeatProgressById[instruction.id]
+      : undefined;
   const blockIssues = issues.filter((i) => i.instructionId === instruction.id);
 
   const renderTitle = () => {
@@ -73,7 +82,9 @@ export default function InstructionBlockCard({
   return (
     <div
       className={`prog-block cat-${category} ${isActive ? "is-active" : ""} ${
-        isCompleted && !isActive ? "is-done" : ""
+        isFailed ? "is-failed" : ""
+      } ${isCompleted && !isActive && !isFailed ? "is-done" : ""} ${
+        isSkipped ? "is-skipped" : ""
       }`}
     >
       <div className="prog-block-header">
@@ -85,8 +96,17 @@ export default function InstructionBlockCard({
             {index + 1}. {renderTitle()}
           </strong>
           {isActive && <span className="prog-exec-pill active">RUNNING</span>}
-          {isCompleted && !isActive && (
+          {isFailed && <span className="prog-exec-pill fault">✕ FAILED</span>}
+          {isCompleted && !isActive && !isFailed && (
             <span className="prog-exec-pill done">✓ DONE</span>
+          )}
+          {isSkipped && (
+            <span className="prog-exec-pill skipped">↷ SKIPPED</span>
+          )}
+          {repeatProgress && (
+            <span className="prog-exec-pill repeat">
+              Iter {repeatProgress.currentIteration}/{repeatProgress.totalIterations}
+            </span>
           )}
         </div>
 

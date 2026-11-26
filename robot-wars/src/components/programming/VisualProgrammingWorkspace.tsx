@@ -3,6 +3,7 @@ import {
   compileVisualProgramToRoutine,
   createDefaultInstruction,
   duplicateInstruction,
+  EMPTY_VISUAL_TRACE,
   insertInstruction,
   moveInstruction,
   removeInstruction,
@@ -94,13 +95,6 @@ const TOOLBOX_ITEMS: ReadonlyArray<{
   },
 ];
 
-const EMPTY_TRACE: VisualProgramExecutionTrace = {
-  activeInstructionId: null,
-  completedInstructionIds: [],
-  lastSensorSummary: null,
-  statusMessage: null,
-};
-
 export default function VisualProgrammingWorkspace({
   world,
   program,
@@ -123,10 +117,34 @@ export default function VisualProgrammingWorkspace({
   );
   const errorCount = issues.filter((i) => i.severity === "error").length;
 
+  const isRunning = controlState.programStatus === "running";
+  const isPaused = controlState.programStatus === "paused";
+  const isFault = controlState.programStatus === "fault";
+  const canExecute = errorCount === 0 && controlState.binding.canDrive;
+
   const handleRunRoutine = () => {
     const routine = compileVisualProgramToRoutine(program, onTraceChange);
     world.setProgramRoutine(routine);
     world.startProgram();
+  };
+
+  const handlePauseRoutine = () => {
+    world.pauseProgram();
+  };
+
+  const handleResumeRoutine = () => {
+    world.resumeProgram();
+  };
+
+  const handleStepRoutine = () => {
+    if (
+      controlState.programStatus === "idle" ||
+      controlState.activeProgramId !== program.id
+    ) {
+      const routine = compileVisualProgramToRoutine(program, onTraceChange);
+      world.setProgramRoutine(routine);
+    }
+    world.stepProgram();
   };
 
   const handleStopRoutine = () => {
@@ -140,7 +158,7 @@ export default function VisualProgrammingWorkspace({
 
   const handleResetSimulation = () => {
     world.reset();
-    onTraceChange(EMPTY_TRACE);
+    onTraceChange(EMPTY_VISUAL_TRACE);
   };
 
   const handleSave = () => {
@@ -204,7 +222,7 @@ export default function VisualProgrammingWorkspace({
                 className="top-button"
                 style={{ textAlign: "left" }}
                 onClick={() => {
-                  onTraceChange(EMPTY_TRACE);
+                  onTraceChange(EMPTY_VISUAL_TRACE);
                   onProgramChange({
                     ...preset,
                     id: createEmptyVisualProgram().id,
@@ -231,7 +249,7 @@ export default function VisualProgrammingWorkspace({
                     type="button"
                     className="electrical-installed-select"
                     onClick={() => {
-                      onTraceChange(EMPTY_TRACE);
+                      onTraceChange(EMPTY_VISUAL_TRACE);
                       onProgramChange(saved);
                     }}
                   >
@@ -273,10 +291,43 @@ export default function VisualProgrammingWorkspace({
           <button
             type="button"
             className="primary-button"
-            disabled={errorCount > 0 || !controlState.binding.canDrive}
+            disabled={!canExecute}
             onClick={handleRunRoutine}
           >
             ▶ Run Routine
+          </button>
+          {isPaused ? (
+            <button
+              type="button"
+              className="primary-button"
+              disabled={!canExecute}
+              onClick={handleResumeRoutine}
+            >
+              ▶ Resume
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="top-button"
+              disabled={!isRunning}
+              onClick={handlePauseRoutine}
+            >
+              ⏸ Pause
+            </button>
+          )}
+          <button
+            type="button"
+            className="top-button"
+            disabled={
+              !canExecute ||
+              isRunning ||
+              controlState.programStatus === "completed" ||
+              controlState.programStatus === "stopped" ||
+              isFault
+            }
+            onClick={handleStepRoutine}
+          >
+            ⏭ Step
           </button>
           <button
             type="button"
@@ -299,7 +350,7 @@ export default function VisualProgrammingWorkspace({
             type="button"
             className="top-button"
             onClick={() => {
-              onTraceChange(EMPTY_TRACE);
+              onTraceChange(EMPTY_VISUAL_TRACE);
               onProgramChange(createEmptyVisualProgram());
             }}
           >
@@ -317,7 +368,20 @@ export default function VisualProgrammingWorkspace({
         {/* Live Execution Status & Sensor Banner */}
         <div className="prog-status-bar">
           <span>
-            State: <strong>{controlState.programStatus.toUpperCase()}</strong>
+            State:{" "}
+            <strong
+              style={{
+                color: isFault
+                  ? "#fca5a5"
+                  : isPaused
+                    ? "#fde68a"
+                    : isRunning
+                      ? "#86efac"
+                      : undefined,
+              }}
+            >
+              {controlState.programStatus.toUpperCase()}
+            </strong>
           </span>
           <span>
             Motors:{" "}
@@ -328,9 +392,48 @@ export default function VisualProgrammingWorkspace({
           </span>
           {trace.statusMessage && <span>Trace: {trace.statusMessage}</span>}
           {trace.lastSensorSummary && (
-            <span style={{ color: "#38bdf8" }}>{trace.lastSensorSummary}</span>
+            <span
+              style={{
+                color:
+                  trace.lastSensorStatus === "error"
+                    ? "#fca5a5"
+                    : trace.lastSensorStatus === "unavailable"
+                      ? "#fde68a"
+                      : "#38bdf8",
+              }}
+            >
+              {trace.lastSensorSummary}
+            </span>
+          )}
+          {trace.lastBranchOutcome && (
+            <span style={{ color: "#d8b4fe" }}>
+              Branch: {trace.lastBranchOutcome}
+            </span>
           )}
         </div>
+
+        {(isFault || trace.errorMessage || controlState.lastError) && (
+          <div className="prog-fault-banner" role="alert">
+            <div>
+              <strong>Runtime Fault Halted Robot Safely</strong>
+              <div>
+                {trace.errorMessage ??
+                  controlState.lastError ??
+                  "Program execution faulted."}
+                {trace.failedInstructionId
+                  ? ` (Instruction ID: ${trace.failedInstructionId})`
+                  : ""}
+              </div>
+            </div>
+            <button
+              type="button"
+              className="top-button"
+              onClick={handleResetSimulation}
+            >
+              Reset &amp; Clear Fault
+            </button>
+          </div>
+        )}
 
         {issues.length > 0 && (
           <div className="prog-validation-strip">
@@ -433,6 +536,68 @@ export default function VisualProgrammingWorkspace({
               ))}
             </div>
           )}
+
+          {/* Execution Trace & Runtime History Panel */}
+          <section className="prog-trace-panel" aria-label="Execution Trace">
+            <div className="prog-trace-header">
+              <strong>Execution Trace &amp; Sensor Inspector</strong>
+              <span>
+                {trace.history.length} event
+                {trace.history.length === 1 ? "" : "s"}
+              </span>
+            </div>
+            <div className="prog-trace-summary-grid">
+              <div>
+                <small>Active Block</small>
+                <div>{trace.activeInstructionId ?? "None"}</div>
+              </div>
+              <div>
+                <small>Sensor Status</small>
+                <div>
+                  {trace.lastSensorStatus
+                    ? trace.lastSensorStatus.toUpperCase()
+                    : "IDLE"}
+                </div>
+              </div>
+              <div>
+                <small>Last Sensor Reading</small>
+                <div>{trace.lastSensorSummary ?? "No sensor sample yet"}</div>
+              </div>
+              <div>
+                <small>Last Branch</small>
+                <div>{trace.lastBranchOutcome ?? "—"}</div>
+              </div>
+            </div>
+            {trace.history.length === 0 ? (
+              <small className="workshop-compat-hint">
+                Run or Step through a routine to inspect per-instruction timing,
+                motor outputs, skipped branches, and sensor values.
+              </small>
+            ) : (
+              <div className="prog-trace-history">
+                {trace.history.map((entry, idx) => (
+                  <div
+                    key={entry.id}
+                    className={`prog-trace-row outcome-${entry.outcome}`}
+                  >
+                    <span className="prog-trace-time">
+                      t={entry.timestampSeconds.toFixed(2)}s
+                    </span>
+                    <span className="prog-trace-title">
+                      #{idx + 1} {entry.title}
+                    </span>
+                    <span className={`prog-exec-pill ${entry.outcome}`}>
+                      {entry.outcome.toUpperCase()}
+                    </span>
+                    <span className="prog-trace-details">
+                      {entry.details} · L={entry.motorPower.left.toFixed(2)} R=
+                      {entry.motorPower.right.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </section>
         </div>
       </main>
     </>
