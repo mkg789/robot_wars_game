@@ -4,16 +4,19 @@ import type {
   MotorChannelTarget,
   RobotProgramControllerState,
 } from "../../features/programming/types/control.types";
+import type { RobotSensorsSnapshot } from "../../features/programming/types/sensor.types";
 import type { SimulationWorld } from "../../features/simulation/logic/simulationWorld";
 
 interface SimulationControlPanelProps {
   readonly world: SimulationWorld;
   readonly controlState: RobotProgramControllerState;
+  readonly sensorsSnapshot: RobotSensorsSnapshot | null;
 }
 
 export default function SimulationControlPanel({
   world,
   controlState,
+  sensorsSnapshot,
 }: SimulationControlPanelProps) {
   const [selectedRoutineId, setSelectedRoutineId] = useState(
     BUILTIN_CONTROL_ROUTINES[0].id
@@ -194,6 +197,72 @@ export default function SimulationControlPanel({
         <small className="builder-intro" style={{ display: "block", marginTop: 6, color: "#fbbf24" }}>
           {controlState.lastWarnings[0]}
         </small>
+      )}
+
+      {sensorsSnapshot && (
+        <div className="workshop-mount-target" style={{ marginTop: 10 }}>
+          <div className="section-label">
+            INSTALLED SENSORS ({sensorsSnapshot.installedSensors.length})
+          </div>
+          {sensorsSnapshot.installedSensors.length === 0 ? (
+            <small className="builder-intro">
+              No sensors installed. Add Ultrasonic, IR, Line, IMU, or Encoders in ⚡ Electrical.
+            </small>
+          ) : (
+            <div className="motor-spec-card">
+              {sensorsSnapshot.installedSensors.map((sensor) => {
+                let readingText = sensor.availabilityReason ?? sensor.availability;
+                if (sensor.availability === "ready") {
+                  if (
+                    (sensor.sensorKind === "ultrasonic" ||
+                      sensor.sensorKind === "tof-distance") &&
+                    sensorsSnapshot.ultrasonic.ok &&
+                    sensorsSnapshot.ultrasonic.data
+                  ) {
+                    const u = world.getControlApi().readUltrasonic(sensor.sensorId);
+                    if (u.ok && u.data) {
+                      readingText = u.data.inRange
+                        ? `${u.data.distanceCm.toFixed(1)} cm`
+                        : `>${u.data.maxRangeMeters.toFixed(1)} m (clear)`;
+                    }
+                  } else if (sensor.sensorKind === "ir-proximity") {
+                    const p = world.getControlApi().readProximity(sensor.sensorId);
+                    if (p.ok && p.data) {
+                      readingText = p.data.detected
+                        ? `DETECTED (${((p.data.distanceMeters ?? 0) * 100).toFixed(1)} cm)`
+                        : "Clear";
+                    }
+                  } else if (sensor.sensorKind === "line-sensor") {
+                    const l = world.getControlApi().readLineSensor(sensor.sensorId);
+                    if (l.ok && l.data) {
+                      readingText = `${l.data.channels.map((b) => (b ? "1" : "0")).join("")} · ${l.data.surfaceName}`;
+                    }
+                  } else if (
+                    sensor.sensorKind === "imu" ||
+                    sensor.sensorKind === "accelerometer" ||
+                    sensor.sensorKind === "gyroscope"
+                  ) {
+                    const imu = world.getControlApi().readImu(sensor.sensorId);
+                    if (imu.ok && imu.data) {
+                      readingText = `${imu.data.headingDegrees.toFixed(1)}° · ${imu.data.yawRateDegPerSec.toFixed(1)}°/s`;
+                    }
+                  } else if (sensor.sensorKind === "encoder") {
+                    const enc = world.getControlApi().readEncoder(sensor.sensorId);
+                    if (enc.ok && enc.data) {
+                      readingText = `${enc.data.ticks} ticks (${enc.data.distanceMeters.toFixed(2)} m)`;
+                    }
+                  }
+                }
+                return (
+                  <div className="property-row" key={sensor.sensorId}>
+                    <span>{sensor.name}</span>
+                    <span>{readingText}</span>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
       )}
     </div>
   );

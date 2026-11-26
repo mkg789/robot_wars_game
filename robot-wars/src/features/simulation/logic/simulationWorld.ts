@@ -23,6 +23,10 @@ import type {
   RobotProgramControllerState,
 } from "../../programming/types/control.types";
 import type {
+  EncoderAccumulatorState,
+  RobotSensorsSnapshot,
+} from "../../programming/types/sensor.types";
+import type {
   DrivetrainConfiguration,
   FoundationConfig,
   RobotConnection,
@@ -344,6 +348,12 @@ export class SimulationWorld {
   private lastError: string | null = null;
   private readonly listeners = new Set<SimulationWorldListener>();
   private readonly controlController: RobotControlController;
+  private encoderAccumulator: EncoderAccumulatorState = {
+    leftRadians: 0,
+    rightRadians: 0,
+    leftDistanceMeters: 0,
+    rightDistanceMeters: 0,
+  };
 
   constructor(options: SimulationWorldOptions) {
     if (!options || typeof options !== "object") {
@@ -414,6 +424,13 @@ export class SimulationWorld {
       robotConfig: this.robotConfig,
       parts: options.parts,
       electricalConnections: options.electricalConnections,
+      arena: this.arena,
+      simState: this.runnerState.simulationState,
+    });
+    this.controlController.updateSensorContext({
+      arena: this.arena,
+      simState: this.runnerState.simulationState,
+      encoderAccumulator: this.encoderAccumulator,
     });
   }
 
@@ -590,6 +607,10 @@ export class SimulationWorld {
     return this.controlController.getState();
   }
 
+  getSensorsSnapshot(): RobotSensorsSnapshot | null {
+    return this.controlController.readSensorsSnapshot();
+  }
+
   setProgramRoutine(routine: RobotControlRoutine | null): void {
     this.controlController.setProgramRoutine(routine);
     this.activeInput = this.controlController.getDrivetrainInput();
@@ -680,6 +701,12 @@ export class SimulationWorld {
    * and collision diagnostics cleanly and deterministically.
    */
   reset(): void {
+    this.encoderAccumulator = {
+      leftRadians: 0,
+      rightRadians: 0,
+      leftDistanceMeters: 0,
+      rightDistanceMeters: 0,
+    };
     this.controlController.reset();
     this.clearInputs();
     this.runnerState = createInitialRunnerState(
@@ -687,6 +714,11 @@ export class SimulationWorld {
       this.resolvedInitialPose,
       this.runnerOptions
     );
+    this.controlController.updateSensorContext({
+      arena: this.arena,
+      simState: this.runnerState.simulationState,
+      encoderAccumulator: this.encoderAccumulator,
+    });
     this.latestCollision = EMPTY_COLLISION_SNAPSHOT;
     this.latestStepDiagnostics = null;
     this.lastError = null;
@@ -773,6 +805,24 @@ export class SimulationWorld {
       this.runnerState = result.runnerState;
 
       if (result.stepDiagnostics.length > 0) {
+        for (const step of result.stepDiagnostics) {
+          const stepDt = step.diagnostics.timestepSeconds;
+          this.encoderAccumulator = {
+            leftRadians:
+              this.encoderAccumulator.leftRadians +
+              step.state.leftWheelAngularVelocityRadPerSec * stepDt,
+            rightRadians:
+              this.encoderAccumulator.rightRadians +
+              step.state.rightWheelAngularVelocityRadPerSec * stepDt,
+            leftDistanceMeters:
+              this.encoderAccumulator.leftDistanceMeters +
+              step.state.leftWheelLinearSurfaceSpeedMps * stepDt,
+            rightDistanceMeters:
+              this.encoderAccumulator.rightDistanceMeters +
+              step.state.rightWheelLinearSurfaceSpeedMps * stepDt,
+          };
+        }
+
         const lastStep = result.stepDiagnostics[result.stepDiagnostics.length - 1];
         this.latestStepDiagnostics = lastStep;
         let collidingStep: DynamicsStepResult | undefined;
@@ -786,6 +836,12 @@ export class SimulationWorld {
           collidingStep?.collisionResponse ?? lastStep.collisionResponse
         );
       }
+
+      this.controlController.updateSensorContext({
+        arena: this.arena,
+        simState: this.runnerState.simulationState,
+        encoderAccumulator: this.encoderAccumulator,
+      });
 
       return result;
     } catch (error) {

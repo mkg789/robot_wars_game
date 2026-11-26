@@ -50,4 +50,25 @@ export const BUILTIN_CONTROL_ROUTINES: readonly RobotControlRoutine[] = [
       }
     },
   },
+  {
+    id: "program-ultrasonic-guard",
+    name: "Obstacle Guard (Ultrasonic / IR)",
+    description:
+      "Drives forward while clear and stops automatically if an installed Ultrasonic or IR sensor detects an obstacle within 0.8m.",
+    onTick: (_ctx, api) => {
+      const sonar = api.readUltrasonic();
+      if (sonar.ok && sonar.data && sonar.data.inRange && sonar.data.distanceMeters < 0.8) {
+        api.stopRobot();
+        api.completeProgram();
+        return;
+      }
+      const ir = api.readProximity();
+      if (ir.ok && ir.data?.detected) {
+        api.stopRobot();
+        api.completeProgram();
+        return;
+      }
+      api.setMotorPower("both", 0.55);
+    },
+  },
 ];

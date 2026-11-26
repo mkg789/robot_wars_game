@@ -103,6 +103,9 @@ export default function SimulationView({
   const [controlState, setControlState] = useState(() =>
     world ? world.getControlState() : null
   );
+  const [sensorsSnapshot, setSensorsSnapshot] = useState(() =>
+    world ? world.getSensorsSnapshot() : null
+  );
   const [cameraMode, setCameraMode] = useState<SimulationCameraMode>("orbit");
   const [cameraPreset, setCameraPreset] =
     useState<SimulationCameraPreset>("overview");
@@ -137,6 +140,7 @@ export default function SimulationView({
       setTelemetry(world.getTelemetrySnapshot());
       setDriveControls(world.getActiveControls());
       setControlState(world.getControlState());
+      setSensorsSnapshot(world.getSensorsSnapshot());
     });
     return () => {
       unsubscribe();
@@ -560,6 +564,7 @@ export default function SimulationView({
                 <SimulationControlPanel
                   world={world}
                   controlState={controlState}
+                  sensorsSnapshot={sensorsSnapshot}
                 />
               ) : null
             ) : (
@@ -671,6 +676,7 @@ export default function SimulationView({
               onTelemetryTick={(t) => {
                 setTelemetry(t);
                 setControlState(world.getControlState());
+                setSensorsSnapshot(world.getSensorsSnapshot());
               }}
               assemblyParts={parts}
               connections={connections}

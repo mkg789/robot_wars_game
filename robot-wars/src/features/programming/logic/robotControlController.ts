@@ -1,12 +1,26 @@
 import type { ElectricalConnection } from "../../electrical/types/electrical.types";
 import type { RobotPart } from "../../robot-builder/types/robot.types";
-import type { DrivetrainInput, SimulationRobotConfig } from "../../simulation/types/simulation.types";
+import type { ArenaConfig } from "../../simulation/types/arena.types";
+import type {
+  DrivetrainInput,
+  SimulationRobotConfig,
+  SimulationState,
+} from "../../simulation/types/simulation.types";
 import type { SimulationTelemetrySnapshot } from "../../simulation/types/simulationWorld.types";
 import {
   applyCommandToDriveTarget,
   NEUTRAL_NORMALIZED_TARGET,
   resolveRobotHardwareBinding,
 } from "./controlCommandPipeline";
+import { resolveRobotSensors } from "./sensorResolver";
+import {
+  buildRobotSensorsSnapshot,
+  simulateDistanceSensor,
+  simulateEncoderSensor,
+  simulateImuSensor,
+  simulateIrProximitySensor,
+  simulateLineSensor,
+} from "./sensorSimulation";
 import {
   buildProgramStepContext,
   type CommandNormalizationResult,
@@ -20,13 +34,34 @@ import {
   type RobotProgramControllerState,
   type RobotProgramStatus,
 } from "../types/control.types";
+import type {
+  EncoderAccumulatorState,
+  EncoderData,
+  ImuData,
+  IrProximityData,
+  LineSensorData,
+  RobotSensorsSnapshot,
+  SensorDescriptor,
+  SensorReadResult,
+  UltrasonicDistanceData,
+} from "../types/sensor.types";
 
 /**
  * Encapsulates user/autonomous robot program execution, typed control commands,
  * normalization, and hardware gating strictly upstream of SimulationRunner physics.
  */
 export class RobotControlController implements RobotControlApi {
+  private robotConfig: SimulationRobotConfig;
   private binding: MotorHardwareBinding;
+  private sensorDescriptors: readonly SensorDescriptor[] = [];
+  private arena: ArenaConfig | null = null;
+  private simState: SimulationState | null = null;
+  private encoderAccumulator: EncoderAccumulatorState = {
+    leftRadians: 0,
+    rightRadians: 0,
+    leftDistanceMeters: 0,
+    rightDistanceMeters: 0,
+  };
   private controlSource: RobotControlSource = "manual";
   private programStatus: RobotProgramStatus = "idle";
   private routine: RobotControlRoutine | null = null;
@@ -40,8 +75,17 @@ export class RobotControlController implements RobotControlApi {
     readonly robotConfig: SimulationRobotConfig;
     readonly parts?: readonly RobotPart[];
     readonly electricalConnections?: readonly ElectricalConnection[];
+    readonly arena?: ArenaConfig;
+    readonly simState?: SimulationState;
   }) {
+    this.robotConfig = params.robotConfig;
     this.binding = resolveRobotHardwareBinding(params);
+    this.sensorDescriptors = resolveRobotSensors({
+      parts: params.parts ?? [],
+      electricalConnections: params.electricalConnections,
+    });
+    this.arena = params.arena ?? null;
+    this.simState = params.simState ?? null;
   }
 
   updateHardwareContext(params: {
@@ -49,10 +93,152 @@ export class RobotControlController implements RobotControlApi {
     readonly parts?: readonly RobotPart[];
     readonly electricalConnections?: readonly ElectricalConnection[];
   }): void {
+    this.robotConfig = params.robotConfig;
     this.binding = resolveRobotHardwareBinding(params);
+    this.sensorDescriptors = resolveRobotSensors({
+      parts: params.parts ?? [],
+      electricalConnections: params.electricalConnections,
+    });
     if (!this.binding.canDrive) {
       this.target = NEUTRAL_NORMALIZED_TARGET;
     }
+  }
+
+  updateSensorContext(params: {
+    readonly arena: ArenaConfig;
+    readonly simState: SimulationState;
+    readonly encoderAccumulator: EncoderAccumulatorState;
+  }): void {
+    this.arena = params.arena;
+    this.simState = params.simState;
+    this.encoderAccumulator = params.encoderAccumulator;
+  }
+
+  getInstalledSensors(): readonly SensorDescriptor[] {
+    return this.sensorDescriptors;
+  }
+
+  readUltrasonic(sensorId?: string): SensorReadResult<UltrasonicDistanceData> {
+    if (!this.arena || !this.simState) {
+      return {
+        ok: false,
+        status: "not-installed",
+        sensorId: null,
+        sensorName: null,
+        sensorKind: "ultrasonic",
+        timestampSeconds: this.latestTimeSeconds,
+        reason: "Simulation arena or state unavailable.",
+        assumptions: [],
+        data: null,
+      };
+    }
+    return simulateDistanceSensor({
+      descriptors: this.sensorDescriptors,
+      simState: this.simState,
+      arena: this.arena,
+      sensorId,
+    });
+  }
+
+  readProximity(sensorId?: string): SensorReadResult<IrProximityData> {
+    if (!this.arena || !this.simState) {
+      return {
+        ok: false,
+        status: "not-installed",
+        sensorId: null,
+        sensorName: null,
+        sensorKind: "ir-proximity",
+        timestampSeconds: this.latestTimeSeconds,
+        reason: "Simulation arena or state unavailable.",
+        assumptions: [],
+        data: null,
+      };
+    }
+    return simulateIrProximitySensor({
+      descriptors: this.sensorDescriptors,
+      simState: this.simState,
+      arena: this.arena,
+      sensorId,
+    });
+  }
+
+  readLineSensor(sensorId?: string): SensorReadResult<LineSensorData> {
+    if (!this.arena || !this.simState) {
+      return {
+        ok: false,
+        status: "not-installed",
+        sensorId: null,
+        sensorName: null,
+        sensorKind: "line-sensor",
+        timestampSeconds: this.latestTimeSeconds,
+        reason: "Simulation arena or state unavailable.",
+        assumptions: [],
+        data: null,
+      };
+    }
+    return simulateLineSensor({
+      descriptors: this.sensorDescriptors,
+      simState: this.simState,
+      arena: this.arena,
+      sensorId,
+    });
+  }
+
+  readImu(sensorId?: string): SensorReadResult<ImuData> {
+    if (!this.simState) {
+      return {
+        ok: false,
+        status: "not-installed",
+        sensorId: null,
+        sensorName: null,
+        sensorKind: "imu",
+        timestampSeconds: this.latestTimeSeconds,
+        reason: "Simulation state unavailable.",
+        assumptions: [],
+        data: null,
+      };
+    }
+    return simulateImuSensor({
+      descriptors: this.sensorDescriptors,
+      simState: this.simState,
+      sensorId,
+    });
+  }
+
+  readEncoder(
+    sideOrSensorId: "left" | "right" | "average" | string = "average"
+  ): SensorReadResult<EncoderData> {
+    if (!this.simState) {
+      return {
+        ok: false,
+        status: "not-installed",
+        sensorId: null,
+        sensorName: null,
+        sensorKind: "encoder",
+        timestampSeconds: this.latestTimeSeconds,
+        reason: "Simulation state unavailable.",
+        assumptions: [],
+        data: null,
+      };
+    }
+    return simulateEncoderSensor({
+      descriptors: this.sensorDescriptors,
+      robotConfig: this.robotConfig,
+      simState: this.simState,
+      accumulator: this.encoderAccumulator,
+      sideOrSensorId,
+    });
+  }
+
+  readSensorsSnapshot(): RobotSensorsSnapshot | null {
+    if (!this.arena || !this.simState) return null;
+    return buildRobotSensorsSnapshot({
+      descriptors: this.sensorDescriptors,
+      robotConfig: this.robotConfig,
+      simState: this.simState,
+      arena: this.arena,
+      accumulator: this.encoderAccumulator,
+    });
   }
 
   getControlSource(): RobotControlSource {
@@ -207,7 +393,11 @@ export class RobotControlController implements RobotControlApi {
         );
       } else {
         try {
-          const ctx = buildProgramStepContext(telemetry, dtSeconds);
+          const ctx = buildProgramStepContext(
+            telemetry,
+            dtSeconds,
+            this.readSensorsSnapshot() ?? undefined
+          );
           this.routine.onTick(ctx, this);
         } catch (error) {
           this.handleFault(error);

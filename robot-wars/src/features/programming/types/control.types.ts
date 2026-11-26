@@ -1,4 +1,14 @@
 import type { SimulationTelemetrySnapshot } from "../../simulation/types/simulationWorld.types";
+import type {
+  EncoderData,
+  ImuData,
+  IrProximityData,
+  LineSensorData,
+  RobotSensorsSnapshot,
+  SensorDescriptor,
+  SensorReadResult,
+  UltrasonicDistanceData,
+} from "./sensor.types";
 
 export type RobotControlSource = "manual" | "program" | "autonomous";
 
@@ -91,8 +101,8 @@ export interface RobotProgramStepContext {
     readonly contactCount: number;
     readonly collidedBarrierIds: readonly string[];
   };
-  /** Extension slot for future sensors (Phase 6.1+) without breaking API contracts. */
-  readonly sensors?: Readonly<Record<string, unknown>>;
+  /** Typed simulated sensor snapshot from actual installed robot sensors. */
+  readonly sensors?: RobotSensorsSnapshot;
 }
 
 export interface RobotControlApi {
@@ -110,6 +120,15 @@ export interface RobotControlApi {
   stopRobot: () => CommandNormalizationResult;
   dispatchCommand: (command: RobotActuatorCommand) => CommandNormalizationResult;
   completeProgram: () => void;
+  getInstalledSensors: () => readonly SensorDescriptor[];
+  readUltrasonic: (sensorId?: string) => SensorReadResult<UltrasonicDistanceData>;
+  readProximity: (sensorId?: string) => SensorReadResult<IrProximityData>;
+  readLineSensor: (sensorId?: string) => SensorReadResult<LineSensorData>;
+  readImu: (sensorId?: string) => SensorReadResult<ImuData>;
+  readEncoder: (
+    sideOrSensorId?: "left" | "right" | "average" | string
+  ) => SensorReadResult<EncoderData>;
+  readSensorsSnapshot: () => RobotSensorsSnapshot | null;
 }
 
 export interface RobotControlRoutine {
@@ -136,7 +155,8 @@ export interface RobotProgramControllerState {
 
 export function buildProgramStepContext(
   telemetry: SimulationTelemetrySnapshot,
-  dtSeconds: number
+  dtSeconds: number,
+  sensors?: RobotSensorsSnapshot
 ): RobotProgramStepContext {
   return {
     timeSeconds: telemetry.timeSeconds,
@@ -163,5 +183,6 @@ export function buildProgramStepContext(
       contactCount: telemetry.collision.contactCount,
       collidedBarrierIds: telemetry.collision.collidedBarrierIds,
     },
+    sensors,
   };
 }
