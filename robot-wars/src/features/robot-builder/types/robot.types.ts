@@ -129,6 +129,7 @@ export type RobotPart = {
   mechanical?: MechanicalSpecs;
   engineeringSpec?: ComponentEngineeringSpec;
   electricalSpec?: ElectricalComponentSpec;
+  electricalCatalogueId?: string;
 };
 
 export type Vector3Data = [number, number, number];

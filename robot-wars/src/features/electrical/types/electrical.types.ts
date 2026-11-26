@@ -230,13 +230,28 @@ export interface ControllerElectricalDomainSpec {
   readonly communicationProtocols?: readonly ElectricalSignalType[];
 }
 
+export type ElectricalPowerRegulationRole =
+  | "pass-through"
+  | "pdb"
+  | "buck"
+  | "boost"
+  | "linear"
+  | "switch"
+  | "fuse"
+  | "motor-driver";
+
 export interface PowerDistributionOrDriverDomainSpec {
+  readonly powerRole?: ElectricalPowerRegulationRole;
   readonly inputVoltageRangeV?: { readonly minV: number; readonly maxV: number };
   readonly outputVoltageRangeV?: { readonly minV: number; readonly maxV: number };
   readonly continuousCurrentPerChannelA?: number;
   readonly peakCurrentA?: number;
   readonly channelCount?: number;
   readonly logicControlVoltageV?: number;
+  readonly efficiency?: number;
+  readonly dropoutVoltageV?: number;
+  readonly quiescentCurrentA?: number;
+  readonly efficiencyProvenance?: ElectricalProvenance;
 }
 
 export interface ElectricalComponentSpec {
@@ -342,6 +357,14 @@ export type ElectricalDiagnosticCode =
   | "signal-protocol-mismatch"
   | "connector-mismatch"
   | "multi-driver-conflict"
+  | "pin-conflict"
+  | "rail-current-exceeded"
+  | "regulator-input-out-of-range"
+  | "buck-boost-polarity-fault"
+  | "regulator-overload"
+  | "pass-through-overvoltage"
+  | "missing-upstream-source"
+  | "missing-power-connection"
   | "missing-electrical-spec"
   | "missing-ground-reference";
 
@@ -353,10 +376,89 @@ export interface ElectricalDiagnostic {
   readonly reason: string;
   readonly partId?: string;
   readonly relatedPartId?: string;
+  readonly interfaceId?: string;
+  readonly pinId?: string;
+  readonly relatedInterfaceId?: string;
+  readonly relatedPinId?: string;
   readonly connectionId?: string;
   readonly conditionEvaluated: string;
   readonly correctiveAction?: string;
   readonly provenance: ElectricalProvenance;
+}
+
+export type ElectricalCatalogueCategory =
+  | "power"
+  | "motor-control"
+  | "controllers"
+  | "sensors"
+  | "actuators"
+  | "connectivity";
+
+export interface ElectricalCatalogueItem {
+  readonly id: string;
+  readonly name: string;
+  readonly category: ElectricalCatalogueCategory;
+  readonly description: string;
+  readonly componentType: ElectricalComponentKind;
+  readonly partType:
+    | "Battery"
+    | "Controller"
+    | "Motor"
+    | "Structural Block";
+  readonly dimensions: {
+    readonly length: number;
+    readonly height: number;
+    readonly width: number;
+  };
+  readonly massKg: number;
+  readonly color: string;
+  readonly mechanicalMountCategory: string;
+  readonly datasheetUrl?: string;
+  readonly provenance: ElectricalProvenance;
+  readonly assumptions: readonly string[];
+  readonly electricalSpecTemplate: Omit<
+    ElectricalComponentSpec,
+    "specId" | "partId"
+  >;
+}
+
+export interface ElectricalPowerRailConsumerState {
+  readonly partId: string;
+  readonly energized: boolean;
+  readonly upstreamRailIds: readonly string[];
+  readonly deliveredVoltageV?: {
+    readonly nominalV?: number;
+    readonly minV?: number;
+    readonly maxV?: number;
+  };
+  readonly hasMissingGround: boolean;
+  readonly hasPathFault: boolean;
+}
+
+export interface ElectricalPowerRailSummary {
+  readonly railId: string;
+  readonly label: string;
+  readonly kind: "source-bus" | "regulated-rail" | "pass-through-branch";
+  readonly sourcePartId: string;
+  readonly sourceInterfaceId: string;
+  readonly voltageV?: {
+    readonly nominalV?: number;
+    readonly minV?: number;
+    readonly maxV?: number;
+  };
+  readonly maxContinuousCurrentA?: number;
+  readonly totalKnownLoadA: number;
+  readonly hasUnknownLoadCurrent: boolean;
+  readonly consumerPartIds: readonly string[];
+  readonly groundVerified: boolean;
+  readonly status: "healthy" | "warning" | "error" | "unknown";
+}
+
+export interface ElectricalPowerPathAnalysis {
+  readonly rails: readonly ElectricalPowerRailSummary[];
+  readonly consumerStates: Readonly<Record<string, ElectricalPowerRailConsumerState>>;
+  readonly powerPathsCount: number;
+  readonly ungroundedConsumerCount: number;
 }
 
 export interface ElectricalValidationReport {
@@ -367,4 +469,5 @@ export interface ElectricalValidationReport {
   readonly warningCount: number;
   readonly unknownCount: number;
   readonly connectionResults: Readonly<Record<string, ElectricalCompatibilityResult>>;
+  readonly powerAnalysis?: ElectricalPowerPathAnalysis;
 }

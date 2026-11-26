@@ -7,6 +7,7 @@ import SimulationView from "./components/simulation/SimulationView";
 import FoundationStagePanel from "./components/workshop/FoundationStagePanel";
 import StructureStagePanel from "./components/workshop/StructureStagePanel";
 import PartInspectorPanel from "./components/workshop/PartInspectorPanel";
+import ElectricalWorkspaceView from "./components/electrical/ElectricalWorkspaceView";
 import { PROCEDURAL_ARCHITECTURES } from "./features/robot-builder/logic/proceduralFoundation";
 import type { MountCandidate } from "./features/robot-builder/logic/mounting";
 import { validateRobotAssembly } from "./features/robot-builder/logic/assemblyValidation";
@@ -131,9 +132,9 @@ function VisibilityIcon({ visible }: { visible: boolean }) {
 // --------------------------------------------------
 
 function App() {
-  const [workspaceMode, setWorkspaceMode] = useState<"workshop" | "simulation">(
-    "workshop"
-  );
+  const [workspaceMode, setWorkspaceMode] = useState<
+    "workshop" | "electrical" | "simulation"
+  >("workshop");
   const [mountCandidate, setMountCandidate] =
     useState<MountCandidate | null>(null);
   const [collapsedPartIds, setCollapsedPartIds] = useState<Set<string>>(
@@ -177,6 +178,36 @@ function App() {
   const connections = useRobotStore((state) => state.connections);
   const electricalConnections = useRobotStore(
     (state) => state.electricalConnections
+  );
+  const selectedElectricalConnectionId = useRobotStore(
+    (state) => state.selectedElectricalConnectionId
+  );
+  const selectedElectricalPinId = useRobotStore(
+    (state) => state.selectedElectricalPinId
+  );
+  const setSelectedElectricalConnection = useRobotStore(
+    (state) => state.setSelectedElectricalConnection
+  );
+  const focusElectricalDiagnostic = useRobotStore(
+    (state) => state.focusElectricalDiagnostic
+  );
+  const installElectricalCatalogueItem = useRobotStore(
+    (state) => state.installElectricalCatalogueItem
+  );
+  const replaceElectricalComponent = useRobotStore(
+    (state) => state.replaceElectricalComponent
+  );
+  const addElectricalConnection = useRobotStore(
+    (state) => state.addElectricalConnection
+  );
+  const updateElectricalConnection = useRobotStore(
+    (state) => state.updateElectricalConnection
+  );
+  const assignPinToElectricalConnection = useRobotStore(
+    (state) => state.assignPinToElectricalConnection
+  );
+  const assignConnectorToInterface = useRobotStore(
+    (state) => state.assignConnectorToInterface
   );
   const removeElectricalConnection = useRobotStore(
     (state) => state.removeElectricalConnection
@@ -761,6 +792,22 @@ function App() {
           </button>
           <button
             type="button"
+            className={`top-button ${workspaceMode === "workshop" ? "active-mode" : ""}`}
+            onClick={() => setWorkspaceMode("workshop")}
+            title="Switch to 3D Mechanical Workshop"
+          >
+            3D Workshop
+          </button>
+          <button
+            type="button"
+            className={`top-button ${workspaceMode === "electrical" ? "active-mode" : ""}`}
+            onClick={() => setWorkspaceMode("electrical")}
+            title="Open Electrical Catalogue & Wiring Workspace"
+          >
+            ⚡ Electrical ({electricalConnections.length})
+          </button>
+          <button
+            type="button"
             className="top-button"
             onClick={startNewBuild}
             title="Reset robot build and clear edit history"
@@ -778,6 +825,38 @@ function App() {
       </header>
 
       {/* MAIN LAYOUT */}
+      {workspaceMode === "electrical" ? (
+        <ElectricalWorkspaceView
+          parts={parts}
+          connections={connections}
+          foundation={foundation}
+          electricalConnections={electricalConnections}
+          validationReport={validationReport}
+          selectedId={selectedId}
+          selectedElectricalConnectionId={selectedElectricalConnectionId}
+          selectedElectricalPinId={selectedElectricalPinId}
+          onSelectPart={setSelectedId}
+          onSelectConnection={setSelectedElectricalConnection}
+          onFocusDiagnostic={focusElectricalDiagnostic}
+          onInstallCatalogueItem={installElectricalCatalogueItem}
+          onReplaceElectricalComponent={replaceElectricalComponent}
+          onDeletePart={deletePartById}
+          onCreateConnection={addElectricalConnection}
+          onUpdateConnection={updateElectricalConnection}
+          onAssignPin={assignPinToElectricalConnection}
+          onAssignConnector={assignConnectorToInterface}
+          onRemoveConnection={removeElectricalConnection}
+          onPreviewTransform={previewPartTransform}
+          onApplyTransform={updatePartTransform}
+          onReplaceStructuralPart={replaceStructuralPart}
+          onDuplicatePart={duplicatePart}
+          onAttachPart={attachPart}
+          onDetachPart={detachPart}
+          onUpdateImportedConfig={updateImportedPartConfiguration}
+          onAddCustomInterface={addCustomMountingInterface}
+          onRemoveCustomInterface={removeCustomMountingInterface}
+        />
+      ) : (
       <div className="main-layout">
 
         {/* LEFT PANEL */}
@@ -1472,6 +1551,14 @@ function App() {
                         {validationReport.electricalReport.unknownCount} unverified specs
                       </small>
                     </div>
+                    <button
+                      type="button"
+                      className="top-button"
+                      style={{ width: "100%", marginTop: 6 }}
+                      onClick={() => setWorkspaceMode("electrical")}
+                    >
+                      ⚡ Open Electrical Wiring Workspace
+                    </button>
                     {validationReport.electricalReport.diagnostics.length > 0 && (
                       <div className="workshop-diag-list" style={{ marginTop: 6 }}>
                         {validationReport.electricalReport.diagnostics.map((eDiag) => (
@@ -1482,8 +1569,10 @@ function App() {
                               eDiag.severity === "unknown" ? "info" : eDiag.severity
                             }`}
                             onClick={() => {
-                              if (eDiag.partId) {
-                                setSelectedId(eDiag.partId);
+                              focusElectricalDiagnostic(eDiag);
+                              if (eDiag.connectionId) {
+                                setWorkspaceMode("electrical");
+                              } else if (eDiag.partId) {
                                 setRightPanelTab("inspector");
                               }
                             }}
@@ -3002,12 +3091,17 @@ function App() {
           </div>
         </aside>
       </div>
+      )}
 
       {/* FOOTER */}
       <footer className="statusbar">
-        <span>ROBOT WARS / WORKSHOP</span>
+        <span>
+          {workspaceMode === "electrical"
+            ? "ROBOT WARS / ELECTRICAL WORKSPACE"
+            : "ROBOT WARS / WORKSHOP"}
+        </span>
         <span>OBJECTS: {parts.length}</span>
-        <span>ENGINE: THREE.JS</span>
+        <span>WIRES: {electricalConnections.length}</span>
       </footer>
     </div>
   );

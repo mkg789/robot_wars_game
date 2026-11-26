@@ -403,4 +403,158 @@ describe("Phase 5.1: Electrical Architecture & Component Interfaces", () => {
     const updatedCtrl = useRobotStore.getState().parts.find((p: RobotPart) => p.id === ctrl.id);
     expect(updatedCtrl?.electricalSpec?.componentType).toBe("motor-driver");
   });
+
+  it("supports adding/updating/removing custom electrical components and cascading motor removal cleanly", () => {
+    const store = useRobotStore.getState();
+    store.installBattery("compact-lipo"); // 7.4V
+    store.selectMountZone("front-left");
+    store.selectMotorCatalogueItem("standard-dc"); // 12V nom, 6-14V
+    store.placeMotor();
+
+    const driverSpec: ElectricalComponentSpec = {
+      specId: "spec-drv-l298n",
+      componentType: "motor-driver",
+      interfaces: [
+        {
+          interfaceId: "drv-pwr-in",
+          name: "VM Power In",
+          role: "power-input",
+          pinIds: ["drv-vm"],
+          voltageSpec: { minV: 5, nominalV: 7.4, maxV: 12 },
+          currentSpec: { maxContinuousA: 20 },
+          provenance: { method: "datasheet", verified: true, source: "L298N Datasheet" },
+        },
+        {
+          interfaceId: "drv-pwr-out",
+          name: "OUT A",
+          role: "power-output",
+          pinIds: ["drv-outa"],
+          voltageSpec: { minV: 5, nominalV: 7.4, maxV: 12 },
+          currentSpec: { maxContinuousA: 20 },
+          provenance: { method: "datasheet", verified: true, source: "L298N Datasheet" },
+        },
+        {
+          interfaceId: "drv-gnd",
+          name: "GND",
+          role: "ground",
+          pinIds: ["drv-gnd-pin"],
+          provenance: { method: "datasheet", verified: true, source: "L298N Datasheet" },
+        },
+      ],
+      pins: [
+        {
+          pinId: "drv-vm",
+          pinName: "VM",
+          pinNumber: 1,
+          pinType: "power",
+          role: "power-input",
+          direction: "input",
+          supportedVoltage: { minV: 5, nominalV: 7.4, maxV: 12 },
+          signalTypes: [],
+          isPower: true,
+          provenance: { method: "datasheet", verified: true, source: "L298N Datasheet" },
+        },
+        {
+          pinId: "drv-outa",
+          pinName: "OUT1",
+          pinNumber: 2,
+          pinType: "power",
+          role: "power-output",
+          direction: "output",
+          supportedVoltage: { minV: 5, nominalV: 7.4, maxV: 12 },
+          signalTypes: [],
+          isPower: true,
+          provenance: { method: "datasheet", verified: true, source: "L298N Datasheet" },
+        },
+        {
+          pinId: "drv-gnd-pin",
+          pinName: "GND",
+          pinNumber: 3,
+          pinType: "ground",
+          role: "ground",
+          direction: "reference",
+          signalTypes: [],
+          isGround: true,
+          provenance: { method: "datasheet", verified: true, source: "L298N Datasheet" },
+        },
+      ],
+      connectors: [],
+      driverOrRegulatorSpec: {
+        inputVoltageRangeV: { minV: 5, maxV: 12 },
+        outputVoltageRangeV: { minV: 5, maxV: 12 },
+        continuousCurrentPerChannelA: 12,
+        channelCount: 2,
+        logicControlVoltageV: 5,
+      },
+      assumptions: [],
+      unknownFields: [],
+      provenance: { method: "datasheet", verified: true, source: "L298N Datasheet" },
+    };
+
+    const driverId = useRobotStore.getState().addElectricalComponent({
+      name: "Dual H-Bridge Driver",
+      electricalSpec: driverSpec,
+    });
+
+    const stateAfterAdd = useRobotStore.getState();
+    const bat = stateAfterAdd.parts.find((p) => p.type === "Battery")!;
+    const motor = stateAfterAdd.parts.find((p) => p.type === "Motor")!;
+    expect(stateAfterAdd.parts.some((p) => p.id === driverId)).toBe(true);
+
+    // Update property patch preserves rest of spec and updates assumptions
+    stateAfterAdd.updatePartElectricalProperties(driverId, {
+      assumptions: ["Ambient cooling only"],
+    });
+    expect(
+      useRobotStore.getState().parts.find((p) => p.id === driverId)?.electricalSpec?.assumptions
+    ).toEqual(["Ambient cooling only"]);
+
+    // Wire Battery -> Driver -> Motor + GND
+    useRobotStore.getState().addElectricalConnection({
+      sourcePartId: bat.id,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: driverId,
+      targetInterfaceId: "drv-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    useRobotStore.getState().addElectricalConnection({
+      sourcePartId: driverId,
+      sourceInterfaceId: "drv-pwr-out",
+      targetPartId: motor.id,
+      targetInterfaceId: "motor-drive-input",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    useRobotStore.getState().addElectricalConnection({
+      sourcePartId: bat.id,
+      sourceInterfaceId: "bat-gnd",
+      targetPartId: driverId,
+      targetInterfaceId: "drv-gnd",
+      connectionType: "ground",
+      provenance: { method: "user-supplied" },
+    });
+
+    const report = useRobotStore.getState().validateElectricalState();
+    expect(report.isValid).toBe(true);
+    expect(report.errorCount).toBe(0);
+
+    // Removing the motor cascades to remove the driver -> motor wire without leaving dangling refs
+    useRobotStore.getState().removeMotor("front-left");
+    expect(useRobotStore.getState().electricalConnections).toHaveLength(2);
+    expect(
+      useRobotStore
+        .getState()
+        .electricalConnections.some((c) => c.targetPartId === motor.id)
+    ).toBe(false);
+
+    // Removing the electrical driver removes both the part and remaining driver wires, undo restores
+    useRobotStore.getState().removeElectricalComponent(driverId);
+    expect(useRobotStore.getState().parts.some((p) => p.id === driverId)).toBe(false);
+    expect(useRobotStore.getState().electricalConnections).toHaveLength(0);
+
+    expect(useRobotStore.getState().undo()).toBe(true);
+    expect(useRobotStore.getState().parts.some((p) => p.id === driverId)).toBe(true);
+    expect(useRobotStore.getState().electricalConnections).toHaveLength(2);
+  });
 });

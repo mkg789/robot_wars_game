@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { resolvePartElectricalSpec } from "../../features/electrical/logic/electricalComponentAdapters";
 import type { ElectricalConnection } from "../../features/electrical/types/electrical.types";
 import type { RobotPart } from "../../features/robot-builder/types/robot.types";
@@ -16,6 +16,7 @@ export default function ElectricalInspectorSection({
   electricalConnections,
   onRemoveElectricalConnection,
 }: ElectricalInspectorSectionProps) {
+  const [showPinDetails, setShowPinDetails] = useState(false);
   const spec = useMemo(() => resolvePartElectricalSpec(part), [part]);
 
   const relatedConnections = useMemo(
@@ -120,6 +121,80 @@ export default function ElectricalInspectorSection({
           </div>
         ))}
       </div>
+
+      {spec.connectors.length > 0 && (
+        <>
+          <div className="section-label" style={{ marginTop: 8 }}>
+            CONNECTORS ({spec.connectors.length})
+          </div>
+          <div className="workshop-compat-checks">
+            {spec.connectors.map((connector) => (
+              <div
+                key={connector.connectorId}
+                className="workshop-compat-check-row pass"
+              >
+                <strong>{connector.name}</strong>
+                <small className="workshop-compat-hint">
+                  {connector.connectorType} · {connector.pinCount} pin
+                  {connector.pinCount === 1 ? "" : "s"}
+                  {connector.gender && connector.gender !== "unspecified"
+                    ? ` · ${connector.gender}`
+                    : ""}
+                </small>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
+
+      {spec.pins.length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          <button
+            type="button"
+            className="sim-clear-selection-btn"
+            onClick={() => setShowPinDetails((prev) => !prev)}
+          >
+            {showPinDetails
+              ? "Hide Pin Details"
+              : `Show Pin Details (${spec.pins.length})`}
+          </button>
+          {showPinDetails && (
+            <div className="workshop-compat-checks" style={{ marginTop: 6 }}>
+              {spec.pins.map((pin) => {
+                const capFlags = [
+                  ...(pin.signalTypes ?? []),
+                  pin.pwmCapable ? "pwm" : null,
+                  pin.analogCapable ? "analog" : null,
+                  pin.digitalCapable ? "digital" : null,
+                ].filter((v): v is string => Boolean(v));
+                const uniqueCaps = Array.from(new Set(capFlags));
+                return (
+                  <div
+                    key={pin.pinId}
+                    className="workshop-compat-check-row pass"
+                  >
+                    <strong>
+                      {pin.pinNumber !== undefined ? `#${pin.pinNumber} ` : ""}
+                      {pin.pinName} ({pin.role})
+                    </strong>
+                    <small className="workshop-compat-hint">
+                      {uniqueCaps.length > 0
+                        ? uniqueCaps.slice(0, 5).join(", ")
+                        : pin.pinType}
+                      {pin.supportedVoltage?.nominalV !== undefined
+                        ? ` · ${pin.supportedVoltage.nominalV}V`
+                        : ""}
+                      {pin.constraints?.length
+                        ? ` · ${pin.constraints[0]}`
+                        : ""}
+                    </small>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
 
       {spec.unknownFields.length > 0 && (
         <small className="builder-intro" style={{ display: "block", marginTop: 4 }}>

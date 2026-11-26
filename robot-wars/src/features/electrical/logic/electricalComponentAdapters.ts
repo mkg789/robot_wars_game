@@ -1,6 +1,7 @@
 import { batteryCatalogue } from "../../robot-builder/data/batteryCatalogue";
 import { controllerCatalogue } from "../../robot-builder/data/controllerCatalogue";
 import { motorCatalogue } from "../../robot-builder/data/motorCatalogue";
+import { getElectricalCatalogueItem } from "../data/electricalCatalogue";
 import {
   resolveBatteryEngineeringSpec,
   resolveControllerEngineeringSpec,
@@ -534,6 +535,17 @@ export function resolvePartElectricalSpec(
 ): ElectricalComponentSpec | null {
   if (part.electricalSpec) {
     return part.electricalSpec;
+  }
+
+  if (part.electricalCatalogueId) {
+    const item = getElectricalCatalogueItem(part.electricalCatalogueId);
+    if (item) {
+      return {
+        specId: `elec-${part.id}`,
+        partId: part.id,
+        ...item.electricalSpecTemplate,
+      };
+    }
   }
 
   switch (part.type) {

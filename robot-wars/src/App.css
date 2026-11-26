@@ -2141,3 +2141,257 @@
 .tree-remove-btn:hover {
   color: #fca5a5;
 }
+
+/* PHASE 5.2 ELECTRICAL WORKSPACE */
+
+.top-button.active-mode {
+  background: #0284c7;
+  border-color: #38bdf8;
+  color: #f8fafc;
+  font-weight: 700;
+}
+
+.electrical-left-panel {
+  overflow: hidden;
+}
+
+.electrical-installed-list {
+  max-height: 220px;
+  overflow-y: auto;
+  border-bottom: 1px solid #253040;
+}
+
+.electrical-catalogue-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.electrical-search-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px solid #303b49;
+  background: #10151d;
+  color: #e2e8f0;
+  font-size: 11px;
+}
+
+.electrical-installed-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  border: 1px solid #283444;
+  background: #131a23;
+}
+
+.electrical-installed-item.selected {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.electrical-installed-item.error {
+  border-color: #991b1b;
+}
+
+.electrical-installed-item.warning {
+  border-color: #854d0e;
+}
+
+.electrical-installed-select {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  padding: 2px 0;
+  display: grid;
+  gap: 2px;
+}
+
+.electrical-installed-top {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+}
+
+.electrical-badge {
+  font-size: 9px;
+  font-weight: 800;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: #14532d;
+  color: #bbf7d0;
+}
+
+.electrical-badge.error {
+  background: #7f1d1d;
+  color: #fecaca;
+}
+
+.electrical-badge.warning {
+  background: #78350f;
+  color: #fde68a;
+}
+
+.electrical-cat-details {
+  display: grid;
+  gap: 6px;
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid #263242;
+}
+
+.electrical-cat-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.electrical-datasheet-link {
+  font-size: 10px;
+  color: #38bdf8;
+  text-decoration: none;
+}
+
+.electrical-datasheet-link:hover {
+  text-decoration: underline;
+}
+
+.electrical-canvas-stage {
+  background: #0d1219;
+  position: relative;
+  overflow: hidden;
+}
+
+.electrical-schematic-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+  user-select: none;
+  cursor: grab;
+}
+
+.electrical-schematic-svg:active {
+  cursor: grabbing;
+}
+
+.electrical-canvas-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.electrical-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.elec-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10px;
+  color: #cbd5e1;
+}
+
+.elec-legend-item i {
+  display: inline-block;
+  width: 10px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.electrical-wiring-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.electrical-builder-form {
+  display: grid;
+  gap: 8px;
+}
+
+.electrical-endpoint-group {
+  display: grid;
+  gap: 5px;
+  padding: 7px;
+  border-radius: 6px;
+  background: #131a23;
+  border: 1px solid #273242;
+}
+
+.electrical-endpoint-group select,
+.electrical-meta-grid select,
+.electrical-meta-grid input,
+.inspector-inline-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 6px;
+  border-radius: 4px;
+  border: 1px solid #303b49;
+  background: #10151d;
+  color: #e2e8f0;
+  font-size: 11px;
+}
+
+.electrical-step-label {
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.8px;
+  color: #94a3b8;
+}
+
+.electrical-meta-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.electrical-conn-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 7px;
+  border-radius: 6px;
+  border: 1px solid #283444;
+  background: #131a23;
+}
+
+.electrical-conn-row.selected {
+  border-color: #f59e0b;
+  background: rgba(245, 158, 11, 0.14);
+}
+
+.electrical-conn-row.fail {
+  border-color: #991b1b;
+}
+
+.electrical-conn-row.warn {
+  border-color: #854d0e;
+}
+
+.electrical-conn-select {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  display: grid;
+  gap: 2px;
+  font-size: 10.5px;
+}
+
+.electrical-quick-nav {
+  display: flex;
+  gap: 6px;
+}

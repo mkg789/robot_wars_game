@@ -286,6 +286,16 @@ export function evaluateElectricalCompatibility(params: {
   }
 
   // 2. Voltage compatibility
+  const srcPowerRole = params.sourceComponent.driverOrRegulatorSpec?.powerRole;
+  const srcIsPassThrough =
+    params.sourceComponent.componentType === "switch" ||
+    params.sourceComponent.componentType === "pdb" ||
+    params.sourceComponent.componentType === "passive" ||
+    srcPowerRole === "switch" ||
+    srcPowerRole === "fuse" ||
+    srcPowerRole === "pdb" ||
+    srcPowerRole === "pass-through";
+
   if (roleValid && sRole !== "ground" && tRole !== "ground") {
     conditionsEvaluated.push("voltage");
     const srcV = sourcePin?.supportedVoltage ?? sourceInterface.voltageSpec;
@@ -296,7 +306,15 @@ export function evaluateElectricalCompatibility(params: {
     const dstMin = dstV?.minV ?? dstV?.nominalV;
     const dstMax = dstV?.maxV ?? dstV?.nominalV;
 
-    if (
+    if (srcIsPassThrough && sRole === "power-output") {
+      checks.push({
+        id: "voltage-passthrough-deferred",
+        aspect: "voltage",
+        status: "pass",
+        message:
+          "Pass-through branch propagates upstream supply voltage (verified in power-path analysis).",
+      });
+    } else if (
       srcMax === undefined ||
       srcMin === undefined ||
       dstMax === undefined ||

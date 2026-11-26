@@ -187,6 +187,24 @@ export default function RobotObject({
           selected={selected || highlighted}
           variant={controllerVariant}
         />
+      ) : part.electricalCatalogueId ? (
+        <group>
+          <mesh rotation={[0, 0, 0]} castShadow receiveShadow>
+            <boxGeometry args={boxExtents} />
+            <meshStandardMaterial
+              color={materialColor}
+              metalness={0.3}
+              roughness={0.55}
+            />
+          </mesh>
+          <mesh
+            position={[0, boxExtents[1] * 0.5 + 0.0025, -boxExtents[2] * 0.25]}
+            castShadow
+          >
+            <boxGeometry args={[boxExtents[0] * 0.68, 0.005, Math.max(0.004, boxExtents[2] * 0.16)]} />
+            <meshStandardMaterial color="#f59e0b" metalness={0.7} roughness={0.3} />
+          </mesh>
+        </group>
       ) : part.type === "Wheel" ? (
         <WheelModel
           radius={cylinderDimensions.radius}

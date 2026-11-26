@@ -7,6 +7,7 @@ import type {
 } from "../types/electrical.types";
 import { resolvePartElectricalSpec } from "./electricalComponentAdapters";
 import { evaluateElectricalCompatibility } from "./electricalCompatibility";
+import { analyzePowerDistribution } from "./powerDistributionAnalysis";
 
 /**
  * Validates electrical components and logical `ElectricalConnection` graphs across the robot assembly.
@@ -103,6 +104,7 @@ export function validateElectricalAssembly(params: {
         title: "Invalid electrical interface reference",
         reason: `Connection "${conn.id}" references missing interface "${!srcIface ? conn.sourceInterfaceId : conn.targetInterfaceId}" on ${!srcIface ? srcPart.name : dstPart.name}.`,
         partId: !srcIface ? srcPart.id : dstPart.id,
+        interfaceId: !srcIface ? conn.sourceInterfaceId : conn.targetInterfaceId,
         connectionId: conn.id,
         conditionEvaluated: "Verified sourceInterfaceId and targetInterfaceId exist on component interfaces.",
         correctiveAction: "Reconnect using a valid component interface ID.",
@@ -123,6 +125,8 @@ export function validateElectricalAssembly(params: {
         title: "Self-loop electrical connection",
         reason: `Interface "${srcIface.name}" on ${srcPart.name} cannot connect to itself.`,
         partId: srcPart.id,
+        interfaceId: srcIface.interfaceId,
+        pinId: conn.sourcePinId,
         connectionId: conn.id,
         conditionEvaluated: "Checked whether source and target endpoint IDs are identical.",
         correctiveAction: "Remove redundant self-connection.",
@@ -150,6 +154,8 @@ export function validateElectricalAssembly(params: {
         title: "Missing source pin definition",
         reason: `Source pin "${conn.sourcePinId}" was not found on ${srcPart.name}.`,
         partId: srcPart.id,
+        interfaceId: srcIface.interfaceId,
+        pinId: conn.sourcePinId,
         connectionId: conn.id,
         conditionEvaluated: "Looked up sourcePinId in component pins list.",
         correctiveAction: "Select a valid source pin.",
@@ -165,6 +171,8 @@ export function validateElectricalAssembly(params: {
         title: "Missing destination pin definition",
         reason: `Destination pin "${conn.targetPinId}" was not found on ${dstPart.name}.`,
         partId: dstPart.id,
+        interfaceId: dstIface.interfaceId,
+        pinId: conn.targetPinId,
         connectionId: conn.id,
         conditionEvaluated: "Looked up targetPinId in component pins list.",
         correctiveAction: "Select a valid destination pin.",
@@ -186,6 +194,10 @@ export function validateElectricalAssembly(params: {
         reason: `Duplicate connection between ${srcPart.name} (${srcIface.name}) and ${dstPart.name} (${dstIface.name}).`,
         partId: srcPart.id,
         relatedPartId: dstPart.id,
+        interfaceId: srcIface.interfaceId,
+        pinId: conn.sourcePinId,
+        relatedInterfaceId: dstIface.interfaceId,
+        relatedPinId: conn.targetPinId,
         connectionId: conn.id,
         conditionEvaluated: "Detected duplicate source/target interface+pin signature.",
         correctiveAction: "Remove redundant parallel wire record.",
@@ -212,6 +224,10 @@ export function validateElectricalAssembly(params: {
           reason: `${dstPart.name} (${dstIface.name}) receives power or signals from multiple outputs simultaneously.`,
           partId: dstPart.id,
           relatedPartId: srcPart.id,
+          interfaceId: dstIface.interfaceId,
+          pinId: conn.targetPinId,
+          relatedInterfaceId: srcIface.interfaceId,
+          relatedPinId: conn.sourcePinId,
           connectionId: conn.id,
           conditionEvaluated: "Checked active output driver count per target terminal.",
           correctiveAction: "Use a dedicated bus, multiplexer, or isolate power rails.",
@@ -264,6 +280,10 @@ export function validateElectricalAssembly(params: {
         reason: compat.reason,
         partId: srcPart.id,
         relatedPartId: dstPart.id,
+        interfaceId: srcIface.interfaceId,
+        pinId: srcPin?.pinId,
+        relatedInterfaceId: dstIface.interfaceId,
+        relatedPinId: dstPin?.pinId,
         connectionId: conn.id,
         conditionEvaluated: `evaluateElectricalCompatibility(${compat.conditionsEvaluated.join(", ")})`,
         correctiveAction: compat.correctiveAction,
@@ -288,6 +308,10 @@ export function validateElectricalAssembly(params: {
         reason: compat.reason,
         partId: srcPart.id,
         relatedPartId: dstPart.id,
+        interfaceId: srcIface.interfaceId,
+        pinId: srcPin?.pinId,
+        relatedInterfaceId: dstIface.interfaceId,
+        relatedPinId: dstPin?.pinId,
         connectionId: conn.id,
         conditionEvaluated: `evaluateElectricalCompatibility(${compat.conditionsEvaluated.join(", ")})`,
         correctiveAction: compat.correctiveAction,
@@ -302,10 +326,163 @@ export function validateElectricalAssembly(params: {
         reason: compat.reason,
         partId: srcPart.id,
         relatedPartId: dstPart.id,
+        interfaceId: srcIface.interfaceId,
+        pinId: srcPin?.pinId,
+        relatedInterfaceId: dstIface.interfaceId,
+        relatedPinId: dstPin?.pinId,
         connectionId: conn.id,
         conditionEvaluated: `evaluateElectricalCompatibility(${compat.conditionsEvaluated.join(", ")})`,
         correctiveAction: compat.correctiveAction ?? "Supply missing voltage/current specifications to verify.",
         provenance: compat.provenance,
+      });
+    }
+  }
+
+  // Track aggregate rail load draw & single-purpose pin over-subscription
+  const railLoadDrawMap = new Map<
+    string,
+    { partName: string; ifaceName: string; partId: string; ifaceId: string; maxContA: number; totalLoadA: number; lastConnId: string; provenance: ElectricalDiagnostic["provenance"] }
+  >();
+  const pinUsageMap = new Map<
+    string,
+    { partId: string; partName: string; ifaceId: string; pinId: string; pinName: string; connIds: string[]; provenance: ElectricalDiagnostic["provenance"] }
+  >();
+
+  for (const conn of electricalConnections) {
+    const srcPart = partsById.get(conn.sourcePartId);
+    const dstPart = partsById.get(conn.targetPartId);
+    const srcSpec = srcPart ? specsByPartId.get(srcPart.id) : null;
+    const dstSpec = dstPart ? specsByPartId.get(dstPart.id) : null;
+    if (!srcPart || !dstPart || !srcSpec || !dstSpec) continue;
+
+    const srcIface = srcSpec.interfaces.find((i) => i.interfaceId === conn.sourceInterfaceId);
+    const dstIface = dstSpec.interfaces.find((i) => i.interfaceId === conn.targetInterfaceId);
+    if (!srcIface || !dstIface) continue;
+
+    // Aggregate summed continuous draw per active power rail output
+    if (
+      conn.connectionType === "power" &&
+      srcIface.role === "power-output" &&
+      srcIface.currentSpec?.maxContinuousA !== undefined &&
+      (dstIface.role === "power-input" || dstIface.role === "power-bidirectional")
+    ) {
+      const dstDraw = dstIface.currentSpec;
+      const drawA = dstDraw?.nominalA ?? dstDraw?.maxContinuousA;
+      if (drawA !== undefined) {
+        const railKey = `${srcPart.id}:${srcIface.interfaceId}`;
+        const existing = railLoadDrawMap.get(railKey);
+        if (existing) {
+          existing.totalLoadA += drawA;
+          existing.lastConnId = conn.id;
+        } else {
+          railLoadDrawMap.set(railKey, {
+            partName: srcPart.name,
+            ifaceName: srcIface.name,
+            partId: srcPart.id,
+            ifaceId: srcIface.interfaceId,
+            maxContA: srcIface.currentSpec.maxContinuousA,
+            totalLoadA: drawA,
+            lastConnId: conn.id,
+            provenance: srcIface.provenance,
+          });
+        }
+      }
+    }
+
+    // Track pin allocation conflicts on dedicated non-bus pins (exclude GND, passive/PDB, I2C/SPI/CAN shared buses)
+    const trackEndpointPin = (
+      part: typeof srcPart,
+      spec: typeof srcSpec,
+      iface: typeof srcIface,
+      pinId: string | undefined
+    ) => {
+      if (!pinId) return;
+      if (iface.role === "ground" || spec.componentType === "pdb" || spec.componentType === "passive" || spec.componentType === "battery") {
+        return;
+      }
+      const pin = spec.pins.find((p) => p.pinId === pinId);
+      if (!pin || pin.isGround) return;
+      const isSharedBus = pin.signalTypes.some((s) => s === "i2c" || s === "spi" || s === "can");
+      if (isSharedBus || pin.role === "power-output") return;
+
+      const key = `${part.id}:${pin.pinId}`;
+      const existing = pinUsageMap.get(key);
+      if (existing) {
+        existing.connIds.push(conn.id);
+      } else {
+        pinUsageMap.set(key, {
+          partId: part.id,
+          partName: part.name,
+          ifaceId: iface.interfaceId,
+          pinId: pin.pinId,
+          pinName: pin.pinName,
+          connIds: [conn.id],
+          provenance: pin.provenance,
+        });
+      }
+    };
+
+    trackEndpointPin(srcPart, srcSpec, srcIface, conn.sourcePinId);
+    trackEndpointPin(dstPart, dstSpec, dstIface, conn.targetPinId);
+  }
+
+  const powerResult = analyzePowerDistribution({
+    parts,
+    electricalConnections,
+  });
+
+  // Merge power-path diagnostics while avoiding duplicate rail-load alerts
+  const hasPowerRailAlertFor = new Set(
+    powerResult.diagnostics
+      .filter(
+        (d) =>
+          d.code === "rail-current-exceeded" || d.code === "regulator-overload"
+      )
+      .map((d) => `${d.partId ?? ""}:${d.interfaceId ?? ""}`)
+  );
+
+  for (const rail of railLoadDrawMap.values()) {
+    if (
+      rail.totalLoadA > rail.maxContA &&
+      !hasPowerRailAlertFor.has(`${rail.partId}:${rail.ifaceId}`)
+    ) {
+      diagnostics.push({
+        id: `elec-rail-overload-${rail.partId}-${rail.ifaceId}`,
+        severity: "warning",
+        code: "rail-current-exceeded",
+        title: `Aggregate rail load exceeds ${rail.partName} limit`,
+        reason: `Combined loads connected to ${rail.partName} (${rail.ifaceName}) total ${rail.totalLoadA.toFixed(2)}A, exceeding ${rail.maxContA.toFixed(2)}A continuous limit.`,
+        partId: rail.partId,
+        interfaceId: rail.ifaceId,
+        connectionId: rail.lastConnId,
+        conditionEvaluated: "Summed continuous load draw across shared power-output interface.",
+        correctiveAction: "Offload actuators/motors to a battery PDB or higher-current buck converter.",
+        provenance: rail.provenance,
+      });
+    }
+  }
+
+  for (const pDiag of powerResult.diagnostics) {
+    if (!diagnostics.some((d) => d.id === pDiag.id)) {
+      diagnostics.push(pDiag);
+    }
+  }
+
+  for (const usage of pinUsageMap.values()) {
+    if (usage.connIds.length > 1) {
+      diagnostics.push({
+        id: `elec-pin-conflict-${usage.partId}-${usage.pinId}`,
+        severity: "warning",
+        code: "pin-conflict",
+        title: `Multiple connections on single-purpose pin ${usage.pinName}`,
+        reason: `${usage.partName} pin "${usage.pinName}" is assigned to ${usage.connIds.length} connections simultaneously.`,
+        partId: usage.partId,
+        interfaceId: usage.ifaceId,
+        pinId: usage.pinId,
+        connectionId: usage.connIds[0],
+        conditionEvaluated: "Checked exclusive GPIO/input pin usage outside shared buses.",
+        correctiveAction: "Reassign one connection to another compatible free pin.",
+        provenance: usage.provenance,
       });
     }
   }
@@ -329,6 +506,10 @@ export function validateElectricalAssembly(params: {
     for (const partId of powerParts) {
       if (!groundLinkedParts.has(partId)) {
         const part = partsById.get(partId);
+        const spec = specsByPartId.get(partId);
+        const gndIface = spec?.interfaces.find((i) => i.role === "ground");
+        // Switches and series inline fuses don't always carry a ground reference terminal
+        if (spec && !gndIface) continue;
         diagnostics.push({
           id: `elec-nognd-${partId}`,
           severity: "warning",
@@ -336,12 +517,52 @@ export function validateElectricalAssembly(params: {
           title: `No common ground reference on ${part?.name ?? partId}`,
           reason: `${part?.name ?? partId} participates in power wiring without an explicit ground return connection.`,
           partId,
+          interfaceId: gndIface?.interfaceId,
           conditionEvaluated: "Verified presence of ground connection on electrically powered components.",
           correctiveAction: "Connect ground interface (GND / BAT-) to complete the circuit reference.",
           provenance: {
             method: "estimated",
             basis: "Logical return-path topology check",
           },
+        });
+      }
+    }
+  }
+
+  // Incomplete wiring check: detect installed active power consumers lacking incoming power when electrical wiring or power sources exist
+  const hasPowerSource = Array.from(specsByPartId.values()).some(
+    (s) => s?.componentType === "battery" || s?.componentType === "pdb" || s?.componentType === "voltage-regulator"
+  );
+  if (hasPowerSource || electricalConnections.length > 0) {
+    for (const part of parts) {
+      const spec = specsByPartId.get(part.id);
+      if (!spec) continue;
+      if (spec.componentType === "battery" || spec.componentType === "passive") continue;
+
+      const powerInputs = spec.interfaces.filter((i) => i.role === "power-input");
+      if (powerInputs.length === 0) continue;
+
+      const hasIncomingPower = electricalConnections.some(
+        (c) =>
+          (c.targetPartId === part.id &&
+            powerInputs.some((pi) => pi.interfaceId === c.targetInterfaceId)) ||
+          (c.sourcePartId === part.id &&
+            powerInputs.some((pi) => pi.interfaceId === c.sourceInterfaceId))
+      );
+
+      if (!hasIncomingPower) {
+        diagnostics.push({
+          id: `elec-nopower-${part.id}`,
+          severity: "warning",
+          code: "missing-power-connection",
+          title: `Unpowered electrical component: ${part.name}`,
+          reason: `${part.name} exposes a power input (${powerInputs[0].name}) with no incoming power connection.`,
+          partId: part.id,
+          interfaceId: powerInputs[0].interfaceId,
+          pinId: powerInputs[0].pinIds[0],
+          conditionEvaluated: "Checked incoming power connection to active electrical consumers.",
+          correctiveAction: "Connect a voltage-compatible battery, PDB, regulator, or motor driver output.",
+          provenance: spec.provenance,
         });
       }
     }
@@ -364,5 +585,6 @@ export function validateElectricalAssembly(params: {
     warningCount,
     unknownCount,
     connectionResults,
+    powerAnalysis: powerResult.analysis,
   };
 }
