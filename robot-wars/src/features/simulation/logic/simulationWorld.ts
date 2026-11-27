@@ -706,6 +706,10 @@ export class SimulationWorld {
     return this.controlController.getState();
   }
 
+  getActiveRoutine(): RobotControlRoutine | null {
+    return this.controlController.getActiveRoutine();
+  }
+
   getSensorsSnapshot(): RobotSensorsSnapshot | null {
     return this.controlController.readSensorsSnapshot();
   }
@@ -796,7 +800,9 @@ export class SimulationWorld {
 
   setManualControlMode(): void {
     this.pausedByWorld = false;
+    this.activeControls = NEUTRAL_DRIVE_CONTROLS;
     this.controlController.setControlSource("manual");
+    this.controlController.stopRobot();
     this.activeInput = this.controlController.getDrivetrainInput();
     this.notify();
   }

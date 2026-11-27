@@ -1,9 +1,13 @@
-import type { ElectricalConnection } from "../../electrical/types/electrical.types";
-import { createStarterPresets } from "../../programming/logic/programPersistence";
 import type {
-  ProgramInstruction,
-  VisualRobotProgram,
-} from "../../programming/types/programWorkspace.types";
+  ElectricalConnection,
+  ElectricalConnectionKind,
+} from "../../electrical/types/electrical.types";
+import {
+  createStarterPresets,
+  validateVisualProgramPayload,
+} from "../../programming/logic/programPersistence";
+import { resolveRobotSensors } from "../../programming/logic/sensorResolver";
+import type { VisualRobotProgram } from "../../programming/types/programWorkspace.types";
 import {
   collectSnapshotMeshAssetIds,
   sanitizeAssemblyGraph,
@@ -17,11 +21,16 @@ import {
 } from "../../robot-builder/logic/meshAssetRegistry";
 import type {
   BuildStage,
+  ComponentType,
+  CustomCollisionBox,
+  CustomCollisionMode,
   DrivetrainAssignment,
   DrivetrainConfiguration,
   FoundationConfig,
+  ImportedMeshTransform,
   RobotConnection,
   RobotPart,
+  StlLengthUnit,
 } from "../../robot-builder/types/robot.types";
 import { SIMULATION_ARENA_PRESETS } from "../../simulation/logic/simulationWorld";
 import {
@@ -33,7 +42,7 @@ import {
   type RobotWarsProject,
   type SerializedMeshAsset,
 } from "../types/project.types";
-import { migrateProjectPayload } from "./projectMigrations";
+import { migrateProjectPayload, stripUnsafeObjectKeys } from "./projectMigrations";
 
 const VALID_BUILD_STAGES: ReadonlySet<BuildStage> = new Set([
   "foundation",
@@ -46,8 +55,50 @@ const VALID_BUILD_STAGES: ReadonlySet<BuildStage> = new Set([
   "completed",
 ]);
 
+const VALID_COMPONENT_TYPES: ReadonlySet<ComponentType> = new Set([
+  "Armor Plate",
+  "Structural Block",
+  "Front Bumper",
+  "Wheel",
+  "Motor",
+  "Battery",
+  "Controller",
+]);
+
+const VALID_STL_UNITS: ReadonlySet<StlLengthUnit> = new Set([
+  "mm",
+  "cm",
+  "m",
+  "in",
+]);
+
+const VALID_COLLISION_MODES: ReadonlySet<CustomCollisionMode> = new Set([
+  "bounding-box",
+  "single-box",
+  "multi-box",
+  "convex-approx",
+]);
+
+const VALID_ELECTRICAL_KINDS: ReadonlySet<ElectricalConnectionKind> = new Set([
+  "power",
+  "ground",
+  "signal",
+  "pwm",
+  "bus",
+  "passive",
+  "unspecified",
+]);
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function isPositiveFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value > 0;
+}
+
+function isNonNegativeFinite(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
 }
 
 function isFiniteTuple3(value: unknown): value is [number, number, number] {
@@ -58,75 +109,76 @@ function isFiniteTuple3(value: unknown): value is [number, number, number] {
   );
 }
 
-function isValidInstruction(value: unknown, depth = 0): value is ProgramInstruction {
-  if (depth > 32 || !isPlainObject(value)) return false;
-  if (typeof value.id !== "string" || typeof value.kind !== "string") return false;
-  switch (value.kind) {
-    case "drive":
-    case "turn":
-      return (
-        typeof value.power === "number" &&
-        Number.isFinite(value.power) &&
-        typeof value.durationSeconds === "number" &&
-        Number.isFinite(value.durationSeconds)
-      );
-    case "set-motors":
-      return (
-        typeof value.leftPower === "number" &&
-        Number.isFinite(value.leftPower) &&
-        typeof value.rightPower === "number" &&
-        Number.isFinite(value.rightPower)
-      );
-    case "stop":
-      return typeof value.target === "string";
-    case "wait":
-      return typeof value.durationSeconds === "number" && Number.isFinite(value.durationSeconds);
-    case "read-ultrasonic":
-      return true;
-    case "if-ultrasonic":
-      return (
-        typeof value.thresholdMeters === "number" &&
-        Number.isFinite(value.thresholdMeters) &&
-        Array.isArray(value.thenInstructions) &&
-        value.thenInstructions.every((inst) => isValidInstruction(inst, depth + 1)) &&
-        Array.isArray(value.elseInstructions) &&
-        value.elseInstructions.every((inst) => isValidInstruction(inst, depth + 1))
-      );
-    case "repeat":
-      return (
-        typeof value.count === "number" &&
-        Number.isFinite(value.count) &&
-        Array.isArray(value.bodyInstructions) &&
-        value.bodyInstructions.every((inst) => isValidInstruction(inst, depth + 1))
-      );
-    default:
-      return false;
-  }
+function isPositiveTuple3(value: unknown): value is [number, number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    value.every((n) => isPositiveFinite(n))
+  );
 }
 
-function validateVisualProgramPayload(value: unknown): VisualRobotProgram | null {
-  if (!isPlainObject(value)) return null;
+function isNonNegativeTuple3(value: unknown): value is [number, number, number] {
+  return (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    value.every((n) => isNonNegativeFinite(n))
+  );
+}
+
+function isValidGeometry(raw: unknown): boolean {
+  if (!isPlainObject(raw)) return false;
+  if (raw.shape === "box") {
+    return (
+      isPositiveFinite(raw.length) &&
+      isPositiveFinite(raw.height) &&
+      isPositiveFinite(raw.width)
+    );
+  }
+  if (raw.shape === "cylinder") {
+    return (
+      isPositiveFinite(raw.diameter) &&
+      isPositiveFinite(raw.axialWidth) &&
+      (raw.axis === "x" || raw.axis === "y" || raw.axis === "z")
+    );
+  }
+  return false;
+}
+
+function isValidMeshTransform(raw: unknown): raw is ImportedMeshTransform {
+  if (!isPlainObject(raw)) return false;
+  return (
+    typeof raw.unit === "string" &&
+    VALID_STL_UNITS.has(raw.unit as StlLengthUnit) &&
+    (raw.scaleMode === "uniform" || raw.scaleMode === "non-uniform") &&
+    isPositiveFinite(raw.uniformScale) &&
+    isPositiveTuple3(raw.nonUniformScale) &&
+    isFiniteTuple3(raw.orientationRotation) &&
+    isFiniteTuple3(raw.positionOffset)
+  );
+}
+
+function isValidCollisionConfig(raw: unknown): boolean {
+  if (!isPlainObject(raw)) return false;
   if (
-    value.version !== 1 ||
-    typeof value.id !== "string" ||
-    typeof value.name !== "string" ||
-    !Array.isArray(value.instructions)
+    typeof raw.mode !== "string" ||
+    !VALID_COLLISION_MODES.has(raw.mode as CustomCollisionMode) ||
+    !Array.isArray(raw.boxes) ||
+    !isPositiveTuple3(raw.envelopeSize) ||
+    !isFiniteTuple3(raw.envelopeCenter) ||
+    !isPlainObject(raw.planarFootprint) ||
+    !isPositiveFinite(raw.planarFootprint.lengthM) ||
+    !isPositiveFinite(raw.planarFootprint.widthM)
   ) {
-    return null;
+    return false;
   }
-  if (!value.instructions.every((inst) => isValidInstruction(inst))) {
-    return null;
-  }
-  return structuredClone({
-    version: 1,
-    id: value.id,
-    name: value.name,
-    updatedAtIso:
-      typeof value.updatedAtIso === "string"
-        ? value.updatedAtIso
-        : new Date().toISOString(),
-    instructions: value.instructions,
-  });
+  return raw.boxes.every(
+    (b: unknown): b is CustomCollisionBox =>
+      isPlainObject(b) &&
+      typeof b.id === "string" &&
+      b.id.length > 0 &&
+      isFiniteTuple3(b.center) &&
+      isPositiveTuple3(b.size)
+  );
 }
 
 function validateDrivetrainPayload(
@@ -171,19 +223,164 @@ function validateDrivetrainPayload(
   };
 }
 
+function validateFoundationPayload(
+  raw: unknown,
+  warnings: string[]
+): FoundationConfig | null {
+  if (raw === null || raw === undefined) return null;
+  if (!isPlainObject(raw)) {
+    warnings.push("Invalid 'build.foundation' payload; ignored.");
+    return null;
+  }
+  if (
+    typeof raw.modelId !== "string" ||
+    raw.modelId.length === 0 ||
+    !isPositiveFinite(raw.length) ||
+    !isPositiveFinite(raw.width) ||
+    !isPositiveFinite(raw.height)
+  ) {
+    warnings.push("Invalid 'build.foundation' dimensions or modelId; ignored.");
+    return null;
+  }
+  const mode =
+    raw.mode === undefined || raw.mode === "procedural" || raw.mode === "imported"
+      ? raw.mode
+      : undefined;
+  if (raw.mode !== undefined && !mode) {
+    warnings.push("Unknown 'build.foundation.mode'; ignored foundation payload.");
+    return null;
+  }
+  if (mode === "imported") {
+    if (
+      !isPlainObject(raw.imported) ||
+      typeof raw.imported.assetId !== "string" ||
+      !isValidMeshTransform(raw.imported.transform) ||
+      !isValidCollisionConfig(raw.imported.collision)
+    ) {
+      warnings.push("Invalid imported STL foundation metadata; ignored foundation payload.");
+      return null;
+    }
+  }
+  if (raw.procedural !== undefined) {
+    if (
+      !isPlainObject(raw.procedural) ||
+      !isPositiveFinite(raw.procedural.length) ||
+      !isPositiveFinite(raw.procedural.width) ||
+      !isPositiveFinite(raw.procedural.height)
+    ) {
+      warnings.push("Invalid procedural foundation dimensions; ignored foundation payload.");
+      return null;
+    }
+  }
+  return structuredClone(raw) as unknown as FoundationConfig;
+}
+
 function validatePartRecord(raw: unknown): raw is RobotPart {
   if (!isPlainObject(raw)) return false;
-  return (
-    typeof raw.id === "string" &&
-    raw.id.length > 0 &&
-    typeof raw.name === "string" &&
-    typeof raw.type === "string" &&
-    isFiniteTuple3(raw.position) &&
-    isFiniteTuple3(raw.rotation) &&
-    isFiniteTuple3(raw.size) &&
-    typeof raw.mass === "number" &&
-    Number.isFinite(raw.mass)
-  );
+  if (
+    typeof raw.id !== "string" ||
+    raw.id.length === 0 ||
+    typeof raw.name !== "string" ||
+    typeof raw.type !== "string" ||
+    !VALID_COMPONENT_TYPES.has(raw.type as ComponentType) ||
+    !isFiniteTuple3(raw.position) ||
+    !isFiniteTuple3(raw.rotation) ||
+    !isPositiveTuple3(raw.size) ||
+    !isNonNegativeFinite(raw.mass)
+  ) {
+    return false;
+  }
+  if (raw.massKg !== undefined && !isNonNegativeFinite(raw.massKg)) return false;
+  if (raw.color !== undefined && typeof raw.color !== "string") return false;
+  if (raw.wheelDiameter !== undefined && !isPositiveFinite(raw.wheelDiameter)) {
+    return false;
+  }
+  if (raw.wheelWidth !== undefined && !isPositiveFinite(raw.wheelWidth)) {
+    return false;
+  }
+  if (raw.geometry !== undefined && !isValidGeometry(raw.geometry)) {
+    return false;
+  }
+  if (raw.meshTransform !== undefined && !isValidMeshTransform(raw.meshTransform)) {
+    return false;
+  }
+  if (raw.collisionConfig !== undefined && !isValidCollisionConfig(raw.collisionConfig)) {
+    return false;
+  }
+  if (raw.customInertiaKgM2 !== undefined && !isNonNegativeTuple3(raw.customInertiaKgM2)) {
+    return false;
+  }
+  if (raw.importedEngineering !== undefined) {
+    if (!isPlainObject(raw.importedEngineering)) return false;
+    if (
+      raw.importedEngineering.massKg !== undefined &&
+      !isNonNegativeFinite(raw.importedEngineering.massKg)
+    ) {
+      return false;
+    }
+    if (
+      raw.importedEngineering.centerOfMassLocal !== undefined &&
+      !isFiniteTuple3(raw.importedEngineering.centerOfMassLocal)
+    ) {
+      return false;
+    }
+    if (
+      raw.importedEngineering.inertiaKgM2 !== undefined &&
+      !isNonNegativeTuple3(raw.importedEngineering.inertiaKgM2)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function validateConnectionRecord(raw: unknown): RobotConnection | null {
+  if (!isPlainObject(raw)) return null;
+  if (typeof raw.id !== "string" || raw.id.length === 0) return null;
+  if (raw.type !== "Motor-Wheel" && raw.type !== "Mechanical") return null;
+  const rawParentId =
+    typeof raw.parentId === "string" && raw.parentId.length > 0
+      ? raw.parentId
+      : typeof raw.sourceId === "string" && raw.sourceId.length > 0
+        ? raw.sourceId
+        : null;
+  const rawChildId =
+    typeof raw.childId === "string" && raw.childId.length > 0
+      ? raw.childId
+      : typeof raw.targetId === "string" && raw.targetId.length > 0
+        ? raw.targetId
+        : null;
+  if (!rawParentId || !rawChildId) return null;
+
+  if (raw.relativePosition !== undefined && !isFiniteTuple3(raw.relativePosition)) {
+    return null;
+  }
+  if (raw.relativeRotation !== undefined && !isFiniteTuple3(raw.relativeRotation)) {
+    return null;
+  }
+  if (raw.wheelOffset !== undefined && !isFiniteTuple3(raw.wheelOffset)) {
+    return null;
+  }
+
+  return {
+    ...(structuredClone(raw) as unknown as RobotConnection),
+    id: raw.id,
+    sourceId: rawParentId,
+    targetId: rawChildId,
+    parentId: rawParentId,
+    childId: rawChildId,
+    type: raw.type,
+    parentMountPointId:
+      typeof raw.parentMountPointId === "string"
+        ? raw.parentMountPointId
+        : "generic-mount",
+    childMountPointId:
+      typeof raw.childMountPointId === "string"
+        ? raw.childMountPointId
+        : "generic-mount",
+    relativePosition: raw.relativePosition ? [...raw.relativePosition] : [0, 0, 0],
+    relativeRotation: raw.relativeRotation ? [...raw.relativeRotation] : [0, 0, 0],
+  };
 }
 
 /**
@@ -278,7 +475,7 @@ export function parseAndValidateRobotProject(
     }
   }
 
-  const migration = migrateProjectPayload(parsed);
+  const migration = migrateProjectPayload(stripUnsafeObjectKeys(parsed));
   warnings.push(...migration.warnings);
   if (!migration.success || !migration.payload) {
     return {
@@ -325,8 +522,14 @@ export function parseAndValidateRobotProject(
   }
 
   const validParts: RobotPart[] = [];
+  const seenPartIds = new Set<string>();
   for (const candidate of rawBuild.parts) {
     if (validatePartRecord(candidate)) {
+      if (seenPartIds.has(candidate.id)) {
+        warnings.push(`Skipped duplicate component ID '${candidate.id}' during project load.`);
+        continue;
+      }
+      seenPartIds.add(candidate.id);
       validParts.push(structuredClone(candidate));
     } else {
       warnings.push("Skipped a corrupted component entry during project load.");
@@ -346,17 +549,23 @@ export function parseAndValidateRobotProject(
     };
   }
 
-  const rawConnections = Array.isArray(rawBuild.connections) ? rawBuild.connections : [];
+  const rawConnectionsList = Array.isArray(rawBuild.connections)
+    ? rawBuild.connections
+    : [];
   if (!Array.isArray(rawBuild.connections)) {
     warnings.push("Missing 'build.connections'; defaulted to empty connection list.");
   }
-
-  const rawFoundation = isPlainObject(rawBuild.foundation)
-    ? (structuredClone(rawBuild.foundation) as FoundationConfig)
-    : null;
-  if (rawBuild.foundation !== null && rawBuild.foundation !== undefined && !rawFoundation) {
-    warnings.push("Invalid 'build.foundation' payload; ignored.");
+  const validatedConnections: RobotConnection[] = [];
+  for (const rawConn of rawConnectionsList) {
+    const normalized = validateConnectionRecord(rawConn);
+    if (normalized) {
+      validatedConnections.push(normalized);
+    } else {
+      warnings.push("Skipped one or more malformed mechanical connection entries.");
+    }
   }
+
+  const rawFoundation = validateFoundationPayload(rawBuild.foundation, warnings);
 
   const rawElectrical = isPlainObject(v2.electrical) ? v2.electrical : {};
   const rawElectricalConnections: ElectricalConnection[] = Array.isArray(
@@ -367,10 +576,20 @@ export function parseAndValidateRobotProject(
           (c): c is ElectricalConnection =>
             isPlainObject(c) &&
             typeof c.id === "string" &&
+            c.id.length > 0 &&
             typeof c.sourcePartId === "string" &&
+            c.sourcePartId.length > 0 &&
             typeof c.targetPartId === "string" &&
+            c.targetPartId.length > 0 &&
             typeof c.sourceInterfaceId === "string" &&
-            typeof c.targetInterfaceId === "string"
+            c.sourceInterfaceId.length > 0 &&
+            typeof c.targetInterfaceId === "string" &&
+            c.targetInterfaceId.length > 0 &&
+            (c.connectionType === undefined ||
+              (typeof c.connectionType === "string" &&
+                VALID_ELECTRICAL_KINDS.has(
+                  c.connectionType as ElectricalConnectionKind
+                )))
         )
       )
     : [];
@@ -390,11 +609,17 @@ export function parseAndValidateRobotProject(
     if (
       !isPlainObject(item) ||
       typeof item.assetId !== "string" ||
+      item.assetId.length === 0 ||
       typeof item.centeredPositionsBase64 !== "string" ||
       typeof item.normalsBase64 !== "string" ||
       !isPlainObject(item.inspection) ||
       typeof item.inspection.fileName !== "string" ||
-      typeof item.inspection.triangleCount !== "number"
+      typeof item.inspection.triangleCount !== "number" ||
+      !Number.isInteger(item.inspection.triangleCount) ||
+      item.inspection.triangleCount <= 0 ||
+      !isPositiveTuple3(item.inspection.rawDimensions) ||
+      !isFiniteTuple3(item.inspection.rawBoundsMin) ||
+      !isFiniteTuple3(item.inspection.rawBoundsMax)
     ) {
       warnings.push("Skipped malformed embedded STL asset entry.");
       continue;
@@ -403,7 +628,12 @@ export function parseAndValidateRobotProject(
     try {
       const centeredPositions = decodeFloat32ArrayBase64(item.centeredPositionsBase64);
       const normals = decodeFloat32ArrayBase64(item.normalsBase64);
-      if (centeredPositions.length % 9 !== 0 || centeredPositions.length !== normals.length) {
+      if (
+        centeredPositions.length === 0 ||
+        centeredPositions.length % 9 !== 0 ||
+        centeredPositions.length !== normals.length ||
+        item.inspection.triangleCount * 9 !== centeredPositions.length
+      ) {
         warnings.push(
           `Skipped STL asset '${item.assetId}' due to invalid vertex/normal buffer dimensions.`
         );
@@ -427,7 +657,8 @@ export function parseAndValidateRobotProject(
     }
   }
 
-  // Run assembly transform sync + graph sanitization
+  // Sanitize assembly graph FIRST so cycles, duplicate parents, and invalid links are eliminated
+  // before parent-child transform synchronization traverses the graph.
   const validatedDrivetrain = validateDrivetrainPayload(rawBuild.drivetrain, warnings);
   const rawStage =
     typeof rawBuild.stage === "string" && VALID_BUILD_STAGES.has(rawBuild.stage as BuildStage)
@@ -441,13 +672,9 @@ export function parseAndValidateRobotProject(
   const rawFoundationId =
     typeof rawBuild.foundationId === "string" ? rawBuild.foundationId : null;
 
-  const syncedParts = syncAssemblyTransforms(
-    validParts,
-    rawConnections as RobotConnection[]
-  );
   const sanitized = sanitizeAssemblyGraph({
-    parts: syncedParts,
-    connections: rawConnections as RobotConnection[],
+    parts: validParts,
+    connections: validatedConnections,
     electricalConnections: rawElectricalConnections,
     foundation: rawFoundation,
     foundationId: rawFoundationId,
@@ -459,10 +686,14 @@ export function parseAndValidateRobotProject(
     selectedElectricalPinId: null,
     stage: rawStage,
   });
+  const syncedParts = syncAssemblyTransforms(
+    sanitized.parts,
+    sanitized.connections
+  );
 
-  if (sanitized.connections.length < rawConnections.length) {
+  if (sanitized.connections.length < validatedConnections.length) {
     warnings.push(
-      `Removed ${rawConnections.length - sanitized.connections.length} invalid or cyclic mechanical connection(s) during graph sanitization.`
+      `Removed ${validatedConnections.length - sanitized.connections.length} invalid or cyclic mechanical connection(s) during graph sanitization.`
     );
   }
   if (sanitized.electricalConnections.length < rawElectricalConnections.length) {
@@ -473,9 +704,18 @@ export function parseAndValidateRobotProject(
     );
   }
 
-  // Check for referenced STL assets that were not bundled in file or already registered
+  // Check for referenced STL assets that were not bundled in file or already registered,
+  // and retain only referenced decoded assets to prevent stale/unreferenced asset clutter.
   const referencedAssetIds = new Set<string>();
-  collectSnapshotMeshAssetIds(sanitized.parts, sanitized.foundation, referencedAssetIds);
+  collectSnapshotMeshAssetIds(syncedParts, sanitized.foundation, referencedAssetIds);
+  const referencedDecodedAssets = decodedAssets.filter((a) =>
+    referencedAssetIds.has(a.assetId)
+  );
+  if (referencedDecodedAssets.length < decodedAssets.length) {
+    warnings.push(
+      `Ignored ${decodedAssets.length - referencedDecodedAssets.length} unreferenced embedded STL asset(s).`
+    );
+  }
   const orphanedAssetIds: string[] = [];
   for (const refId of referencedAssetIds) {
     if (!seenDecodedIds.has(refId) && !getMeshAssetRecord(refId)) {
@@ -502,8 +742,17 @@ export function parseAndValidateRobotProject(
     );
   }
 
+  const validSensorIds = new Set(
+    resolveRobotSensors({
+      parts: syncedParts,
+      electricalConnections: sanitized.electricalConnections,
+    }).map((s) => s.sensorId)
+  );
   const rawProg = isPlainObject(v2.programming) ? v2.programming : {};
-  const validatedActiveProgram = validateVisualProgramPayload(rawProg.activeProgram);
+  const validatedActiveProgram = validateVisualProgramPayload(
+    rawProg.activeProgram,
+    validSensorIds
+  );
   const activeProgram = validatedActiveProgram ?? createStarterPresets()[0];
   if (rawProg.activeProgram !== undefined && !validatedActiveProgram) {
     warnings.push("Saved visual program failed validation; reverted to starter preset.");
@@ -511,9 +760,16 @@ export function parseAndValidateRobotProject(
 
   const savedPrograms = Array.isArray(rawProg.savedPrograms)
     ? rawProg.savedPrograms
-        .map((p) => validateVisualProgramPayload(p))
+        .map((p) => validateVisualProgramPayload(p, validSensorIds))
         .filter((p): p is VisualRobotProgram => p !== null)
     : undefined;
+  if (
+    Array.isArray(rawProg.savedPrograms) &&
+    savedPrograms &&
+    savedPrograms.length < rawProg.savedPrograms.length
+  ) {
+    warnings.push("Skipped one or more invalid saved visual program routines.");
+  }
 
   const nowIso = new Date().toISOString();
   const projectName =
@@ -536,7 +792,7 @@ export function parseAndValidateRobotProject(
       stage: sanitized.stage ?? rawStage,
       foundationId: sanitized.foundationId,
       foundation: sanitized.foundation,
-      parts: sanitized.parts,
+      parts: syncedParts,
       connections: sanitized.connections,
       drivetrain: sanitized.drivetrain,
       hiddenPartIds: sanitized.hiddenPartIds,
@@ -553,15 +809,17 @@ export function parseAndValidateRobotProject(
       ...(savedPrograms && savedPrograms.length > 0 ? { savedPrograms } : {}),
     },
     assets: rawAssets.filter((item): item is SerializedMeshAsset =>
-      decodedAssets.some((d) => isPlainObject(item) && item.assetId === d.assetId)
+      referencedDecodedAssets.some(
+        (d) => isPlainObject(item) && item.assetId === d.assetId
+      )
     ),
   };
 
   return {
     success: true,
     project: normalizedProject,
-    decodedAssets,
-    restoredAssetIds: decodedAssets.map((a) => a.assetId),
+    decodedAssets: referencedDecodedAssets,
+    restoredAssetIds: referencedDecodedAssets.map((a) => a.assetId),
     orphanedAssetIds,
     migratedFromVersion: migration.migratedFromVersion,
     warnings,
@@ -569,13 +827,32 @@ export function parseAndValidateRobotProject(
   };
 }
 
+function buffersEqualFloat32(a: Float32Array, b: Float32Array): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+
 /**
- * Registers decoded STL buffers into meshAssetRegistry so the store can retain them.
+ * Registers decoded STL buffers into meshAssetRegistry so the store can retain them,
+ * preserving already-retained identical buffers so active cached Three.js geometry isn't
+ * prematurely disposed during reload.
  */
 export function registerDecodedProjectAssets(
   decodedAssets: readonly DecodedMeshAssetPayload[]
 ): void {
   for (const asset of decodedAssets) {
+    const existing = getMeshAssetRecord(asset.assetId);
+    if (
+      existing &&
+      existing.refCount > 0 &&
+      buffersEqualFloat32(existing.centeredPositions, asset.centeredPositions) &&
+      buffersEqualFloat32(existing.normals, asset.normals)
+    ) {
+      continue;
+    }
     restoreMeshAssetRecord({
       assetId: asset.assetId,
       centeredPositions: asset.centeredPositions,

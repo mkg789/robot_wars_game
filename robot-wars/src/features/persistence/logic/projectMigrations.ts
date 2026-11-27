@@ -14,8 +14,29 @@ export interface ProjectMigrationResult {
   readonly errors: string[];
 }
 
+const UNSAFE_OBJECT_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Recursively clones plain JSON objects/arrays while stripping dangerous prototype-pollution keys
+ * (`__proto__`, `constructor`, `prototype`) before migration or validation touches the payload.
+ */
+export function stripUnsafeObjectKeys<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUnsafeObjectKeys(item)) as unknown as T;
+  }
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.getOwnPropertyNames(value)) {
+      if (UNSAFE_OBJECT_KEYS.has(key)) continue;
+      out[key] = stripUnsafeObjectKeys((value as Record<string, unknown>)[key]);
+    }
+    return out as T;
+  }
+  return value;
 }
 
 /**
@@ -35,7 +56,8 @@ export function migrateProjectPayload(raw: unknown): ProjectMigrationResult {
     };
   }
 
-  const schemaVersion = raw.schemaVersion;
+  const sanitizedRaw = stripUnsafeObjectKeys(raw);
+  const schemaVersion = sanitizedRaw.schemaVersion;
   if (typeof schemaVersion !== "number" || !Number.isInteger(schemaVersion) || schemaVersion < 1) {
     return {
       success: false,
@@ -57,23 +79,23 @@ export function migrateProjectPayload(raw: unknown): ProjectMigrationResult {
   }
 
   // Validate format header when present (or required in v2+)
-  if (schemaVersion >= 2 && raw.format !== PROJECT_FORMAT_ID) {
+  if (schemaVersion >= 2 && sanitizedRaw.format !== PROJECT_FORMAT_ID) {
     return {
       success: false,
       payload: null,
       warnings,
       errors: [
-        `Invalid project format '${String(raw.format ?? "")}'; expected '${PROJECT_FORMAT_ID}'.`,
+        `Invalid project format '${String(sanitizedRaw.format ?? "")}'; expected '${PROJECT_FORMAT_ID}'.`,
       ],
     };
   }
-  if (raw.format !== undefined && raw.format !== PROJECT_FORMAT_ID) {
+  if (sanitizedRaw.format !== undefined && sanitizedRaw.format !== PROJECT_FORMAT_ID) {
     return {
       success: false,
       payload: null,
       warnings,
       errors: [
-        `Unrecognized project format '${String(raw.format)}'; expected '${PROJECT_FORMAT_ID}'.`,
+        `Unrecognized project format '${String(sanitizedRaw.format)}'; expected '${PROJECT_FORMAT_ID}'.`,
       ],
     };
   }
@@ -81,14 +103,14 @@ export function migrateProjectPayload(raw: unknown): ProjectMigrationResult {
   if (schemaVersion === CURRENT_PROJECT_SCHEMA_VERSION) {
     return {
       success: true,
-      payload: raw,
+      payload: sanitizedRaw,
       warnings,
       errors,
     };
   }
 
   // Migrate Schema v1 -> v2
-  const v1 = raw as unknown as LegacyRobotWarsProjectV1;
+  const v1 = sanitizedRaw as unknown as LegacyRobotWarsProjectV1;
   const nowIso = new Date().toISOString();
   const starterProgram = createStarterPresets()[0];
 

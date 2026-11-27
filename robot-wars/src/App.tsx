@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useShallow } from "zustand/react/shallow";
 import ElectricalWorkspaceView from "./components/electrical/ElectricalWorkspaceView";
 import SimulationView from "./components/simulation/SimulationView";
+import { ConfirmActionDialog } from "./components/workshop/ConfirmActionDialog";
 import PartInspectorPanel from "./components/workshop/PartInspectorPanel";
 import { WorkshopHeader } from "./components/workshop/WorkshopHeader";
 import { WorkshopLeftPanel } from "./components/workshop/WorkshopLeftPanel";
@@ -15,8 +16,13 @@ import {
   loadProjectAutosave,
   readProjectFileText,
   saveProjectAutosave,
+  shouldPersistProjectAutosave,
 } from "./features/persistence/logic/projectStorage";
 import type { MountCandidate } from "./features/robot-builder/logic/mounting";
+import {
+  assessDestructivePartDelete,
+  handleTabListKeyDown,
+} from "./features/robot-builder/logic/uiAccessibility";
 import type {
   CameraFocusFrame,
   CameraFocusRequest,
@@ -28,6 +34,8 @@ import {
 } from "./store/projectStoreAdapter";
 import { useRobotStore } from "./store/robotStore";
 import "./App.css";
+
+const WORKSHOP_RIGHT_TABS = ["stage", "inspector", "validation"] as const;
 
 function App() {
   const [workspaceMode, setWorkspaceMode] = useState<
@@ -45,6 +53,16 @@ function App() {
   const [rightPanelTab, setRightPanelTab] = useState<
     "stage" | "inspector" | "validation"
   >("stage");
+  const [electricalRightTab, setElectricalRightTab] = useState<
+    "wiring" | "inspector" | "diagnostics"
+  >("wiring");
+  const [pendingConfirm, setPendingConfirm] = useState<{
+    readonly title: string;
+    readonly description: string;
+    readonly confirmLabel: string;
+    readonly tone?: "danger" | "warning";
+    readonly onConfirm: () => void;
+  } | null>(null);
   const [hasRecoverableAutosave, setHasRecoverableAutosave] = useState<boolean>(
     () => useRobotStore.getState().foundation === null && hasProjectAutosave()
   );
@@ -52,6 +70,7 @@ function App() {
     readonly tone: "info" | "warning" | "error";
     readonly text: string;
   } | null>(null);
+  const autosaveTimerRef = useRef<number | null>(null);
 
   const store = useRobotStore(
     useShallow((state) => ({
@@ -172,14 +191,37 @@ function App() {
     }));
   };
 
+  const cancelPendingAutosave = () => {
+    if (autosaveTimerRef.current !== null) {
+      window.clearTimeout(autosaveTimerRef.current);
+      autosaveTimerRef.current = null;
+    }
+  };
+
   useEffect(() => {
-    if (!store.foundation) return;
-    const timer = window.setTimeout(() => {
-      const project = exportProjectFromStore(useRobotStore.getState());
-      saveProjectAutosave(project);
+    const latest = useRobotStore.getState();
+    if (!shouldPersistProjectAutosave(latest)) {
+      cancelPendingAutosave();
+      return;
+    }
+    cancelPendingAutosave();
+    autosaveTimerRef.current = window.setTimeout(() => {
+      autosaveTimerRef.current = null;
+      const snapshotState = useRobotStore.getState();
+      if (!shouldPersistProjectAutosave(snapshotState)) return;
+      const project = exportProjectFromStore(snapshotState);
+      const res = saveProjectAutosave(project);
       setHasRecoverableAutosave(false);
+      if (res.warning) {
+        setProjectNotice({
+          tone: "warning",
+          text: res.warning,
+        });
+      }
     }, 450);
-    return () => window.clearTimeout(timer);
+    return () => {
+      cancelPendingAutosave();
+    };
   }, [
     store.foundation,
     store.parts,
@@ -190,15 +232,36 @@ function App() {
     store.projectName,
     store.selectedArenaId,
     store.visualProgram,
+    store.historyPast,
   ]);
 
+  // Flush unsaved project changes synchronously before page unload/hide so edits inside
+  // the debounce window are not lost across refreshes or browser navigation.
+  useEffect(() => {
+    const handleBeforeUnload = () => {
+      cancelPendingAutosave();
+      const latest = useRobotStore.getState();
+      if (!shouldPersistProjectAutosave(latest)) return;
+      saveProjectAutosave(exportProjectFromStore(latest));
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    window.addEventListener("pagehide", handleBeforeUnload);
+    return () => {
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      window.removeEventListener("pagehide", handleBeforeUnload);
+    };
+  }, []);
+
   const handleSaveProject = () => {
+    cancelPendingAutosave();
     const project = exportProjectFromStore(useRobotStore.getState());
     downloadRobotProjectFile(project);
-    saveProjectAutosave(project);
+    const res = saveProjectAutosave(project);
     setProjectNotice({
-      tone: "info",
-      text: `Saved project "${project.metadata.name}" (${project.build.parts.length} parts, ${project.assets.length} STL assets).`,
+      tone: res.warning ? "warning" : "info",
+      text: res.warning
+        ? `${res.warning} (Downloaded "${project.metadata.name}".)`
+        : `Saved project "${project.metadata.name}" (${project.build.parts.length} parts, ${project.assets.length} STL assets).`,
     });
   };
 
@@ -228,6 +291,7 @@ function App() {
 
   const handleImportProjectFile = async (file: File) => {
     try {
+      cancelPendingAutosave();
       const rawText = await readProjectFileText(file);
       const result = importProjectIntoStore(rawText);
       applyLoadResult(result, file.name);
@@ -240,6 +304,7 @@ function App() {
   };
 
   const handleRecoverAutosave = () => {
+    cancelPendingAutosave();
     const autosaved = loadProjectAutosave();
     if (!autosaved || !autosaved.success) {
       setHasRecoverableAutosave(false);
@@ -253,11 +318,48 @@ function App() {
     applyLoadResult(autosaved, "browser autosave");
   };
 
-  const handleResetBuild = () => {
+  const performResetBuild = () => {
+    cancelPendingAutosave();
     store.startNewBuild();
     clearProjectAutosave();
     setHasRecoverableAutosave(false);
     setProjectNotice(null);
+    setPendingConfirm(null);
+  };
+
+  const handleRequestResetBuild = () => {
+    setPendingConfirm({
+      title: "Start a new build?",
+      description:
+        "Starting a new build resets the current robot, clears undo history, and discards the browser autosave backup.",
+      confirmLabel: "Start New Build",
+      tone: "danger",
+      onConfirm: performResetBuild,
+    });
+  };
+
+  const handleRequestDeletePart = (partId: string) => {
+    const plan = assessDestructivePartDelete(partId, store.parts, store.connections);
+    if (plan) {
+      setPendingConfirm({
+        ...plan,
+        tone: "danger",
+        onConfirm: () => {
+          setPendingConfirm(null);
+          store.deletePartById(partId);
+        },
+      });
+      return;
+    }
+    store.deletePartById(partId);
+  };
+
+  const handleOpenValidation = () => {
+    if (workspaceMode === "electrical") {
+      setElectricalRightTab("diagnostics");
+      return;
+    }
+    setRightPanelTab("validation");
   };
 
   if (workspaceMode === "simulation") {
@@ -291,9 +393,9 @@ function App() {
         }}
         onUndo={() => store.undo()}
         onRedo={() => store.redo()}
-        onOpenValidation={() => setRightPanelTab("validation")}
+        onOpenValidation={handleOpenValidation}
         onSetWorkspaceMode={setWorkspaceMode}
-        onResetBuild={handleResetBuild}
+        onResetBuild={handleRequestResetBuild}
       />
 
       {projectNotice && (
@@ -330,7 +432,9 @@ function App() {
           onFocusDiagnostic={store.focusElectricalDiagnostic}
           onInstallCatalogueItem={store.installElectricalCatalogueItem}
           onReplaceElectricalComponent={store.replaceElectricalComponent}
-          onDeletePart={store.deletePartById}
+          onDeletePart={handleRequestDeletePart}
+          rightTab={electricalRightTab}
+          onRightTabChange={setElectricalRightTab}
           onCreateConnection={store.addElectricalConnection}
           onUpdateConnection={store.updateElectricalConnection}
           onAssignPin={store.assignPinToElectricalConnection}
@@ -378,7 +482,7 @@ function App() {
               }
             }}
             onTogglePartVisibility={store.togglePartVisibility}
-            onDeletePart={store.deletePartById}
+            onDeletePart={handleRequestDeletePart}
             onSelectFoundationModel={store.selectFoundationModel}
             onConfigureProcedural={store.configureProceduralFoundation}
             onResetProcedural={store.resetProceduralFoundation}
@@ -420,35 +524,58 @@ function App() {
 
             <div className="workshop-right-tabs" role="tablist" aria-label="Right inspector tabs">
               <button
+                id="workshop-tab-stage"
                 type="button"
                 role="tab"
                 aria-selected={rightPanelTab === "stage"}
+                aria-controls="workshop-tabpanel-stage"
+                tabIndex={rightPanelTab === "stage" ? 0 : -1}
                 className={`sim-tab-btn ${rightPanelTab === "stage" ? "active" : ""}`}
                 onClick={() => setRightPanelTab("stage")}
+                onKeyDown={(event) =>
+                  handleTabListKeyDown(event, WORKSHOP_RIGHT_TABS, rightPanelTab, setRightPanelTab)
+                }
               >
                 Build Step
               </button>
               <button
+                id="workshop-tab-inspector"
                 type="button"
                 role="tab"
                 aria-selected={rightPanelTab === "inspector"}
+                aria-controls="workshop-tabpanel-inspector"
+                tabIndex={rightPanelTab === "inspector" ? 0 : -1}
                 className={`sim-tab-btn ${rightPanelTab === "inspector" ? "active" : ""}`}
                 onClick={() => setRightPanelTab("inspector")}
+                onKeyDown={(event) =>
+                  handleTabListKeyDown(event, WORKSHOP_RIGHT_TABS, rightPanelTab, setRightPanelTab)
+                }
               >
                 Part
               </button>
               <button
+                id="workshop-tab-validation"
                 type="button"
                 role="tab"
                 aria-selected={rightPanelTab === "validation"}
+                aria-controls="workshop-tabpanel-validation"
+                tabIndex={rightPanelTab === "validation" ? 0 : -1}
                 className={`sim-tab-btn ${rightPanelTab === "validation" ? "active" : ""}`}
                 onClick={() => setRightPanelTab("validation")}
+                onKeyDown={(event) =>
+                  handleTabListKeyDown(event, WORKSHOP_RIGHT_TABS, rightPanelTab, setRightPanelTab)
+                }
               >
                 Validate ({derived.validationReport.diagnostics.length})
               </button>
             </div>
 
-            <div className="panel-content">
+            <div
+              id={`workshop-tabpanel-${rightPanelTab}`}
+              role="tabpanel"
+              aria-labelledby={`workshop-tab-${rightPanelTab}`}
+              className="panel-content"
+            >
               {rightPanelTab === "inspector" ? (
                 derived.selectedPart ? (
                   <PartInspectorPanel
@@ -464,7 +591,7 @@ function App() {
                     onDuplicatePart={store.duplicatePart}
                     onAttachPart={store.attachPart}
                     onDetachPart={store.detachPart}
-                    onDeletePart={store.deletePartById}
+                    onDeletePart={handleRequestDeletePart}
                     onUpdateImportedConfig={store.updateImportedPartConfiguration}
                     onAddCustomInterface={store.addCustomMountingInterface}
                     onRemoveCustomInterface={store.removeCustomMountingInterface}
@@ -585,6 +712,16 @@ function App() {
         <span>OBJECTS: {store.parts.length}</span>
         <span>WIRES: {store.electricalConnections.length}</span>
       </footer>
+
+      <ConfirmActionDialog
+        open={Boolean(pendingConfirm)}
+        title={pendingConfirm?.title ?? ""}
+        description={pendingConfirm?.description ?? ""}
+        confirmLabel={pendingConfirm?.confirmLabel ?? "Confirm"}
+        tone={pendingConfirm?.tone ?? "danger"}
+        onConfirm={() => pendingConfirm?.onConfirm()}
+        onCancel={() => setPendingConfirm(null)}
+      />
     </div>
   );
 }

@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { resolvePartElectricalSpec } from "../../features/electrical/logic/electricalComponentAdapters";
+import { handleTabListKeyDown } from "../../features/robot-builder/logic/uiAccessibility";
 import type { AssemblyValidationReport } from "../../features/robot-builder/logic/assemblyValidation";
 import type {
   ElectricalConnection,
@@ -104,7 +105,13 @@ interface ElectricalWorkspaceViewProps {
     iface: AttachmentInterface
   ) => void;
   readonly onRemoveCustomInterface?: (partId: string, ifaceId: string) => void;
+  readonly rightTab?: "wiring" | "inspector" | "diagnostics";
+  readonly onRightTabChange?: (
+    tab: "wiring" | "inspector" | "diagnostics"
+  ) => void;
 }
+
+const ELECTRICAL_RIGHT_TABS = ["wiring", "inspector", "diagnostics"] as const;
 
 export default function ElectricalWorkspaceView({
   parts,
@@ -135,10 +142,17 @@ export default function ElectricalWorkspaceView({
   onUpdateImportedConfig,
   onAddCustomInterface,
   onRemoveCustomInterface,
+  rightTab: controlledRightTab,
+  onRightTabChange,
 }: ElectricalWorkspaceViewProps) {
-  const [rightTab, setRightTab] = useState<
+  const [localRightTab, setLocalRightTab] = useState<
     "wiring" | "inspector" | "diagnostics"
   >("wiring");
+  const rightTab = controlledRightTab ?? localRightTab;
+  const setRightTab = (tab: "wiring" | "inspector" | "diagnostics") => {
+    setLocalRightTab(tab);
+    onRightTabChange?.(tab);
+  };
   const [diagFilter, setDiagFilter] = useState<
     "all" | ElectricalDiagnosticSeverity
   >("all");
@@ -279,35 +293,58 @@ export default function ElectricalWorkspaceView({
 
         <div className="workshop-right-tabs" role="tablist" aria-label="Electrical workspace tabs">
           <button
+            id="electrical-tab-wiring"
             type="button"
             role="tab"
             aria-selected={rightTab === "wiring"}
+            aria-controls="electrical-tabpanel-wiring"
+            tabIndex={rightTab === "wiring" ? 0 : -1}
             className={`sim-tab-btn ${rightTab === "wiring" ? "active" : ""}`}
             onClick={() => setRightTab("wiring")}
+            onKeyDown={(event) =>
+              handleTabListKeyDown(event, ELECTRICAL_RIGHT_TABS, rightTab, setRightTab)
+            }
           >
             Wire ({electricalConnections.length})
           </button>
           <button
+            id="electrical-tab-inspector"
             type="button"
             role="tab"
             aria-selected={rightTab === "inspector"}
+            aria-controls="electrical-tabpanel-inspector"
+            tabIndex={rightTab === "inspector" ? 0 : -1}
             className={`sim-tab-btn ${rightTab === "inspector" ? "active" : ""}`}
             onClick={() => setRightTab("inspector")}
+            onKeyDown={(event) =>
+              handleTabListKeyDown(event, ELECTRICAL_RIGHT_TABS, rightTab, setRightTab)
+            }
           >
             Part
           </button>
           <button
+            id="electrical-tab-diagnostics"
             type="button"
             role="tab"
             aria-selected={rightTab === "diagnostics"}
+            aria-controls="electrical-tabpanel-diagnostics"
+            tabIndex={rightTab === "diagnostics" ? 0 : -1}
             className={`sim-tab-btn ${rightTab === "diagnostics" ? "active" : ""}`}
             onClick={() => setRightTab("diagnostics")}
+            onKeyDown={(event) =>
+              handleTabListKeyDown(event, ELECTRICAL_RIGHT_TABS, rightTab, setRightTab)
+            }
           >
             Validate ({electricalReport.diagnostics.length})
           </button>
         </div>
 
-        <div className="panel-content">
+        <div
+          id={`electrical-tabpanel-${rightTab}`}
+          role="tabpanel"
+          aria-labelledby={`electrical-tab-${rightTab}`}
+          className="panel-content"
+        >
           {rightTab === "wiring" ? (
             <ElectricalWiringPanel
               parts={parts}

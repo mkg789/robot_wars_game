@@ -3,6 +3,7 @@ import type {
   ElectricalCompatibilityResult,
   ElectricalCompatibilityStatus,
   ElectricalComponentSpec,
+  ElectricalConnection,
   ElectricalConnectorSpec,
   ElectricalInterfaceRole,
   ElectricalInterfaceSpec,
@@ -10,6 +11,98 @@ import type {
   ElectricalProvenance,
   ElectricalSignalType,
 } from "../types/electrical.types";
+
+export interface DirectedPowerEndpoints {
+  readonly sourcePartId: string;
+  readonly sourceInterfaceId: string;
+  readonly sourcePinId?: string;
+  readonly targetPartId: string;
+  readonly targetInterfaceId: string;
+  readonly targetPinId?: string;
+  readonly wasReversed: boolean;
+}
+
+/**
+ * Normalizes a power wire to supply -> consumer direction regardless of which endpoint
+ * order the user wired in the editor/API. Returns `null` for non-power or invalid role pairs.
+ */
+export function resolveDirectedPowerEndpoints(params: {
+  readonly connection: Pick<
+    ElectricalConnection,
+    | "sourcePartId"
+    | "sourceInterfaceId"
+    | "sourcePinId"
+    | "targetPartId"
+    | "targetInterfaceId"
+    | "targetPinId"
+    | "connectionType"
+  >;
+  readonly sourceComponent: ElectricalComponentSpec;
+  readonly sourceInterface: ElectricalInterfaceSpec;
+  readonly targetComponent: ElectricalComponentSpec;
+  readonly targetInterface: ElectricalInterfaceSpec;
+}): DirectedPowerEndpoints | null {
+  const {
+    connection,
+    sourceComponent,
+    sourceInterface,
+    targetComponent,
+    targetInterface,
+  } = params;
+
+  const isPowerEdge =
+    connection.connectionType === "power" ||
+    (sourceInterface.role.startsWith("power") &&
+      targetInterface.role.startsWith("power"));
+  if (!isPowerEdge) return null;
+
+  const srcCanOut =
+    sourceInterface.role === "power-output" ||
+    sourceInterface.role === "power-bidirectional";
+  const dstCanIn =
+    targetInterface.role === "power-input" ||
+    targetInterface.role === "power-bidirectional";
+  const dstCanOut =
+    targetInterface.role === "power-output" ||
+    targetInterface.role === "power-bidirectional";
+  const srcCanIn =
+    sourceInterface.role === "power-input" ||
+    sourceInterface.role === "power-bidirectional";
+
+  const forwardValid = srcCanOut && dstCanIn;
+  const reverseValid = dstCanOut && srcCanIn;
+
+  if (!forwardValid && !reverseValid) return null;
+
+  const shouldReverse =
+    (!forwardValid && reverseValid) ||
+    (forwardValid &&
+      reverseValid &&
+      targetComponent.componentType === "battery" &&
+      sourceComponent.componentType !== "battery");
+
+  if (shouldReverse) {
+    return {
+      sourcePartId: connection.targetPartId,
+      sourceInterfaceId: connection.targetInterfaceId,
+      sourcePinId: connection.targetPinId,
+      targetPartId: connection.sourcePartId,
+      targetInterfaceId: connection.sourceInterfaceId,
+      targetPinId: connection.sourcePinId,
+      wasReversed: true,
+    };
+  }
+
+  return {
+    sourcePartId: connection.sourcePartId,
+    sourceInterfaceId: connection.sourceInterfaceId,
+    sourcePinId: connection.sourcePinId,
+    targetPartId: connection.targetPartId,
+    targetInterfaceId: connection.targetInterfaceId,
+    targetPinId: connection.targetPinId,
+    wasReversed: false,
+  };
+}
 
 function isPowerRole(role: ElectricalInterfaceRole): boolean {
   return (
@@ -285,28 +378,52 @@ export function evaluateElectricalCompatibility(params: {
     });
   }
 
-  // 2. Voltage compatibility
-  const srcPowerRole = params.sourceComponent.driverOrRegulatorSpec?.powerRole;
-  const srcIsPassThrough =
-    params.sourceComponent.componentType === "switch" ||
-    params.sourceComponent.componentType === "pdb" ||
-    params.sourceComponent.componentType === "passive" ||
-    srcPowerRole === "switch" ||
-    srcPowerRole === "fuse" ||
-    srcPowerRole === "pdb" ||
-    srcPowerRole === "pass-through";
+  // 2. Voltage & current compatibility (evaluate supply -> load even if wired target -> source)
+  const isReversedPowerDirection =
+    isPowerRole(sRole) &&
+    isPowerRole(tRole) &&
+    ((sRole === "power-input" &&
+      (tRole === "power-output" || tRole === "power-bidirectional")) ||
+      (sRole === "power-bidirectional" && tRole === "power-output") ||
+      (sRole === "power-bidirectional" &&
+        tRole === "power-bidirectional" &&
+        params.targetComponent.componentType === "battery" &&
+        params.sourceComponent.componentType !== "battery"));
+
+  const supplyComponent = isReversedPowerDirection
+    ? params.targetComponent
+    : params.sourceComponent;
+  const supplyInterface = isReversedPowerDirection
+    ? targetInterface
+    : sourceInterface;
+  const supplyPin = isReversedPowerDirection ? targetPin : sourcePin;
+  const loadInterface = isReversedPowerDirection
+    ? sourceInterface
+    : targetInterface;
+  const loadPin = isReversedPowerDirection ? sourcePin : targetPin;
+  const supplyRole = supplyInterface.role;
+
+  const supplyPowerRole = supplyComponent.driverOrRegulatorSpec?.powerRole;
+  const supplyIsPassThrough =
+    supplyComponent.componentType === "switch" ||
+    supplyComponent.componentType === "pdb" ||
+    supplyComponent.componentType === "passive" ||
+    supplyPowerRole === "switch" ||
+    supplyPowerRole === "fuse" ||
+    supplyPowerRole === "pdb" ||
+    supplyPowerRole === "pass-through";
 
   if (roleValid && sRole !== "ground" && tRole !== "ground") {
     conditionsEvaluated.push("voltage");
-    const srcV = sourcePin?.supportedVoltage ?? sourceInterface.voltageSpec;
-    const dstV = targetPin?.supportedVoltage ?? targetInterface.voltageSpec;
+    const srcV = supplyPin?.supportedVoltage ?? supplyInterface.voltageSpec;
+    const dstV = loadPin?.supportedVoltage ?? loadInterface.voltageSpec;
 
     const srcMin = srcV?.minV ?? srcV?.nominalV;
     const srcMax = srcV?.maxV ?? srcV?.nominalV;
     const dstMin = dstV?.minV ?? dstV?.nominalV;
     const dstMax = dstV?.maxV ?? dstV?.nominalV;
 
-    if (srcIsPassThrough && sRole === "power-output") {
+    if (supplyIsPassThrough && supplyRole === "power-output") {
       checks.push({
         id: "voltage-passthrough-deferred",
         aspect: "voltage",
@@ -365,8 +482,8 @@ export function evaluateElectricalCompatibility(params: {
   // 3. Current limit compatibility (where supply output & load current exist)
   if (roleValid && isPowerRole(sRole) && isPowerRole(tRole)) {
     conditionsEvaluated.push("current");
-    const srcCap = sourcePin?.currentLimits ?? sourceInterface.currentSpec;
-    const dstDraw = targetPin?.currentLimits ?? targetInterface.currentSpec;
+    const srcCap = supplyPin?.currentLimits ?? supplyInterface.currentSpec;
+    const dstDraw = loadPin?.currentLimits ?? loadInterface.currentSpec;
     const srcMaxA = srcCap?.maxContinuousA;
     const dstReqA = dstDraw?.peakOrStallA ?? dstDraw?.maxContinuousA ?? dstDraw?.nominalA;
 

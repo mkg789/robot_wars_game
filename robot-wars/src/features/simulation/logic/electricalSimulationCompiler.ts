@@ -1,5 +1,6 @@
 import { validateElectricalAssembly } from "../../electrical/logic/electricalValidation";
 import { resolvePartElectricalSpec } from "../../electrical/logic/electricalComponentAdapters";
+import { resolveDirectedPowerEndpoints } from "../../electrical/logic/electricalCompatibility";
 import type {
   ElectricalComponentSpec,
   ElectricalConnection,
@@ -56,6 +57,7 @@ interface IncomingPowerEdge {
   readonly conn: ElectricalConnection;
   readonly sourcePartId: string;
   readonly sourceInterfaceId: string;
+  readonly targetPartId: string;
   readonly targetInterfaceId: string;
 }
 
@@ -119,31 +121,30 @@ export function compileElectricalSimulationProfile(params: {
     );
     if (!srcIface || !dstIface) continue;
 
-    const isPowerEdge =
-      conn.connectionType === "power" ||
-      (srcIface.role.startsWith("power") && dstIface.role.startsWith("power"));
-    if (!isPowerEdge) continue;
-
-    const srcIsOut =
-      srcIface.role === "power-output" || srcIface.role === "power-bidirectional";
-    const dstIsIn =
-      dstIface.role === "power-input" || dstIface.role === "power-bidirectional";
-    if (!srcIsOut || !dstIsIn) continue;
+    const directed = resolveDirectedPowerEndpoints({
+      connection: conn,
+      sourceComponent: srcSpec,
+      sourceInterface: srcIface,
+      targetComponent: dstSpec,
+      targetInterface: dstIface,
+    });
+    if (!directed) continue;
 
     const edge: IncomingPowerEdge = {
       conn,
-      sourcePartId: conn.sourcePartId,
-      sourceInterfaceId: conn.sourceInterfaceId,
-      targetInterfaceId: conn.targetInterfaceId,
+      sourcePartId: directed.sourcePartId,
+      sourceInterfaceId: directed.sourceInterfaceId,
+      targetPartId: directed.targetPartId,
+      targetInterfaceId: directed.targetInterfaceId,
     };
 
-    const inList = incomingByTargetPart.get(conn.targetPartId) ?? [];
+    const inList = incomingByTargetPart.get(directed.targetPartId) ?? [];
     inList.push(edge);
-    incomingByTargetPart.set(conn.targetPartId, inList);
+    incomingByTargetPart.set(directed.targetPartId, inList);
 
-    const outList = outgoingBySourcePart.get(conn.sourcePartId) ?? [];
+    const outList = outgoingBySourcePart.get(directed.sourcePartId) ?? [];
     outList.push(edge);
-    outgoingBySourcePart.set(conn.sourcePartId, outList);
+    outgoingBySourcePart.set(directed.sourcePartId, outList);
   }
 
   const consumerStates = topologyReport.powerAnalysis?.consumerStates ?? {};
@@ -283,7 +284,7 @@ export function compileElectricalSimulationProfile(params: {
     while (queue.length > 0) {
       const cur = queue.shift()!;
       for (const edge of outgoingBySourcePart.get(cur) ?? []) {
-        const nextId = edge.conn.targetPartId;
+        const nextId = edge.targetPartId;
         if (!visited.has(nextId)) {
           visited.add(nextId);
           result.push(nextId);
@@ -297,7 +298,12 @@ export function compileElectricalSimulationProfile(params: {
 
   const topologyErrorPartIds = new Set(
     topologyReport.diagnostics
-      .filter((d) => d.severity === "error" && d.partId)
+      .filter(
+        (d) =>
+          d.severity === "error" &&
+          d.partId &&
+          d.code !== "missing-component"
+      )
       .map((d) => d.partId!)
   );
 
@@ -383,13 +389,14 @@ export function compileElectricalSimulationProfile(params: {
       const upstream = traceUpstreamChain(partId);
       const regConsumer = consumerStates[partId];
 
+      const inIface = spec.interfaces.find((i) => i.role === "power-input");
       regulators.push({
         partId,
         name: part.name,
         powerRole,
         outputNominalV: outNom,
-        inputMinV: drv?.inputVoltageRangeV?.minV,
-        inputMaxV: drv?.inputVoltageRangeV?.maxV,
+        inputMinV: drv?.inputVoltageRangeV?.minV ?? inIface?.voltageSpec?.minV,
+        inputMaxV: drv?.inputVoltageRangeV?.maxV ?? inIface?.voltageSpec?.maxV,
         dropoutVoltageV: drv?.dropoutVoltageV,
         efficiency: drv?.efficiency,
         maxOutputCurrentA:
@@ -413,19 +420,27 @@ export function compileElectricalSimulationProfile(params: {
         const becNom = becIface.voltageSpec?.nominalV ?? 5.0;
         if (becOutEdges.length > 0 && becNom > 0) {
           const upstream = traceUpstreamChain(partId);
+          const becConsumer = consumerStates[partId];
+          const inIface = spec.interfaces.find((i) => i.role === "power-input");
           regulators.push({
             partId,
             name: `${part.name} BEC`,
             powerRole: "bec",
             outputNominalV: becNom,
-            inputMinV: spec.driverOrRegulatorSpec?.inputVoltageRangeV?.minV,
-            inputMaxV: spec.driverOrRegulatorSpec?.inputVoltageRangeV?.maxV,
+            inputMinV:
+              spec.driverOrRegulatorSpec?.inputVoltageRangeV?.minV ??
+              inIface?.voltageSpec?.minV,
+            inputMaxV:
+              spec.driverOrRegulatorSpec?.inputVoltageRangeV?.maxV ??
+              inIface?.voltageSpec?.maxV,
             dropoutVoltageV: 0.5,
             maxOutputCurrentA: becIface.currentSpec?.maxContinuousA,
             quiescentCurrentA: spec.driverOrRegulatorSpec?.quiescentCurrentA ?? 0,
             seriesSwitchIds: upstream.seriesSwitchIds,
             seriesFuseIds: upstream.seriesFuseIds,
-            hasCompileFault: Boolean(topologyErrorPartIds.has(partId)),
+            hasCompileFault: Boolean(
+              becConsumer?.hasPathFault || topologyErrorPartIds.has(partId)
+            ),
           });
         }
       }

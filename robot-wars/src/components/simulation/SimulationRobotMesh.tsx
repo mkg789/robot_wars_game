@@ -125,13 +125,8 @@ function renderNonWheelAssemblyPart(
             : part.cylinderAxis === "z"
               ? [Math.PI / 2, 0, 0]
               : [0, 0, 0];
-        const r = Math.min(boxExtents[0], boxExtents[2]) * 0.5;
-        const h =
-          part.cylinderAxis === "x"
-            ? boxExtents[0]
-            : part.cylinderAxis === "z"
-              ? boxExtents[2]
-              : boxExtents[1];
+        const r = part.cylinderDimensions.radius;
+        const h = part.cylinderDimensions.width;
         return (
           <mesh rotation={cylRot} castShadow receiveShadow>
             <cylinderGeometry args={[r, r, h, 28]} />

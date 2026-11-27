@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Canvas } from "@react-three/fiber";
 import type { MountCandidate } from "../../features/robot-builder/logic/mounting";
 import {
@@ -57,6 +58,18 @@ export function WorkshopViewport({
   onSetTransformMode,
   onStartNewBuild,
 }: WorkshopViewportProps) {
+  useEffect(() => {
+    if (!mountCandidate) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onSetMountCandidate(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [mountCandidate, onSetMountCandidate]);
+
   return (
     <main className="viewport">
       <Canvas
@@ -147,6 +160,7 @@ export function WorkshopViewport({
           <button
             key={mode.id}
             type="button"
+            aria-pressed={transformMode === mode.id}
             className={transformMode === mode.id ? "tool-active" : ""}
             onClick={() => onSetTransformMode(mode.id)}
             title={`Set viewport gizmo to ${mode.label}`}
@@ -158,18 +172,24 @@ export function WorkshopViewport({
 
       {!foundation && (
         <div className="foundation-start">
-          <span className="foundation-start-icon">▣</span>
+          <span className="foundation-start-icon" aria-hidden="true">▣</span>
           <h2>Start a new robot</h2>
           <p>Step 1 begins with choosing and configuring your foundation.</p>
-          <button onClick={onStartNewBuild}>Start Foundation Build</button>
+          <button type="button" onClick={onStartNewBuild}>Start Foundation Build</button>
         </div>
       )}
 
       {mountCandidate && (
-        <div className="mount-confirmation" role="dialog">
+        <div
+          className="mount-confirmation"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Confirm wheel attachment"
+        >
           <div>Mount this wheel to the motor?</div>
           <div className="mount-actions">
             <button
+              type="button"
               onClick={() => {
                 onMountWheelToMotor(
                   mountCandidate.motorId,
@@ -181,6 +201,7 @@ export function WorkshopViewport({
               Mount
             </button>
             <button
+              type="button"
               className="mount-cancel"
               onClick={() => onSetMountCandidate(null)}
             >

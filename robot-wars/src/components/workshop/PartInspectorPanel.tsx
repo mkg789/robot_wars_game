@@ -831,6 +831,7 @@ export default function PartInspectorPanel({
               <span>User Mass (kg)</span>
               <input
                 type="number"
+                aria-label="User mass (kg)"
                 step={0.1}
                 min={0.01}
                 value={part.importedEngineering.massKg ?? 1}
@@ -851,14 +852,19 @@ export default function PartInspectorPanel({
               <select
                 aria-label="Part collision mode"
                 value={part.collisionConfig.mode}
-                onChange={(e) =>
+                onChange={(e) => {
+                  const nextMode = e.target.value as CustomCollisionMode;
                   onUpdateImportedConfig(part.id, {
                     collision: {
                       ...part.collisionConfig!,
-                      mode: e.target.value as CustomCollisionMode,
+                      mode: nextMode,
+                      boxes:
+                        nextMode === part.collisionConfig!.mode
+                          ? part.collisionConfig!.boxes
+                          : [],
                     },
-                  })
-                }
+                  });
+                }}
               >
                 <option value="bounding-box">Bounding Box</option>
                 <option value="single-box">Single Box</option>
@@ -882,6 +888,7 @@ export default function PartInspectorPanel({
                 {onRemoveCustomInterface && (
                   <button
                     type="button"
+                    aria-label={`Remove custom interface ${iface.label}`}
                     className="sim-clear-selection-btn"
                     onClick={() => onRemoveCustomInterface(part.id, iface.id)}
                   >

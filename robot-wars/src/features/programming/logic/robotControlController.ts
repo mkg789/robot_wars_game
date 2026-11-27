@@ -254,13 +254,21 @@ export class RobotControlController implements RobotControlApi {
   }
 
   setControlSource(source: RobotControlSource): void {
-    if (
-      source === "manual" &&
-      (this.programStatus === "running" || this.programStatus === "paused")
-    ) {
-      this.stopProgram();
+    if (source === "manual") {
+      if (this.programStatus === "running" || this.programStatus === "paused") {
+        this.stopProgram();
+      } else {
+        this.pausedTarget = null;
+        if (this.controlSource !== "manual") {
+          this.stopRobot();
+        }
+      }
     }
     this.controlSource = source;
+  }
+
+  getActiveRoutine(): RobotControlRoutine | null {
+    return this.routine;
   }
 
   reportExecutionTrace(trace: VisualProgramExecutionTrace): void {
@@ -422,10 +430,13 @@ export class RobotControlController implements RobotControlApi {
       };
     }
 
-    return {
+    const stepInput: DrivetrainInput = {
       leftThrottle: this.target.leftPower,
       rightThrottle: this.target.rightPower,
     };
+    this.pausedTarget = this.target;
+    this.target = NEUTRAL_NORMALIZED_TARGET;
+    return stepInput;
   }
 
   stopProgram(): void {

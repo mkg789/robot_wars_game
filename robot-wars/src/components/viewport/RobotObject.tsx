@@ -290,11 +290,33 @@ export default function RobotObject({
           group.rotation.z,
         ];
 
-        const scaledSize: [number, number, number] = [
+        const rawScaledSize: [number, number, number] = [
           Math.max(0.01, boxExtents[0] * group.scale.x),
           Math.max(0.01, boxExtents[1] * group.scale.y),
           Math.max(0.01, boxExtents[2] * group.scale.z),
         ];
+
+        // boxExtents maps cylinder dimensions by axis ([axialWidth, diameter, diameter] for "x"),
+        // whereas Wheel store size uses [diameter, width, diameter].
+        let scaledSize = rawScaledSize;
+        if (
+          (part.type === "Wheel" || part.wheelDiameter !== undefined) &&
+          part.geometry?.shape === "cylinder"
+        ) {
+          if (part.geometry.axis === "x") {
+            const nextDiam =
+              Math.abs(group.scale.y - 1) >= Math.abs(group.scale.z - 1)
+                ? rawScaledSize[1]
+                : rawScaledSize[2];
+            scaledSize = [nextDiam, rawScaledSize[0], nextDiam];
+          } else if (part.geometry.axis === "z") {
+            const nextDiam =
+              Math.abs(group.scale.x - 1) >= Math.abs(group.scale.y - 1)
+                ? rawScaledSize[0]
+                : rawScaledSize[1];
+            scaledSize = [nextDiam, rawScaledSize[2], nextDiam];
+          }
+        }
 
         onTransformUpdate(
           releasedPosition,

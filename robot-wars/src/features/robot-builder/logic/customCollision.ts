@@ -230,7 +230,13 @@ export function buildCustomCollisionConfig(params: {
   let boxes: CustomCollisionBox[] = [singleBox];
   let notes = "Single axis-aligned collision box matching transformed mesh bounds.";
 
-  if (params.mode === "single-box" && params.customBoxes?.length) {
+  if (
+    params.mode === "single-box" &&
+    params.customBoxes?.length === 1 &&
+    !params.customBoxes[0].id.startsWith("proxy-quad-") &&
+    !params.customBoxes[0].id.startsWith("proxy-left") &&
+    !params.customBoxes[0].id.startsWith("proxy-right")
+  ) {
     boxes = [params.customBoxes[0]];
     notes = "User-configured single collision box proxy.";
   } else if (params.mode === "multi-box") {

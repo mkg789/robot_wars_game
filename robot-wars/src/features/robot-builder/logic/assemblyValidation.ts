@@ -8,7 +8,6 @@ import {
   evaluateMotorWheelCompatibility,
 } from "./mechanicalCompatibility";
 import {
-  hasAttachmentCycle,
   resolvePartMountingInterfaces,
 } from "./mountingInterfaces";
 import { generateMountingPatternPoints } from "./mountingPatterns";
@@ -68,6 +67,7 @@ export interface AssemblyDiagnostic {
   readonly message: string;
   readonly partId?: string;
   readonly relatedPartId?: string;
+  readonly affectedPartIds?: readonly string[];
   readonly title?: string;
   readonly reason?: string;
   readonly conditionEvaluated?: string;
@@ -383,26 +383,82 @@ export function validateRobotAssembly(params: {
     });
   }
 
+  if (foundation && partMap.has("foundation-chassis")) {
+    const hasTopPlate = partMap.has("foundation-top-plate");
+    const hasFrontCover = partMap.has("foundation-front-cover");
+    if (foundation.includeTopPlate !== hasTopPlate) {
+      pushDiagnostic({
+        id: "foundation-top-plate-flag-mismatch",
+        severity: "error",
+        code: "missing-foundation",
+        partId: hasTopPlate ? "foundation-top-plate" : "foundation-chassis",
+        relatedPartId: "foundation-chassis",
+        subsystem: "foundation",
+        title: "Foundation top-plate state mismatch",
+        message: foundation.includeTopPlate
+          ? "Foundation expects a top plate, but foundation-top-plate is missing."
+          : "foundation-top-plate exists while foundation.includeTopPlate is disabled.",
+        reason: "Foundation configuration flags must stay synchronized with foundation child parts.",
+        conditionEvaluated: "Compared foundation.includeTopPlate with presence of foundation-top-plate.",
+        correctiveAction: "Rebuild or toggle foundation top-plate option to resynchronize foundation parts.",
+      });
+    }
+    if (foundation.includeFrontCover !== hasFrontCover) {
+      pushDiagnostic({
+        id: "foundation-front-cover-flag-mismatch",
+        severity: "error",
+        code: "missing-foundation",
+        partId: hasFrontCover ? "foundation-front-cover" : "foundation-chassis",
+        relatedPartId: "foundation-chassis",
+        subsystem: "foundation",
+        title: "Foundation front-cover state mismatch",
+        message: foundation.includeFrontCover
+          ? "Foundation expects a front cover, but foundation-front-cover is missing."
+          : "foundation-front-cover exists while foundation.includeFrontCover is disabled.",
+        reason: "Foundation configuration flags must stay synchronized with foundation child parts.",
+        conditionEvaluated: "Compared foundation.includeFrontCover with presence of foundation-front-cover.",
+        correctiveAction: "Rebuild or toggle foundation front-cover option to resynchronize foundation parts.",
+      });
+    }
+  }
+
   const parentOfChild = new Map<string, string>();
   const connectionByChildId = new Map<string, RobotConnection>();
+  const incomingByChild = new Map<string, RobotConnection[]>();
+  const outgoingByParent = new Map<string, string[]>();
+  const connectionById = new Map<string, RobotConnection>();
+
   for (const conn of connections) {
+    connectionById.set(conn.id, conn);
     const parentId = conn.parentId ?? conn.sourceId;
     const childId = conn.childId ?? conn.targetId;
-    if (parentId && childId) {
+    if (!parentId || !childId) continue;
+
+    if (partMap.has(parentId) && partMap.has(childId)) {
+      const incoming = incomingByChild.get(childId) ?? [];
+      incoming.push(conn);
+      incomingByChild.set(childId, incoming);
+
+      const outgoing = outgoingByParent.get(parentId) ?? [];
+      outgoing.push(childId);
+      outgoingByParent.set(parentId, outgoing);
+    }
+
+    if (parentId !== childId && !connectionByChildId.has(childId)) {
       parentOfChild.set(childId, parentId);
-      if (!connectionByChildId.has(childId)) {
-        connectionByChildId.set(childId, conn);
-      }
+      connectionByChildId.set(childId, conn);
     }
   }
 
   const isAnchoredToFoundation = (partId: string): boolean => {
-    if (
-      partId === "foundation-chassis" ||
-      partId === "foundation-top-plate" ||
-      partId === "foundation-front-cover"
-    ) {
-      return true;
+    if (partId === "foundation-chassis") {
+      return partMap.has("foundation-chassis");
+    }
+    if (partId === "foundation-top-plate") {
+      return Boolean(foundation?.includeTopPlate) && partMap.has("foundation-chassis");
+    }
+    if (partId === "foundation-front-cover") {
+      return Boolean(foundation?.includeFrontCover) && partMap.has("foundation-chassis");
     }
     let current = partId;
     const visited = new Set<string>();
@@ -664,20 +720,96 @@ export function validateRobotAssembly(params: {
       }
     }
 
-    if (part.parentAttachmentId) {
-      const conn = connections.find((c) => c.id === part.parentAttachmentId);
-      if (!conn || !partMap.has(conn.parentId ?? conn.sourceId)) {
+    const validIncoming = incomingByChild.get(part.id) ?? [];
+    if (part.id === "foundation-chassis") {
+      if (part.parentAttachmentId || validIncoming.length > 0) {
         pushDiagnostic({
-          id: `missing-parent-${part.id}`,
+          id: "root-foundation-parented",
           severity: "error",
           code: "missing-parent",
           partId: part.id,
+          relatedPartId:
+            validIncoming[0]?.parentId ?? validIncoming[0]?.sourceId,
+          subsystem: "foundation",
+          title: "Foundation root cannot have a parent",
+          message: `${part.name} is the root foundation chassis and cannot attach below another part.`,
+          reason: "Foundation root must remain an unparented assembly anchor.",
+          conditionEvaluated: "Verified foundation-chassis has no parentAttachmentId or incoming parent connections.",
+          correctiveAction: "Remove parent attachment links targeting foundation-chassis.",
+        });
+      }
+    } else {
+      if (validIncoming.length > 1) {
+        const parentNames = validIncoming
+          .map((c) => {
+            const pId = c.parentId ?? c.sourceId;
+            return partMap.get(pId)?.name ?? pId;
+          })
+          .join(", ");
+        pushDiagnostic({
+          id: `duplicate-parent-${part.id}`,
+          severity: "error",
+          code: "missing-parent",
+          partId: part.id,
+          relatedPartId:
+            validIncoming[1]?.parentId ?? validIncoming[1]?.sourceId,
+          affectedPartIds: [
+            part.id,
+            ...validIncoming.map((c) => c.parentId ?? c.sourceId),
+          ],
           subsystem: "compatibility",
-          title: "Missing parent attachment",
-          message: `${part.name} references a missing parent attachment.`,
-          reason: "Child part holds a parentAttachmentId whose connection or parent no longer exists.",
-          conditionEvaluated: "Verified part.parentAttachmentId resolves to existing connection & parent.",
-          correctiveAction: "Detach and re-attach component in Part Inspector.",
+          title: "Multiple parent attachments",
+          message: `${part.name} has ${validIncoming.length} parent connections (${parentNames}); each child component may have at most one parent.`,
+          reason: "Tree attachment hierarchy requires a unique parent per child part.",
+          conditionEvaluated: "Checked incoming mechanical/motor-wheel edge count <= 1.",
+          correctiveAction: "Detach extra parent connection so only one parent owns this component.",
+        });
+      }
+
+      let emittedMissingParent = false;
+      if (part.parentAttachmentId) {
+        const conn = connectionById.get(part.parentAttachmentId);
+        const connParentId = conn ? (conn.parentId ?? conn.sourceId) : "";
+        const connChildId = conn ? (conn.childId ?? conn.targetId) : "";
+        if (!conn || !partMap.has(connParentId) || connChildId !== part.id) {
+          emittedMissingParent = true;
+          pushDiagnostic({
+            id: `missing-parent-${part.id}`,
+            severity: "error",
+            code: "missing-parent",
+            partId: part.id,
+            subsystem: "compatibility",
+            title: "Missing parent attachment",
+            message: `${part.name} references a missing or mismatched parent attachment.`,
+            reason:
+              "Child part holds a parentAttachmentId whose connection is missing, targets a different part, or lacks a valid parent.",
+            conditionEvaluated:
+              "Verified part.parentAttachmentId resolves to existing connection targeting this part and valid parent.",
+            correctiveAction: "Detach and re-attach component in Part Inspector.",
+          });
+        }
+      }
+
+      const primaryIncoming = validIncoming.find(
+        (c) => (c.parentId ?? c.sourceId) !== part.id
+      );
+      if (
+        !emittedMissingParent &&
+        primaryIncoming &&
+        part.parentAttachmentId !== primaryIncoming.id
+      ) {
+        pushDiagnostic({
+          id: `missing-parent-sync-${part.id}`,
+          severity: "error",
+          code: "missing-parent",
+          partId: part.id,
+          relatedPartId: primaryIncoming.parentId ?? primaryIncoming.sourceId,
+          subsystem: "compatibility",
+          title: "Out-of-sync parent attachment ID",
+          message: `${part.name} has an incoming attachment "${primaryIncoming.id}" not recorded on part.parentAttachmentId.`,
+          reason: "Child part parentAttachmentId disagrees with the active parent-child connection.",
+          conditionEvaluated: "Verified part.parentAttachmentId matches incoming attachment connection ID.",
+          correctiveAction: "Re-attach component or run assembly sanitization to synchronize attachment IDs.",
         });
       }
     }
@@ -835,7 +967,73 @@ export function validateRobotAssembly(params: {
     }
   }
 
-  // Validate connections (cycles + reusable compatibility engine)
+  // Detect all single-node and multi-node cycles across valid connections
+  const visitState = new Map<string, 0 | 1 | 2>();
+  const dfsStack: string[] = [];
+  const emittedCycleKeys = new Set<string>();
+
+  const recordCycle = (cycleNodes: readonly string[]) => {
+    if (cycleNodes.length === 0) return;
+    let minIdx = 0;
+    for (let i = 1; i < cycleNodes.length; i++) {
+      if (cycleNodes[i] < cycleNodes[minIdx]) minIdx = i;
+    }
+    const canonical = [
+      ...cycleNodes.slice(minIdx),
+      ...cycleNodes.slice(0, minIdx),
+    ];
+    const key = canonical.join("->");
+    if (emittedCycleKeys.has(key)) return;
+    emittedCycleKeys.add(key);
+
+    const names = canonical.map((id) => partMap.get(id)?.name ?? id);
+    const loopLabel =
+      canonical.length === 1
+        ? `${names[0]} (${canonical[0]})`
+        : `${names.join(" -> ")} -> ${names[0]}`;
+    pushDiagnostic({
+      id: `cycle-${key}`,
+      severity: "error",
+      code: "circular-attachment",
+      partId: canonical[0],
+      relatedPartId: canonical[canonical.length - 1],
+      affectedPartIds: canonical,
+      subsystem: "structural",
+      title: "Circular dependency",
+      message: `Circular attachment detected involving ${loopLabel}.`,
+      reason: "Component attachment graph contains a closed ancestor cycle.",
+      conditionEvaluated: "Directed DFS cycle detection across Mechanical and Motor-Wheel connections.",
+      correctiveAction: "Detach cycle-forming component(s) and re-attach cleanly below foundation-chassis.",
+    });
+  };
+
+  const dfsCycle = (nodeId: string) => {
+    visitState.set(nodeId, 1);
+    dfsStack.push(nodeId);
+
+    for (const nextId of outgoingByParent.get(nodeId) ?? []) {
+      const nextState = visitState.get(nextId) ?? 0;
+      if (nextState === 1) {
+        const startIdx = dfsStack.indexOf(nextId);
+        if (startIdx >= 0) {
+          recordCycle(dfsStack.slice(startIdx));
+        }
+      } else if (nextState === 0) {
+        dfsCycle(nextId);
+      }
+    }
+
+    dfsStack.pop();
+    visitState.set(nodeId, 2);
+  };
+
+  for (const part of parts) {
+    if ((visitState.get(part.id) ?? 0) === 0) {
+      dfsCycle(part.id);
+    }
+  }
+
+  // Validate connections (dangling links + reusable compatibility engine)
   for (const conn of connections) {
     const parentId = conn.parentId ?? conn.sourceId;
     const childId = conn.childId ?? conn.targetId;
@@ -857,22 +1055,6 @@ export function validateRobotAssembly(params: {
         correctiveAction: "Remove orphaned connection or undo recent deletion.",
       });
       continue;
-    }
-
-    if (hasAttachmentCycle(connections, parentId, childId) && parentId === childId) {
-      pushDiagnostic({
-        id: `cycle-${conn.id}`,
-        severity: "error",
-        code: "circular-attachment",
-        partId: childId,
-        relatedPartId: parentId,
-        subsystem: "structural",
-        title: "Circular dependency",
-        message: `Circular attachment detected involving ${childPart.name}.`,
-        reason: "Component is an ancestor of itself in the attachment tree.",
-        conditionEvaluated: "Cycle guard on Mechanical connections.",
-        correctiveAction: "Detach component and re-attach cleanly below foundation-chassis.",
-      });
     }
 
     if (conn.type === "Mechanical") {
@@ -1090,11 +1272,14 @@ export function validateRobotAssembly(params: {
 
   const byPart: Record<string, AssemblyDiagnostic[]> = {};
   for (const diag of diagnostics) {
-    if (diag.partId) {
-      (byPart[diag.partId] ??= []).push(diag);
+    const indexedIds = new Set<string>();
+    if (diag.partId) indexedIds.add(diag.partId);
+    if (diag.relatedPartId) indexedIds.add(diag.relatedPartId);
+    for (const affectedId of diag.affectedPartIds ?? []) {
+      if (affectedId) indexedIds.add(affectedId);
     }
-    if (diag.relatedPartId && diag.relatedPartId !== diag.partId) {
-      (byPart[diag.relatedPartId] ??= []).push(diag);
+    for (const id of indexedIds) {
+      (byPart[id] ??= []).push(diag);
     }
   }
 

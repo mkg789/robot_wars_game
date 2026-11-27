@@ -6,7 +6,10 @@ import type {
   ElectricalValidationReport,
 } from "../types/electrical.types";
 import { resolvePartElectricalSpec } from "./electricalComponentAdapters";
-import { evaluateElectricalCompatibility } from "./electricalCompatibility";
+import {
+  evaluateElectricalCompatibility,
+  resolveDirectedPowerEndpoints,
+} from "./electricalCompatibility";
 import { analyzePowerDistribution } from "./powerDistributionAnalysis";
 
 /**
@@ -208,27 +211,69 @@ export function validateElectricalAssembly(params: {
       seenSignatures.add(sig);
     }
 
-    // Track multiple active outputs driving the same input terminal/pin
-    if (
-      srcIface.role === "power-output" ||
-      srcIface.role === "signal-output"
-    ) {
-      const targetKey = `${conn.targetPartId}:${conn.targetInterfaceId}:${conn.targetPinId ?? "*"}`;
+    // Track multiple active outputs driving the same input terminal/pin (order-insensitive)
+    const directedPowerForDriver = resolveDirectedPowerEndpoints({
+      connection: conn,
+      sourceComponent: srcSpec,
+      sourceInterface: srcIface,
+      targetComponent: dstSpec,
+      targetInterface: dstIface,
+    });
+    const isDirectedSignalForward =
+      srcIface.role === "signal-output" &&
+      (dstIface.role === "signal-input" || dstIface.role === "signal-bidirectional");
+    const isDirectedSignalReverse =
+      dstIface.role === "signal-output" &&
+      (srcIface.role === "signal-input" || srcIface.role === "signal-bidirectional");
+
+    const driverPair =
+      directedPowerForDriver &&
+      (directedPowerForDriver.wasReversed ? dstIface.role === "power-output" : srcIface.role === "power-output")
+        ? {
+            driverPart: directedPowerForDriver.wasReversed ? dstPart : srcPart,
+            driverIface: directedPowerForDriver.wasReversed ? dstIface : srcIface,
+            driverPinId: directedPowerForDriver.sourcePinId,
+            receiverPart: directedPowerForDriver.wasReversed ? srcPart : dstPart,
+            receiverIface: directedPowerForDriver.wasReversed ? srcIface : dstIface,
+            receiverPinId: directedPowerForDriver.targetPinId,
+          }
+        : isDirectedSignalForward
+          ? {
+              driverPart: srcPart,
+              driverIface: srcIface,
+              driverPinId: conn.sourcePinId,
+              receiverPart: dstPart,
+              receiverIface: dstIface,
+              receiverPinId: conn.targetPinId,
+            }
+          : isDirectedSignalReverse
+            ? {
+                driverPart: dstPart,
+                driverIface: dstIface,
+                driverPinId: conn.targetPinId,
+                receiverPart: srcPart,
+                receiverIface: srcIface,
+                receiverPinId: conn.sourcePinId,
+              }
+            : null;
+
+    if (driverPair) {
+      const targetKey = `${driverPair.receiverPart.id}:${driverPair.receiverIface.interfaceId}:${driverPair.receiverPinId ?? "*"}`;
       const prevCount = targetDriversCount.get(targetKey) ?? 0;
       targetDriversCount.set(targetKey, prevCount + 1);
-      if (prevCount >= 1 && dstIface.role !== "ground") {
+      if (prevCount >= 1 && driverPair.receiverIface.role !== "ground") {
         diagnostics.push({
           id: `elec-multidrive-${conn.id}`,
           severity: "error",
           code: "multi-driver-conflict",
           title: "Multiple active drivers on single input",
-          reason: `${dstPart.name} (${dstIface.name}) receives power or signals from multiple outputs simultaneously.`,
-          partId: dstPart.id,
-          relatedPartId: srcPart.id,
-          interfaceId: dstIface.interfaceId,
-          pinId: conn.targetPinId,
-          relatedInterfaceId: srcIface.interfaceId,
-          relatedPinId: conn.sourcePinId,
+          reason: `${driverPair.receiverPart.name} (${driverPair.receiverIface.name}) receives power or signals from multiple outputs simultaneously.`,
+          partId: driverPair.receiverPart.id,
+          relatedPartId: driverPair.driverPart.id,
+          interfaceId: driverPair.receiverIface.interfaceId,
+          pinId: driverPair.receiverPinId,
+          relatedInterfaceId: driverPair.driverIface.interfaceId,
+          relatedPinId: driverPair.driverPinId,
           connectionId: conn.id,
           conditionEvaluated: "Checked active output driver count per target terminal.",
           correctiveAction: "Use a dedicated bus, multiplexer, or isolate power rails.",
@@ -267,6 +312,42 @@ export function validateElectricalAssembly(params: {
       const hasSignal = compat.checks.some(
         (c) => (c.aspect === "signal-protocol" || c.aspect === "pin-capability") && c.status === "error"
       );
+      // Scope edge fault to the downstream load/branch rather than poisoning upstream Battery/PDB rails
+      let faultPart = srcPart;
+      let relatedPart = dstPart;
+      let faultIface = srcIface;
+      let faultPin = srcPin;
+      let relatedIface = dstIface;
+      let relatedPin = dstPin;
+
+      if (directedPowerForDriver) {
+        const useDst = !directedPowerForDriver.wasReversed;
+        faultPart = useDst ? dstPart : srcPart;
+        relatedPart = useDst ? srcPart : dstPart;
+        faultIface = useDst ? dstIface : srcIface;
+        faultPin = useDst ? dstPin : srcPin;
+        relatedIface = useDst ? srcIface : dstIface;
+        relatedPin = useDst ? srcPin : dstPin;
+      } else if (srcIface.role.startsWith("power") && dstIface.role.startsWith("signal")) {
+        faultPart = dstPart;
+        relatedPart = srcPart;
+        faultIface = dstIface;
+        faultPin = dstPin;
+        relatedIface = srcIface;
+        relatedPin = srcPin;
+      } else if (
+        (srcSpec.componentType === "battery" || srcSpec.componentType === "pdb") &&
+        dstSpec.componentType !== "battery" &&
+        dstSpec.componentType !== "pdb"
+      ) {
+        faultPart = dstPart;
+        relatedPart = srcPart;
+        faultIface = dstIface;
+        faultPin = dstPin;
+        relatedIface = srcIface;
+        relatedPin = srcPin;
+      }
+
       diagnostics.push({
         id: `elec-incompat-${conn.id}`,
         severity: "error",
@@ -279,12 +360,12 @@ export function validateElectricalAssembly(params: {
               : "incompatible-interfaces",
         title: `Incompatible wiring (${srcPart.name} → ${dstPart.name})`,
         reason: compat.reason,
-        partId: srcPart.id,
-        relatedPartId: dstPart.id,
-        interfaceId: srcIface.interfaceId,
-        pinId: srcPin?.pinId,
-        relatedInterfaceId: dstIface.interfaceId,
-        relatedPinId: dstPin?.pinId,
+        partId: faultPart.id,
+        relatedPartId: relatedPart.id,
+        interfaceId: faultIface.interfaceId,
+        pinId: faultPin?.pinId,
+        relatedInterfaceId: relatedIface.interfaceId,
+        relatedPinId: relatedPin?.pinId,
         connectionId: conn.id,
         conditionEvaluated: `evaluateElectricalCompatibility(${compat.conditionsEvaluated.join(", ")})`,
         correctiveAction: compat.correctiveAction,
@@ -360,31 +441,40 @@ export function validateElectricalAssembly(params: {
     const dstIface = dstSpec.interfaces.find((i) => i.interfaceId === conn.targetInterfaceId);
     if (!srcIface || !dstIface) continue;
 
-    // Aggregate summed continuous draw per active power rail output
+    // Aggregate summed continuous draw per active power rail output (normalized direction)
+    const directedPower = resolveDirectedPowerEndpoints({
+      connection: conn,
+      sourceComponent: srcSpec,
+      sourceInterface: srcIface,
+      targetComponent: dstSpec,
+      targetInterface: dstIface,
+    });
+    const supplyPart = directedPower?.wasReversed ? dstPart : srcPart;
+    const supplyIface = directedPower?.wasReversed ? dstIface : srcIface;
+    const loadIface = directedPower?.wasReversed ? srcIface : dstIface;
     if (
-      conn.connectionType === "power" &&
-      srcIface.role === "power-output" &&
-      srcIface.currentSpec?.maxContinuousA !== undefined &&
-      (dstIface.role === "power-input" || dstIface.role === "power-bidirectional")
+      directedPower &&
+      supplyIface.role === "power-output" &&
+      supplyIface.currentSpec?.maxContinuousA !== undefined
     ) {
-      const dstDraw = dstIface.currentSpec;
+      const dstDraw = loadIface.currentSpec;
       const drawA = dstDraw?.nominalA ?? dstDraw?.maxContinuousA;
       if (drawA !== undefined) {
-        const railKey = `${srcPart.id}:${srcIface.interfaceId}`;
+        const railKey = `${supplyPart.id}:${supplyIface.interfaceId}`;
         const existing = railLoadDrawMap.get(railKey);
         if (existing) {
           existing.totalLoadA += drawA;
           existing.lastConnId = conn.id;
         } else {
           railLoadDrawMap.set(railKey, {
-            partName: srcPart.name,
-            ifaceName: srcIface.name,
-            partId: srcPart.id,
-            ifaceId: srcIface.interfaceId,
-            maxContA: srcIface.currentSpec.maxContinuousA,
+            partName: supplyPart.name,
+            ifaceName: supplyIface.name,
+            partId: supplyPart.id,
+            ifaceId: supplyIface.interfaceId,
+            maxContA: supplyIface.currentSpec.maxContinuousA,
             totalLoadA: drawA,
             lastConnId: conn.id,
-            provenance: srcIface.provenance,
+            provenance: supplyIface.provenance,
           });
         }
       }
@@ -427,10 +517,15 @@ export function validateElectricalAssembly(params: {
     trackEndpointPin(dstPart, dstSpec, dstIface, conn.targetPinId);
   }
 
+  const externalErrorFaults = diagnostics
+    .filter((d) => d.severity === "error" && d.partId && d.code !== "missing-component")
+    .map((d) => ({ partId: d.partId!, title: d.title }));
+
   const powerResult = analyzePowerDistribution({
     parts,
     electricalConnections,
     trippedFuseIds,
+    externalErrorFaults,
   });
 
   // Merge power-path diagnostics while avoiding duplicate rail-load alerts

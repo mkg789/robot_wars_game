@@ -1,5 +1,6 @@
 import type { RobotPart } from "../../robot-builder/types/robot.types";
 import { resolvePartElectricalSpec } from "./electricalComponentAdapters";
+import { resolveDirectedPowerEndpoints } from "./electricalCompatibility";
 import type {
   ElectricalComponentSpec,
   ElectricalConnection,
@@ -146,11 +147,17 @@ export function analyzePowerDistribution(params: {
   readonly parts: readonly RobotPart[];
   readonly electricalConnections: readonly ElectricalConnection[];
   readonly trippedFuseIds?: readonly string[];
+  readonly externalErrorFaults?: readonly { readonly partId: string; readonly title: string }[];
 }): {
   readonly analysis: ElectricalPowerPathAnalysis;
   readonly diagnostics: readonly ElectricalDiagnostic[];
 } {
-  const { parts, electricalConnections, trippedFuseIds = [] } = params;
+  const {
+    parts,
+    electricalConnections,
+    trippedFuseIds = [],
+    externalErrorFaults = [],
+  } = params;
   const trippedFuseSet = new Set(trippedFuseIds);
   const diagnostics: ElectricalDiagnostic[] = [];
   const emittedDiagIds = new Set<string>();
@@ -233,23 +240,39 @@ export function analyzePowerDistribution(params: {
     const dstIface = dstSpec.interfaces.find((i) => i.interfaceId === c.targetInterfaceId);
     if (!srcIface || !dstIface) continue;
 
-    // Normalize flow direction output -> input if user wired target->source
-    const srcIsOut = srcIface.role === "power-output" || srcIface.role === "power-bidirectional";
-    const dstIsIn = dstIface.role === "power-input" || dstIface.role === "power-bidirectional";
-    if (!srcIsOut || !dstIsIn) continue;
+    const directed = resolveDirectedPowerEndpoints({
+      connection: c,
+      sourceComponent: srcSpec,
+      sourceInterface: srcIface,
+      targetComponent: dstSpec,
+      targetInterface: dstIface,
+    });
+    if (!directed) continue;
 
-    (incomingPowerByTargetPart.get(c.targetPartId) ?? (() => {
+    const normalizedConn: ElectricalConnection = directed.wasReversed
+      ? {
+          ...c,
+          sourcePartId: directed.sourcePartId,
+          sourceInterfaceId: directed.sourceInterfaceId,
+          sourcePinId: directed.sourcePinId,
+          targetPartId: directed.targetPartId,
+          targetInterfaceId: directed.targetInterfaceId,
+          targetPinId: directed.targetPinId,
+        }
+      : c;
+
+    (incomingPowerByTargetPart.get(normalizedConn.targetPartId) ?? (() => {
       const arr: ElectricalConnection[] = [];
-      incomingPowerByTargetPart.set(c.targetPartId, arr);
+      incomingPowerByTargetPart.set(normalizedConn.targetPartId, arr);
       return arr;
-    })()).push(c);
+    })()).push(normalizedConn);
 
-    const srcKey = `${c.sourcePartId}:${c.sourceInterfaceId}`;
+    const srcKey = `${normalizedConn.sourcePartId}:${normalizedConn.sourceInterfaceId}`;
     (outgoingPowerBySourceKey.get(srcKey) ?? (() => {
       const arr: ElectricalConnection[] = [];
       outgoingPowerBySourceKey.set(srcKey, arr);
       return arr;
-    })()).push(c);
+    })()).push(normalizedConn);
   }
 
   // Forward iterative propagation across power graph (handles arbitrary series PDB -> Switch -> Fuse -> Buck -> Load)
@@ -490,6 +513,24 @@ export function analyzePowerDistribution(params: {
         });
       }
 
+      const regInMaxV = drv?.inputVoltageRangeV?.maxV ?? inIface?.voltageSpec?.maxV;
+      if (regInMaxV !== undefined && inEnv.maxV > regInMaxV + 0.05) {
+        pushDiag({
+          id: `pwr-reg-overvin-${partId}`,
+          severity: "error",
+          code: "regulator-input-out-of-range",
+          title: `${part.name} input exceeds ${regInMaxV.toFixed(1)}V maximum`,
+          reason: `Upstream input reaches ${inEnv.maxV.toFixed(1)}V, exceeding ${part.name}'s maximum rated input (${regInMaxV.toFixed(1)}V).`,
+          partId,
+          interfaceId: inIface?.interfaceId,
+          connectionId: incoming[0]?.id,
+          conditionEvaluated: "Evaluated regulator inputVoltageRangeV.maxV against upstream Vin_max.",
+          correctiveAction: "Use a lower-voltage battery/rail or higher-voltage regulator.",
+          provenance: spec.provenance,
+        });
+      }
+
+      const regInMinV = drv?.inputVoltageRangeV?.minV ?? inIface?.voltageSpec?.minV;
       if (
         (role === "buck" || role === "linear") &&
         outNomV !== undefined &&
@@ -525,6 +566,20 @@ export function analyzePowerDistribution(params: {
             provenance: spec.provenance,
           });
         }
+      } else if (regInMinV !== undefined && inEnv.maxV < regInMinV - 0.05) {
+        pushDiag({
+          id: `pwr-reg-undervin-${partId}`,
+          severity: "error",
+          code: "regulator-input-out-of-range",
+          title: `${part.name} below minimum input voltage`,
+          reason: `Upstream supply reaches only ${inEnv.maxV.toFixed(1)}V, below ${part.name}'s minimum input (${regInMinV.toFixed(1)}V).`,
+          partId,
+          interfaceId: inIface?.interfaceId,
+          connectionId: incoming[0]?.id,
+          conditionEvaluated: "Evaluated regulator inputVoltageRangeV.minV against upstream Vin_max.",
+          correctiveAction: "Use a higher-voltage battery/rail within regulator input limits.",
+          provenance: spec.provenance,
+        });
       }
     }
 
@@ -835,12 +890,18 @@ export function analyzePowerDistribution(params: {
   // Propagate upstream error faults downstream along power edges so downstream consumers reflect faulted rails
   const faultOriginReasonByPartId = new Map<string, string>();
   const faultQueue: string[] = [];
+  const seedPartFault = (partId: string, title: string) => {
+    if (!faultOriginReasonByPartId.has(partId)) {
+      faultOriginReasonByPartId.set(partId, title);
+      faultQueue.push(partId);
+    }
+  };
   for (const d of diagnostics) {
     if (d.severity !== "error" || !d.partId) continue;
-    if (!faultOriginReasonByPartId.has(d.partId)) {
-      faultOriginReasonByPartId.set(d.partId, d.title);
-      faultQueue.push(d.partId);
-    }
+    seedPartFault(d.partId, d.title);
+  }
+  for (const ext of externalErrorFaults) {
+    seedPartFault(ext.partId, ext.title);
   }
   while (faultQueue.length > 0) {
     const faultNodeId = faultQueue.shift()!;
@@ -860,6 +921,13 @@ export function analyzePowerDistribution(params: {
           faultQueue.push(conn.targetPartId);
         }
       }
+    }
+  }
+
+  const externalFaultTitleByPartId = new Map<string, string>();
+  for (const ext of externalErrorFaults) {
+    if (!externalFaultTitleByPartId.has(ext.partId)) {
+      externalFaultTitleByPartId.set(ext.partId, ext.title);
     }
   }
 
@@ -890,8 +958,11 @@ export function analyzePowerDistribution(params: {
         d.severity === "error" &&
         (d.partId === partId || d.relatedPartId === partId)
     );
+    const directExternalFault = externalFaultTitleByPartId.get(partId);
     const upstreamFaultReason = faultOriginReasonByPartId.get(partId);
-    const hasPathFault = Boolean(directFault || upstreamFaultReason);
+    const hasPathFault = Boolean(
+      directFault || directExternalFault || upstreamFaultReason
+    );
 
     consumerStates[partId] = {
       partId,
@@ -904,7 +975,8 @@ export function analyzePowerDistribution(params: {
         : undefined,
       hasMissingGround: missingGnd,
       hasPathFault,
-      pathFaultReason: directFault?.title ?? upstreamFaultReason,
+      pathFaultReason:
+        directFault?.title ?? directExternalFault ?? upstreamFaultReason,
     };
   }
 

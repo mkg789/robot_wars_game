@@ -5,6 +5,7 @@ import {
   PROCEDURAL_ARCHITECTURES,
   RAIL_PROFILE_LABELS,
 } from "../../features/robot-builder/logic/proceduralFoundation";
+import { handleTabListKeyDown } from "../../features/robot-builder/logic/uiAccessibility";
 import type {
   FoundationConfig,
   FoundationModelId,
@@ -27,6 +28,8 @@ interface FoundationStagePanelProps {
   readonly onImportFoundationStl: Parameters<typeof StlImportPanel>[0]["onConfirmImport"];
 }
 
+const WORKFLOW_TABS: readonly FoundationWorkflowMode[] = ["procedural", "imported"];
+
 export default function FoundationStagePanel({
   foundation,
   onSelectFoundationModel,
@@ -46,22 +49,40 @@ export default function FoundationStagePanel({
         <button
           type="button"
           role="tab"
+          id="foundation-tab-procedural"
+          aria-controls="foundation-tabpanel"
           aria-selected={workflowTab === "procedural"}
+          tabIndex={workflowTab === "procedural" ? 0 : -1}
           className={`workshop-chip ${workflowTab === "procedural" ? "active" : ""}`}
           onClick={() => setWorkflowTab("procedural")}
+          onKeyDown={(e) =>
+            handleTabListKeyDown(e, WORKFLOW_TABS, workflowTab, setWorkflowTab)
+          }
         >
           Build Foundation
         </button>
         <button
           type="button"
           role="tab"
+          id="foundation-tab-imported"
+          aria-controls="foundation-tabpanel"
           aria-selected={workflowTab === "imported"}
+          tabIndex={workflowTab === "imported" ? 0 : -1}
           className={`workshop-chip ${workflowTab === "imported" ? "active" : ""}`}
           onClick={() => setWorkflowTab("imported")}
+          onKeyDown={(e) =>
+            handleTabListKeyDown(e, WORKFLOW_TABS, workflowTab, setWorkflowTab)
+          }
         >
           Import Foundation (STL)
         </button>
       </div>
+
+      <div
+        id="foundation-tabpanel"
+        role="tabpanel"
+        aria-labelledby={`foundation-tab-${workflowTab}`}
+      >
 
       {workflowTab === "imported" ? (
         <StlImportPanel
@@ -205,6 +226,7 @@ export default function FoundationStagePanel({
           </div>
         </>
       )}
+      </div>
     </>
   );
 }

@@ -1,6 +1,9 @@
 import { Canvas } from "@react-three/fiber";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { EMPTY_VISUAL_TRACE } from "../../features/programming/logic/programWorkspaceCompiler";
+import {
+  EMPTY_VISUAL_TRACE,
+  invalidateStaleVisualProgramRoutine,
+} from "../../features/programming/logic/programWorkspaceCompiler";
 import type {
   VisualProgramExecutionTrace,
 } from "../../features/programming/types/programWorkspace.types";
@@ -10,6 +13,8 @@ import {
   type SimulationCameraMode,
   type SimulationCameraPreset,
 } from "../../features/simulation/logic/simulationCamera";
+import { shouldHandleSimulationDriveShortcut } from "../../features/simulation/logic/simulationKeyboard";
+import { handleTabListKeyDown } from "../../features/robot-builder/logic/uiAccessibility";
 import {
   mapKeyboardKeyToDriveAction,
   NEUTRAL_DRIVE_CONTROLS,
@@ -44,17 +49,7 @@ const CAMERA_PRESET_OPTIONS: ReadonlyArray<{
 ];
 
 type LeftPanelTab = "controls" | "program" | "inspector";
-
-function isEditableEventTarget(target: EventTarget | null): boolean {
-  if (!(target instanceof HTMLElement)) return false;
-  const tag = target.tagName;
-  return (
-    tag === "INPUT" ||
-    tag === "TEXTAREA" ||
-    tag === "SELECT" ||
-    target.isContentEditable
-  );
-}
+const LEFT_PANEL_TABS: readonly LeftPanelTab[] = ["controls", "program", "inspector"];
 
 /**
  * Interactive Simulation Environment (Phase 4.2).
@@ -200,8 +195,7 @@ export default function SimulationView({
     };
 
     const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.ctrlKey || event.metaKey || event.altKey) return;
-      if (isEditableEventTarget(event.target)) return;
+      if (!shouldHandleSimulationDriveShortcut(event)) return;
 
       if (event.code === "Space") {
         event.preventDefault();
@@ -245,11 +239,22 @@ export default function SimulationView({
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       const hadPressed = pressedKeys.size > 0;
       pressedKeys.clear();
-      if (hadPressed || world.getControlState().controlSource === "manual") {
+      const ctrl = world.getControlState();
+      if (
+        hadPressed ||
+        ctrl.controlSource === "manual" ||
+        ctrl.programStatus !== "running"
+      ) {
         world.clearInputs();
       }
     };
   }, [world, simViewMode]);
+
+  // Invalidate any compiled visual program routine on world when visualProgram source changes
+  useEffect(() => {
+    if (!world) return;
+    invalidateStaleVisualProgramRoutine(world, visualProgram, setVisualTrace);
+  }, [world, visualProgram]);
 
   // Keep simulation ticking when executing visual routines inside the Program Builder view
   useEffect(() => {
@@ -297,7 +302,12 @@ export default function SimulationView({
     };
 
     rafId = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(rafId);
+    return () => {
+      cancelAnimationFrame(rafId);
+      if (world.getControlState().programStatus !== "running") {
+        world.clearInputs();
+      }
+    };
   }, [world, simViewMode]);
 
   const handleTelemetryTick = useCallback(
@@ -439,6 +449,7 @@ export default function SimulationView({
           <button
             type="button"
             className={`top-button ${simViewMode === "arena" ? "active-mode" : ""}`}
+            aria-pressed={simViewMode === "arena"}
             onClick={() => setSimViewMode("arena")}
           >
             3D Arena
@@ -446,6 +457,7 @@ export default function SimulationView({
           <button
             type="button"
             className={`top-button ${simViewMode === "programming" ? "active-mode" : ""}`}
+            aria-pressed={simViewMode === "programming"}
             onClick={() => setSimViewMode("programming")}
           >
             ◫ Program Builder
@@ -541,32 +553,55 @@ export default function SimulationView({
               <button
                 type="button"
                 role="tab"
+                id="sim-tab-controls"
+                aria-controls="sim-tabpanel-left"
                 aria-selected={leftPanelTab === "controls"}
+                tabIndex={leftPanelTab === "controls" ? 0 : -1}
                 className={`sim-tab-btn ${leftPanelTab === "controls" ? "active" : ""}`}
                 onClick={() => setLeftPanelTab("controls")}
+                onKeyDown={(e) =>
+                  handleTabListKeyDown(e, LEFT_PANEL_TABS, leftPanelTab, setLeftPanelTab)
+                }
               >
                 Drive &amp; Arena
               </button>
               <button
                 type="button"
                 role="tab"
+                id="sim-tab-program"
+                aria-controls="sim-tabpanel-left"
                 aria-selected={leftPanelTab === "program"}
+                tabIndex={leftPanelTab === "program" ? 0 : -1}
                 className={`sim-tab-btn ${leftPanelTab === "program" ? "active" : ""}`}
                 onClick={() => setLeftPanelTab("program")}
+                onKeyDown={(e) =>
+                  handleTabListKeyDown(e, LEFT_PANEL_TABS, leftPanelTab, setLeftPanelTab)
+                }
               >
                 Control API
               </button>
               <button
                 type="button"
                 role="tab"
+                id="sim-tab-inspector"
+                aria-controls="sim-tabpanel-left"
                 aria-selected={leftPanelTab === "inspector"}
+                tabIndex={leftPanelTab === "inspector" ? 0 : -1}
                 className={`sim-tab-btn ${leftPanelTab === "inspector" ? "active" : ""}`}
                 onClick={() => setLeftPanelTab("inspector")}
+                onKeyDown={(e) =>
+                  handleTabListKeyDown(e, LEFT_PANEL_TABS, leftPanelTab, setLeftPanelTab)
+                }
               >
                 Inspect ({inspectionSummary?.componentCount ?? 0})
               </button>
             </div>
 
+            <div
+              id="sim-tabpanel-left"
+              role="tabpanel"
+              aria-labelledby={`sim-tab-${leftPanelTab}`}
+            >
             {leftPanelTab === "controls" ? (
               <>
                 <div className="section-label">ARENA SELECTION</div>
@@ -775,6 +810,7 @@ export default function SimulationView({
                 </div>
               )
             )}
+            </div>
           </div>
 
           <div className="panel-footer">

@@ -236,7 +236,7 @@ export function createDrivetrainSlice(
         ];
 
         const sanitized = sanitizeAssemblyGraph({
-          parts: syncAssemblyTransforms(parts, connections),
+          parts,
           connections,
           electricalConnections: state.electricalConnections,
           foundation: state.foundation,
@@ -251,6 +251,7 @@ export function createDrivetrainSlice(
 
         return {
           ...sanitized,
+          parts: syncAssemblyTransforms(sanitized.parts, sanitized.connections),
           selectedBatteryCatalogueId: batteryId,
         };
       });
@@ -349,7 +350,7 @@ export function createDrivetrainSlice(
         ];
 
         const sanitized = sanitizeAssemblyGraph({
-          parts: syncAssemblyTransforms(parts, connections),
+          parts,
           connections,
           electricalConnections: state.electricalConnections,
           foundation: state.foundation,
@@ -364,6 +365,7 @@ export function createDrivetrainSlice(
 
         return {
           ...sanitized,
+          parts: syncAssemblyTransforms(sanitized.parts, sanitized.connections),
           selectedControllerCatalogueId: controllerId,
         };
       });
@@ -811,13 +813,8 @@ export function createDrivetrainSlice(
             };
           });
 
-        const synchronizedParts = syncAssemblyTransforms(
-          nextParts,
-          nextConnections
-        );
-
         const sanitized = sanitizeAssemblyGraph({
-          parts: synchronizedParts,
+          parts: nextParts,
           connections: nextConnections,
           electricalConnections: state.electricalConnections,
           foundation: state.foundation,
@@ -832,6 +829,7 @@ export function createDrivetrainSlice(
 
         return {
           ...sanitized,
+          parts: syncAssemblyTransforms(sanitized.parts, sanitized.connections),
           selectedMountZoneId: zoneId,
         };
       }),
@@ -1022,13 +1020,8 @@ export function createDrivetrainSlice(
             )
         );
         nextConnections.push(connection);
-        const synchronizedParts = syncAssemblyTransforms(
-          [...nextParts, wheelPart],
-          nextConnections
-        );
-
         const sanitized = sanitizeAssemblyGraph({
-          parts: synchronizedParts,
+          parts: [...nextParts, wheelPart],
           connections: nextConnections,
           electricalConnections: state.electricalConnections,
           foundation: state.foundation,
@@ -1041,7 +1034,10 @@ export function createDrivetrainSlice(
           selectedElectricalPinId: state.selectedElectricalPinId,
         });
 
-        return sanitized;
+        return {
+          ...sanitized,
+          parts: syncAssemblyTransforms(sanitized.parts, sanitized.connections),
+        };
       }),
 
     removeWheel: (motorId) =>

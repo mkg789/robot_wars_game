@@ -3,7 +3,15 @@ import { useRobotStore } from "../../../store/robotStore";
 import { OBSTACLE_TEST_ARENA, SimulationWorld } from "../../simulation/logic/simulationWorld";
 import type { RobotControlRoutine } from "../types/control.types";
 import type { VisualRobotProgram } from "../types/programWorkspace.types";
-import { compileVisualProgramToRoutine } from "./programWorkspaceCompiler";
+import {
+  compileVisualProgramToRoutine,
+  doesRoutineMatchVisualProgram,
+  EMPTY_VISUAL_TRACE,
+  invalidateStaleVisualProgramRoutine,
+  resetVisualProgramSession,
+  stepOrResumeVisualProgram,
+  stopVisualProgramRoutine,
+} from "./programWorkspaceCompiler";
 
 function assembleRobot(withUltrasonic = true) {
   const store = useRobotStore.getState();
@@ -277,5 +285,185 @@ describe("Phase 6.3: Program Debugger & Execution Observability", () => {
     expect(resetState.programStatus).toBe("idle");
     expect(resetState.lastError).toBeNull();
     expect(resetState.executionTrace).toBeNull();
+  });
+
+  it("F6: preserves execution trace on Stop, clears on Reset, steps timed blocks cleanly without advance overflow, and zeros stale motor targets", () => {
+    const st = useRobotStore.getState();
+    const world = SimulationWorld.fromAssembly({
+      parts: st.parts,
+      connections: st.connections,
+      drivetrain: st.drivetrain,
+      foundation: st.foundation,
+      arena: OBSTACLE_TEST_ARENA,
+    }).world!;
+
+    const prog: VisualRobotProgram = {
+      version: 1,
+      id: "prog-f6-timed-step",
+      name: "F6 Timed Step",
+      updatedAtIso: new Date().toISOString(),
+      instructions: [
+        { id: "f6-sonar", kind: "read-ultrasonic" },
+        {
+          id: "f6-drv",
+          kind: "drive",
+          direction: "forward",
+          power: 0.8,
+          durationSeconds: 0.5,
+        },
+        {
+          id: "f6-sm",
+          kind: "set-motors",
+          leftPower: 0.4,
+          rightPower: 0.4,
+        },
+        { id: "f6-wait", kind: "wait", durationSeconds: 0.3 },
+      ],
+    };
+
+    let latestTrace = EMPTY_VISUAL_TRACE;
+    const onTrace = (next: typeof EMPTY_VISUAL_TRACE) => {
+      latestTrace = next;
+    };
+
+    // Step 1: read-ultrasonic (simulates initial step from Program Builder)
+    stepOrResumeVisualProgram(world, prog, onTrace);
+    expect(world.getControlState().programStatus).toBe("paused");
+    expect(latestTrace.completedInstructionIds).toEqual(["f6-sonar"]);
+    expect(latestTrace.lastSensorStatus).toBe("normal");
+
+    // Simulate switching views (3D Arena -> Program Builder): calling stepOrResumeVisualProgram again
+    // preserves the existing compiled VM routine instead of restarting at instruction zero.
+    expect(doesRoutineMatchVisualProgram(world.getActiveRoutine(), prog)).toBe(true);
+    const step2Res = stepOrResumeVisualProgram(world, prog, onTrace)!;
+    // Drive activated for its single step slice, then paused with zero held throttle!
+    expect(step2Res.stepDiagnostics[0]?.diagnostics.leftThrottle).toBeCloseTo(0.8, 3);
+    expect(world.getControlState().programStatus).toBe("paused");
+    expect(world.getControlState().leftPower).toBe(0);
+    expect(world.getControlState().rightPower).toBe(0);
+    expect(world.getActiveInput()).toEqual({ leftThrottle: 0, rightThrottle: 0 });
+    expect(latestTrace.activeInstructionId).toBe("f6-drv");
+    expect(latestTrace.completedInstructionIds).toEqual(["f6-sonar"]);
+
+    // Step 3: single-step completes ONLY f6-drv WITHOUT immediately executing f6-sm
+    stepOrResumeVisualProgram(world, prog, onTrace);
+    expect(world.getControlState().programStatus).toBe("paused");
+    expect(world.getControlState().leftPower).toBe(0);
+    expect(world.getControlState().rightPower).toBe(0);
+    expect(latestTrace.activeInstructionId).toBeNull();
+    expect(latestTrace.completedInstructionIds).toEqual(["f6-sonar", "f6-drv"]);
+
+    // Stop preserves accumulated trace history, completed instructions, and sensor metadata while halting motors
+    stopVisualProgramRoutine(world, onTrace);
+    const stoppedCtrl = world.getControlState();
+    expect(stoppedCtrl.programStatus).toBe("stopped");
+    expect(stoppedCtrl.leftPower).toBe(0);
+    expect(stoppedCtrl.rightPower).toBe(0);
+    expect(stoppedCtrl.executionTrace).not.toBeNull();
+    expect(stoppedCtrl.executionTrace!.completedInstructionIds).toEqual([
+      "f6-sonar",
+      "f6-drv",
+    ]);
+    expect(stoppedCtrl.executionTrace!.lastSensorStatus).toBe("normal");
+    expect(stoppedCtrl.executionTrace!.history.length).toBeGreaterThanOrEqual(2);
+    expect(latestTrace.completedInstructionIds).toEqual(["f6-sonar", "f6-drv"]);
+
+    // Reset wipes trace and returns controller/world cleanly to idle/ready
+    resetVisualProgramSession(world, onTrace);
+    expect(world.getControlState().programStatus).toBe("idle");
+    expect(world.getControlState().executionTrace).toBeNull();
+    expect(latestTrace).toEqual(EMPTY_VISUAL_TRACE);
+
+    // Step f6-sonar, f6-drv (start), f6-drv (finish), f6-sm -> verify pause/resume restores set-motors target & manual takeover clears it
+    stepOrResumeVisualProgram(world, prog, onTrace); // f6-sonar
+    stepOrResumeVisualProgram(world, prog, onTrace); // start f6-drv
+    stepOrResumeVisualProgram(world, prog, onTrace); // finish f6-drv
+    stepOrResumeVisualProgram(world, prog, onTrace); // f6-sm (0.4, 0.4)
+    expect(latestTrace.completedInstructionIds).toEqual(["f6-sonar", "f6-drv", "f6-sm"]);
+    expect(world.getControlState().leftPower).toBe(0); // paused zero throttle
+    expect(world.resumeProgram()).toBe(true);
+    expect(world.getControlState().leftPower).toBeCloseTo(0.4, 3); // resumed target restored
+
+    // Manual takeover clears running motor power safely
+    world.setManualControlMode();
+    expect(world.getControlState().controlSource).toBe("manual");
+    expect(world.getControlState().programStatus).toBe("stopped");
+    expect(world.getControlState().leftPower).toBe(0);
+    expect(world.getControlState().rightPower).toBe(0);
+    expect(world.getActiveInput()).toEqual({ leftThrottle: 0, rightThrottle: 0 });
+
+    // Direct motor API followed by setManualControlMode also clears stale throttle
+    world.start();
+    world.setMotorPower("both", 0.9);
+    expect(world.getControlState().leftPower).toBeCloseTo(0.9, 3);
+    world.setManualControlMode();
+    expect(world.getControlState().leftPower).toBe(0);
+    expect(world.getActiveInput()).toEqual({ leftThrottle: 0, rightThrottle: 0 });
+  });
+
+  it("F6: invalidates stale compiled routines when the underlying VisualRobotProgram changes", () => {
+    const st = useRobotStore.getState();
+    const world = SimulationWorld.fromAssembly({
+      parts: st.parts,
+      connections: st.connections,
+      drivetrain: st.drivetrain,
+      foundation: st.foundation,
+      arena: OBSTACLE_TEST_ARENA,
+    }).world!;
+
+    const progV1: VisualRobotProgram = {
+      version: 1,
+      id: "prog-f6-vm",
+      name: "VM Test",
+      updatedAtIso: new Date().toISOString(),
+      instructions: [
+        {
+          id: "v1-drv",
+          kind: "drive",
+          direction: "forward",
+          power: 0.7,
+          durationSeconds: 1.0,
+        },
+        { id: "v1-wait", kind: "wait", durationSeconds: 0.5 },
+      ],
+    };
+
+    let latestTrace = EMPTY_VISUAL_TRACE;
+    const onTrace = (next: typeof EMPTY_VISUAL_TRACE) => {
+      latestTrace = next;
+    };
+
+    stepOrResumeVisualProgram(world, progV1, onTrace);
+    expect(world.getActiveRoutine()).not.toBeNull();
+    expect(world.getControlState().programStatus).toBe("paused");
+    expect(latestTrace.activeInstructionId).toBe("v1-drv");
+
+    // Rename-only preserves compiled VM state
+    const renamedProg: VisualRobotProgram = { ...progV1, name: "VM Test Renamed" };
+    expect(invalidateStaleVisualProgramRoutine(world, renamedProg, onTrace)).toBe(false);
+    expect(world.getActiveRoutine()).not.toBeNull();
+
+    // Structural edit invalidates stale compiled routine immediately so old bytecode cannot resume/step
+    const editedProg: VisualRobotProgram = {
+      ...progV1,
+      instructions: [
+        {
+          id: "v2-turn",
+          kind: "turn",
+          direction: "left",
+          power: 0.5,
+          durationSeconds: 0.4,
+        },
+      ],
+    };
+    expect(invalidateStaleVisualProgramRoutine(world, editedProg, onTrace)).toBe(true);
+    expect(world.getActiveRoutine()).toBeNull();
+    expect(world.getControlState().programStatus).toBe("idle");
+    expect(world.getControlState().leftPower).toBe(0);
+    expect(latestTrace).toEqual(EMPTY_VISUAL_TRACE);
+
+    // Stepping after invalidation compiles and executes the edited instruction cleanly
+    stepOrResumeVisualProgram(world, editedProg, onTrace);
+    expect(latestTrace.activeInstructionId).toBe("v2-turn");
   });
 });

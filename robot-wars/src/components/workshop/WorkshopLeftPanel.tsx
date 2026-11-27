@@ -181,6 +181,7 @@ export function WorkshopLeftPanel({
                 key={step.id}
                 type="button"
                 disabled={!isClickable}
+                aria-current={stage === step.id ? "step" : undefined}
                 className={`builder-step ${stage === step.id ? "active" : isComplete ? "complete" : ""}`}
                 onClick={() => {
                   if (isClickable) {
@@ -228,6 +229,8 @@ export function WorkshopLeftPanel({
               {batteryCatalogue.map((battery) => (
                 <button
                   key={battery.id}
+                  type="button"
+                  aria-pressed={selectedBatteryCatalogueId === battery.id}
                   className={`motor-card ${
                     selectedBatteryCatalogueId === battery.id ? "selected" : ""
                   }`}
@@ -254,12 +257,14 @@ export function WorkshopLeftPanel({
                 : "No battery installed"}
             </div>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("controller")}
             >
               Continue to Controller
             </button>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("foundation")}
             >
@@ -276,6 +281,8 @@ export function WorkshopLeftPanel({
               {controllerCatalogue.map((controller) => (
                 <button
                   key={controller.id}
+                  type="button"
+                  aria-pressed={selectedControllerCatalogueId === controller.id}
                   className={`motor-card ${
                     selectedControllerCatalogueId === controller.id
                       ? "selected"
@@ -302,6 +309,7 @@ export function WorkshopLeftPanel({
                 : "No controller installed"}
             </div>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("battery")}
             >
@@ -315,6 +323,8 @@ export function WorkshopLeftPanel({
               {motorCatalogue.map((motor) => (
                 <button
                   key={motor.id}
+                  type="button"
+                  aria-pressed={selectedMotorCatalogueId === motor.id}
                   className={`motor-card ${
                     selectedMotorCatalogueId === motor.id ? "selected" : ""
                   }`}
@@ -336,6 +346,7 @@ export function WorkshopLeftPanel({
               ))}
             </div>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("controller")}
             >
@@ -349,6 +360,8 @@ export function WorkshopLeftPanel({
               {wheelCatalogue.map((wheel) => (
                 <button
                   key={wheel.id}
+                  type="button"
+                  aria-pressed={selectedWheelCatalogueId === wheel.id}
                   className={`wheel-card ${
                     selectedWheelCatalogueId === wheel.id ? "selected" : ""
                   }`}
@@ -367,6 +380,7 @@ export function WorkshopLeftPanel({
               ))}
             </div>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("motors")}
             >
@@ -391,6 +405,7 @@ export function WorkshopLeftPanel({
                 : "Configuration needs attention"}
             </div>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("wheels")}
             >
@@ -404,42 +419,49 @@ export function WorkshopLeftPanel({
               Your robot configuration is ready to review.
             </p>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("wheels")}
             >
               ← Edit Wheels
             </button>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("motors")}
             >
               ← Edit Motors
             </button>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("drivetrain")}
             >
               ← Edit Drivetrain
             </button>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("foundation")}
             >
               ← Edit Foundation
             </button>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("structure")}
             >
               ← Edit Structure
             </button>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("battery")}
             >
               ← Edit Battery
             </button>
             <button
+              type="button"
               className="stage-back-button"
               onClick={() => onSetStage("controller")}
             >

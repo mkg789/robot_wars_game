@@ -2,6 +2,7 @@ import type {
   RobotPart,
   ComponentGeometry,
   RobotConnection,
+  FoundationConfig,
 } from "../../features/robot-builder/types/robot.types";
 import {
   getMotorShaftMountOffset,
@@ -40,6 +41,33 @@ import {
   syncSizeFromGeometry,
   tupleNearlyEqual,
 } from "../assemblyStoreHelpers";
+
+function syncImportedFoundationConfig(
+  foundation: FoundationConfig | null,
+  updatedPart: RobotPart | undefined
+): FoundationConfig | null {
+  if (
+    !foundation ||
+    foundation.mode !== "imported" ||
+    !foundation.imported ||
+    !updatedPart?.meshTransform
+  ) {
+    return foundation;
+  }
+  return {
+    ...foundation,
+    imported: {
+      ...foundation.imported,
+      transform: structuredClone(updatedPart.meshTransform),
+      ...(updatedPart.importedEngineering
+        ? { engineering: structuredClone(updatedPart.importedEngineering) }
+        : {}),
+      ...(updatedPart.collisionConfig
+        ? { collision: structuredClone(updatedPart.collisionConfig) }
+        : {}),
+    },
+  };
+}
 
 export function createPartsSlice(
   set: StoreSet,
@@ -168,12 +196,26 @@ export function createPartsSlice(
           const synced = size ? syncGeometryFromSize(part, size) : {};
           const importedSynced =
             size && part.meshAssetId ? syncImportedPartFromSize(part, size) : {};
+          const baseMeshTransform =
+            importedSynced.meshTransform ?? part.meshTransform;
           return {
             ...part,
             position,
             rotation,
             ...synced,
             ...importedSynced,
+            ...(part.meshAssetId && baseMeshTransform
+              ? {
+                  meshTransform: {
+                    ...baseMeshTransform,
+                    orientationRotation: [...rotation] as [
+                      number,
+                      number,
+                      number,
+                    ],
+                  },
+                }
+              : {}),
           };
         });
 
@@ -206,9 +248,20 @@ export function createPartsSlice(
           });
         }
 
+        const updatedFoundation =
+          id === "foundation-chassis"
+            ? syncImportedFoundationConfig(
+                state.foundation,
+                updatedParts.find((p) => p.id === id)
+              )
+            : state.foundation;
+
         return {
           parts: syncAssemblyTransforms(updatedParts, nextConnections),
           connections: nextConnections,
+          ...(updatedFoundation !== state.foundation
+            ? { foundation: updatedFoundation }
+            : {}),
         };
       }),
 
@@ -230,12 +283,26 @@ export function createPartsSlice(
           const synced = size ? syncGeometryFromSize(part, size) : {};
           const importedSynced =
             size && part.meshAssetId ? syncImportedPartFromSize(part, size) : {};
+          const baseMeshTransform =
+            importedSynced.meshTransform ?? part.meshTransform;
           return {
             ...part,
             position,
             rotation,
             ...synced,
             ...importedSynced,
+            ...(part.meshAssetId && baseMeshTransform
+              ? {
+                  meshTransform: {
+                    ...baseMeshTransform,
+                    orientationRotation: [...rotation] as [
+                      number,
+                      number,
+                      number,
+                    ],
+                  },
+                }
+              : {}),
           };
         });
 
@@ -352,7 +419,24 @@ export function createPartsSlice(
         if (!targetPart) return state;
 
         const updatedParts = state.parts.map((part) =>
-          part.id === id ? { ...part, rotation } : part
+          part.id === id
+            ? {
+                ...part,
+                rotation,
+                ...(part.meshAssetId && part.meshTransform
+                  ? {
+                      meshTransform: {
+                        ...part.meshTransform,
+                        orientationRotation: [...rotation] as [
+                          number,
+                          number,
+                          number,
+                        ],
+                      },
+                    }
+                  : {}),
+              }
+            : part
         );
 
         const nextConnections = state.connections.map((conn) => {
@@ -373,9 +457,20 @@ export function createPartsSlice(
           };
         });
 
+        const updatedFoundation =
+          id === "foundation-chassis"
+            ? syncImportedFoundationConfig(
+                state.foundation,
+                updatedParts.find((p) => p.id === id)
+              )
+            : state.foundation;
+
         return {
           parts: syncAssemblyTransforms(updatedParts, nextConnections),
           connections: nextConnections,
+          ...(updatedFoundation !== state.foundation
+            ? { foundation: updatedFoundation }
+            : {}),
         };
       }),
 
@@ -958,13 +1053,8 @@ export function createPartsSlice(
           warningMessage = `Replaced ${existing.name} with ${definition.name}; ${replacementImpact.warningCount} child attachment(s) carry sizing/fit advisories.`;
         }
 
-        const synchronizedParts = syncAssemblyTransforms(
-          updatedParts,
-          nextConnections
-        );
-
         const sanitized = sanitizeAssemblyGraph({
-          parts: synchronizedParts,
+          parts: updatedParts,
           connections: nextConnections,
           electricalConnections: state.electricalConnections,
           foundation: state.foundation,
@@ -979,6 +1069,7 @@ export function createPartsSlice(
 
         return {
           ...sanitized,
+          parts: syncAssemblyTransforms(sanitized.parts, sanitized.connections),
           selectedStructuralCatalogueId: structuralId,
           lastReplacementWarning: warningMessage,
         };

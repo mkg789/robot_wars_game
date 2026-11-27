@@ -1,12 +1,17 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
-  compileVisualProgramToRoutine,
   createDefaultInstruction,
+  doesRoutineMatchVisualProgram,
   duplicateInstruction,
   EMPTY_VISUAL_TRACE,
   insertInstruction,
+  isCompiledVisualProgramRoutine,
   moveInstruction,
   removeInstruction,
+  resetVisualProgramSession,
+  runVisualProgramRoutine,
+  stepOrResumeVisualProgram,
+  stopVisualProgramRoutine,
   updateInstruction,
   validateVisualProgram,
 } from "../../features/programming/logic/programWorkspaceCompiler";
@@ -109,10 +114,6 @@ export default function VisualProgrammingWorkspace({
     loadSavedVisualPrograms()
   );
   const presets = useMemo(() => createStarterPresets(), []);
-  const compiledProgramRef = useRef<{
-    readonly id: string;
-    readonly instructions: VisualRobotProgram["instructions"];
-  } | null>(null);
 
   const issues = useMemo(
     () =>
@@ -127,16 +128,15 @@ export default function VisualProgrammingWorkspace({
   const canExecute = errorCount === 0 && controlState.binding.canDrive;
 
   const applyProgramEdit = (nextProgram: VisualRobotProgram) => {
+    const activeRoutine = world.getActiveRoutine();
     const didStructureOrIdChange =
       nextProgram.id !== program.id ||
       nextProgram.instructions !== program.instructions;
     if (
       didStructureOrIdChange &&
-      (compiledProgramRef.current !== null ||
-        controlState.activeProgramId === program.id ||
-        controlState.activeProgramId === nextProgram.id)
+      isCompiledVisualProgramRoutine(activeRoutine) &&
+      !doesRoutineMatchVisualProgram(activeRoutine, nextProgram)
     ) {
-      compiledProgramRef.current = null;
       world.setProgramRoutine(null);
       onTraceChange(EMPTY_VISUAL_TRACE);
     }
@@ -144,13 +144,7 @@ export default function VisualProgrammingWorkspace({
   };
 
   const handleRunRoutine = () => {
-    const routine = compileVisualProgramToRoutine(program, onTraceChange);
-    compiledProgramRef.current = {
-      id: program.id,
-      instructions: program.instructions,
-    };
-    world.setProgramRoutine(routine);
-    world.startProgram();
+    runVisualProgramRoutine(world, program, onTraceChange);
   };
 
   const handlePauseRoutine = () => {
@@ -162,35 +156,15 @@ export default function VisualProgrammingWorkspace({
   };
 
   const handleStepRoutine = () => {
-    const isStale =
-      !compiledProgramRef.current ||
-      compiledProgramRef.current.id !== program.id ||
-      compiledProgramRef.current.instructions !== program.instructions;
-    if (
-      isStale ||
-      controlState.programStatus === "idle" ||
-      controlState.activeProgramId !== program.id
-    ) {
-      const routine = compileVisualProgramToRoutine(program, onTraceChange);
-      compiledProgramRef.current = {
-        id: program.id,
-        instructions: program.instructions,
-      };
-      world.setProgramRoutine(routine);
-    }
-    world.stepProgram();
+    stepOrResumeVisualProgram(world, program, onTraceChange);
   };
 
   const handleStopRoutine = () => {
-    world.stopProgram();
-    const updatedTrace = world.getControlState().executionTrace;
-    onTraceChange(updatedTrace ?? EMPTY_VISUAL_TRACE);
+    stopVisualProgramRoutine(world, onTraceChange);
   };
 
   const handleResetSimulation = () => {
-    compiledProgramRef.current = null;
-    world.reset();
-    onTraceChange(EMPTY_VISUAL_TRACE);
+    resetVisualProgramSession(world, onTraceChange);
   };
 
   const handleSave = () => {

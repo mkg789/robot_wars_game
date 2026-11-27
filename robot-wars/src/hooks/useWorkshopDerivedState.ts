@@ -79,26 +79,51 @@ export function useWorkshopDerivedState({
     const map = new Map<string, RobotPart[]>();
     const partIds = new Set(parts.map((p) => p.id));
     const partsById = new Map(parts.map((p) => [p.id, p]));
+    const attachedChildIds = new Set<string>();
+
+    // Enforce unique parent & ignore self-loops/dangling edges during hierarchy construction
     for (const connection of connections) {
       const parentId = connection.parentId ?? connection.sourceId;
       const childId = connection.childId ?? connection.targetId;
+      if (!parentId || !childId || parentId === childId) continue;
+      if (childId === "foundation-chassis") continue;
       const child = partsById.get(childId);
       if (!child || !partIds.has(parentId)) continue;
+      if (attachedChildIds.has(childId)) continue;
+      attachedChildIds.add(childId);
       map.set(parentId, [...(map.get(parentId) ?? []), child]);
     }
-    const attachedChildIds = new Set<string>();
-    for (const children of map.values()) {
-      children.forEach((child) => attachedChildIds.add(child.id));
-    }
+
+    // Track nodes reachable from non-child roots so pure cycles are surfaced rather than hidden
+    const reachable = new Set<string>();
+    const markReachable = (id: string) => {
+      if (reachable.has(id)) return;
+      reachable.add(id);
+      for (const child of map.get(id) ?? []) {
+        markReachable(child.id);
+      }
+    };
     const independentParts = parts.filter((part) => !attachedChildIds.has(part.id));
+    for (const root of independentParts) {
+      markReachable(root.id);
+    }
+    const cyclicRoots: RobotPart[] = [];
+    for (const part of parts) {
+      if (!reachable.has(part.id)) {
+        cyclicRoots.push(part);
+        markReachable(part.id);
+      }
+    }
+
     return {
       childrenByParent: map,
       anchoredRootParts: independentParts.filter((part) =>
         part.id.startsWith("foundation-")
       ),
-      unattachedRootParts: independentParts.filter(
-        (part) => !part.id.startsWith("foundation-")
-      ),
+      unattachedRootParts: [
+        ...independentParts.filter((part) => !part.id.startsWith("foundation-")),
+        ...cyclicRoots,
+      ],
     };
   }, [parts, connections]);
 

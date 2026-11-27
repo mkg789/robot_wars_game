@@ -622,4 +622,412 @@ describe("Stage C: Electrical-to-Physics Integration", () => {
     expect(worldOpenSensor.getControlApi().readUltrasonic(sonarId).ok).toBe(false);
     expect(worldOpenSensor.getControlState().binding.canDrive).toBe(true);
   });
+
+  it("F3: drives normally when power wires are authored in reversed (input -> output) endpoint order and isolates faulty parallel branches", () => {
+    const { batId, leftMotorId, rightMotorId } = resetAndBuildBaseAssembly("standard-lipo");
+    const store = useRobotStore.getState();
+    const pdbId = store.installElectricalCatalogueItem("elec-pdb-xt60")!;
+    const sonarId = store.installElectricalCatalogueItem("elec-hcsr04-ultrasonic")!; // 4.5-5.5V max (incompatible with 12.6V bat)
+
+    for (const mId of [leftMotorId, rightMotorId]) {
+      store.updatePartElectricalProperties(mId, {
+        motorSpec: {
+          nominalVoltageV: 11.1,
+          minVoltageV: 6,
+          maxVoltageV: 14,
+          ratedCurrentA: 1.5,
+          stallCurrentA: 4.5,
+          reversiblePolarity: true,
+        },
+      });
+    }
+
+    const addConn = useRobotStore.getState().addElectricalConnection;
+    // Reversed valid power wires: LeftMotor -> PDB -> Battery, RightMotor -> PDB
+    addConn({
+      sourcePartId: leftMotorId,
+      sourceInterfaceId: "motor-drive-input",
+      targetPartId: pdbId,
+      targetInterfaceId: "pdb-bus-out",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: rightMotorId,
+      sourceInterfaceId: "motor-drive-input",
+      targetPartId: pdbId,
+      targetInterfaceId: "pdb-bus-out",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: pdbId,
+      sourceInterfaceId: "pdb-pwr-in",
+      targetPartId: batId,
+      targetInterfaceId: "bat-power-out",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    // Add an incompatible overvoltage branch on the same battery: Bat (12.6V) -> 5V Sonar
+    addConn({
+      sourcePartId: batId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: sonarId,
+      targetInterfaceId: "elec-hcsr04-ultrasonic-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    wireCommonGround([pdbId, sonarId], batId);
+
+    const st = useRobotStore.getState();
+    const world = SimulationWorld.fromAssembly({
+      parts: st.parts,
+      connections: st.connections,
+      drivetrain: st.drivetrain,
+      foundation: st.foundation,
+      electricalConnections: st.electricalConnections,
+      arena: STANDARD_ROBOT_WARS_ARENA,
+    }).world!;
+
+    expect(world.getControlState().binding.canDrive).toBe(true);
+    // Incompatible sonar branch is faulted while reverse-wired healthy motors drive cleanly!
+    expect(world.getControlApi().readUltrasonic(sonarId).ok).toBe(false);
+    world.start();
+    world.setDriveControls({ forward: true });
+    world.stepFrame(1 / 60);
+    const leftWheel = world.getLatestStepDiagnostics()!.diagnostics.wheels.find((w) => w.side === "left")!;
+    const rightWheel = world.getLatestStepDiagnostics()!.diagnostics.wheels.find((w) => w.side === "right")!;
+    expect(leftWheel.isElectricalPowered).toBe(true);
+    expect(rightWheel.isElectricalPowered).toBe(true);
+    expect(leftWheel.motorTorqueNm).toBeGreaterThan(0);
+    expect(rightWheel.motorTorqueNm).toBeGreaterThan(0);
+  });
+
+  it("F3: enforces regulator inputMaxV, maxOutputCurrentA, BEC target fault propagation, and downstream vs upstream fuse domains", () => {
+    // 1. Downstream Buck Fuse (12V Bat -> 5V Buck (10A max) -> 3A Fuse -> 5V 4A-stall Motor):
+    //    Battery-side current is ~1.96A (< 3A), but fuse is on 5V output side seeing 4.0A (> 3A) -> MUST trip!
+    const { batId: batBuckId, leftMotorId: mLeft1, rightMotorId: mRight1 } =
+      resetAndBuildBaseAssembly("standard-lipo");
+    const buckId = useRobotStore.getState().installElectricalCatalogueItem("elec-buck-5v")!;
+    useRobotStore.getState().updatePartElectricalProperties(buckId, {
+      driverOrRegulatorSpec: {
+        powerRole: "buck",
+        inputVoltageRangeV: { minV: 7, maxV: 35 },
+        outputVoltageRangeV: { minV: 4.9, maxV: 5.1 },
+        continuousCurrentPerChannelA: 10.0,
+        efficiency: 0.85,
+        dropoutVoltageV: 1.5,
+      },
+    });
+    const buckFuseId = useRobotStore.getState().installElectricalCatalogueItem("elec-inline-fuse-20a", {
+      name: "5V Branch 3A Fuse",
+    })!;
+    useRobotStore.getState().updatePartElectricalProperties(buckFuseId, {
+      driverOrRegulatorSpec: { powerRole: "fuse", continuousCurrentPerChannelA: 3.0 },
+    });
+    for (const mId of [mLeft1, mRight1]) {
+      useRobotStore.getState().updatePartElectricalProperties(mId, {
+        motorSpec: {
+          nominalVoltageV: 5.0,
+          minVoltageV: 3.0,
+          maxVoltageV: 14.0,
+          ratedCurrentA: 1.0,
+          stallCurrentA: 4.0,
+          reversiblePolarity: true,
+        },
+      });
+    }
+    const addBuckConn = useRobotStore.getState().addElectricalConnection;
+    addBuckConn({
+      sourcePartId: batBuckId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: buckId,
+      targetInterfaceId: "elec-buck-5v-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addBuckConn({
+      sourcePartId: buckId,
+      sourceInterfaceId: "elec-buck-5v-pwr-out",
+      targetPartId: buckFuseId,
+      targetInterfaceId: "fuse-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addBuckConn({
+      sourcePartId: buckFuseId,
+      sourceInterfaceId: "fuse-out",
+      targetPartId: mLeft1,
+      targetInterfaceId: "motor-drive-input",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addBuckConn({
+      sourcePartId: batBuckId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: mRight1,
+      targetInterfaceId: "motor-drive-input",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    wireCommonGround([buckId], batBuckId);
+
+    const buckSt = useRobotStore.getState();
+    const buckCompiled = compileSimulationConfig({
+      parts: buckSt.parts,
+      connections: buckSt.connections,
+      drivetrain: buckSt.drivetrain,
+      foundation: buckSt.foundation,
+      electricalConnections: buckSt.electricalConnections,
+    }).config!;
+    const buckDummy = createInitialRunnerState(buckCompiled).simulationState;
+    const buckFuseDiag = calculateBatteryOperatingPoint(
+      buckCompiled,
+      buckDummy,
+      { leftThrottle: 1, rightThrottle: 0 },
+      { openCircuitVoltageV: 12.0, internalResistanceOhm: 0.01 }
+    );
+    expect(buckFuseDiag.trippedFuseIds).toContain(buckFuseId);
+
+    // 2. Regulator maxOutputCurrentA enforcement (1.5A Buck limits 4.0A stall motor to 1.5A output)
+    const { batId: batClampId, leftMotorId: mClampL, rightMotorId: mClampR } =
+      resetAndBuildBaseAssembly("standard-lipo");
+    const clampBuckId = useRobotStore.getState().installElectricalCatalogueItem("elec-buck-5v")!;
+    useRobotStore.getState().updatePartElectricalProperties(clampBuckId, {
+      driverOrRegulatorSpec: {
+        powerRole: "buck",
+        inputVoltageRangeV: { minV: 7, maxV: 16 },
+        outputVoltageRangeV: { minV: 4.9, maxV: 5.1 },
+        continuousCurrentPerChannelA: 1.5,
+        efficiency: 0.85,
+        dropoutVoltageV: 1.5,
+      },
+    });
+    useRobotStore.getState().updatePartElectricalProperties(mClampL, {
+      motorSpec: {
+        nominalVoltageV: 5.0,
+        minVoltageV: 3.0,
+        maxVoltageV: 14.0,
+        ratedCurrentA: 1.0,
+        stallCurrentA: 4.0,
+        reversiblePolarity: true,
+      },
+    });
+    const addClampConn = useRobotStore.getState().addElectricalConnection;
+    addClampConn({
+      sourcePartId: batClampId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: clampBuckId,
+      targetInterfaceId: "elec-buck-5v-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addClampConn({
+      sourcePartId: clampBuckId,
+      sourceInterfaceId: "elec-buck-5v-pwr-out",
+      targetPartId: mClampL,
+      targetInterfaceId: "motor-drive-input",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addClampConn({
+      sourcePartId: batClampId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: mClampR,
+      targetInterfaceId: "motor-drive-input",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    wireCommonGround([clampBuckId], batClampId);
+    const clampSt = useRobotStore.getState();
+    const clampCompiled = compileSimulationConfig({
+      parts: clampSt.parts,
+      connections: clampSt.connections,
+      drivetrain: clampSt.drivetrain,
+      foundation: clampSt.foundation,
+      electricalConnections: clampSt.electricalConnections,
+    }).config!;
+    const clampDummy = createInitialRunnerState(clampCompiled).simulationState;
+
+    const clampedDiag = calculateBatteryOperatingPoint(
+      clampCompiled,
+      clampDummy,
+      { leftThrottle: 1, rightThrottle: 0 },
+      { openCircuitVoltageV: 12.0, internalResistanceOhm: 0.01 }
+    );
+    const clampedMotorState = clampedDiag.perMotorStates!.find((m) => m.motorId === mClampL)!;
+    expect(clampedMotorState.isCurrentLimited).toBe(true);
+    expect(clampedMotorState.currentDrawA).toBeCloseTo(1.5, 2);
+
+    // Regulator inputMaxV (16V) shutdown at 20V open-circuit
+    const overVinDiag = calculateBatteryOperatingPoint(
+      clampCompiled,
+      clampDummy,
+      { leftThrottle: 1, rightThrottle: 0 },
+      { openCircuitVoltageV: 20.0, cutoffVoltageV: 10.0, internalResistanceOhm: 0.01 }
+    );
+    const overVinMotor = overVinDiag.perMotorStates!.find((m) => m.motorId === mClampL)!;
+    expect(overVinMotor.isPowered).toBe(false);
+    expect(overVinMotor.operatingVoltageV).toBe(0);
+    expect(
+      overVinDiag.activeElectricalFaults?.some((f) => f.toLowerCase().includes("overvoltage"))
+    ).toBe(true);
+
+    // 3. Downstream Boost Fuse stays untripped when load-side current (1.5A @ 15V) < fuse rating (3A)
+    //    even while battery-side input current (1.5 * 15 / (8.4 * 0.9) ≈ 2.98-3.3A) is higher;
+    //    and upstream fuse on Boost sees battery-side current and DOES trip!
+    const { batId: batBoostId, leftMotorId: mBoostL, rightMotorId: mBoostR } =
+      resetAndBuildBaseAssembly("compact-lipo"); // 8.4V full
+    const boostId = useRobotStore.getState().installElectricalCatalogueItem("elec-boost-12v")!;
+    useRobotStore.getState().updatePartElectricalProperties(boostId, {
+      driverOrRegulatorSpec: {
+        powerRole: "boost",
+        inputVoltageRangeV: { minV: 3.0, maxV: 12.0 },
+        outputVoltageRangeV: { minV: 11.8, maxV: 12.2 },
+        continuousCurrentPerChannelA: 5.0,
+        efficiency: 0.9,
+      },
+    });
+    const downBoostFuseId = useRobotStore.getState().installElectricalCatalogueItem("elec-inline-fuse-20a", {
+      name: "Boost Output 2A Fuse",
+    })!;
+    useRobotStore.getState().updatePartElectricalProperties(downBoostFuseId, {
+      driverOrRegulatorSpec: { powerRole: "fuse", continuousCurrentPerChannelA: 2.0 },
+    });
+    const upBoostFuseId = useRobotStore.getState().installElectricalCatalogueItem("elec-inline-fuse-20a", {
+      name: "Boost Input 2A Fuse",
+    })!;
+    useRobotStore.getState().updatePartElectricalProperties(upBoostFuseId, {
+      driverOrRegulatorSpec: { powerRole: "fuse", continuousCurrentPerChannelA: 2.0 },
+    });
+    for (const mId of [mBoostL, mBoostR]) {
+      useRobotStore.getState().updatePartElectricalProperties(mId, {
+        motorSpec: {
+          nominalVoltageV: 12.0,
+          minVoltageV: 4.0,
+          maxVoltageV: 16.0,
+          ratedCurrentA: 1.5,
+          stallCurrentA: 1.5, // 1.5A at 12V: downstream 2A fuse must NOT trip, upstream 2A fuse (>2.38A) MUST trip!
+          reversiblePolarity: true,
+        },
+      });
+    }
+    const addBoostConn = useRobotStore.getState().addElectricalConnection;
+    addBoostConn({
+      sourcePartId: batBoostId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: upBoostFuseId,
+      targetInterfaceId: "fuse-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addBoostConn({
+      sourcePartId: upBoostFuseId,
+      sourceInterfaceId: "fuse-out",
+      targetPartId: boostId,
+      targetInterfaceId: "elec-boost-12v-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addBoostConn({
+      sourcePartId: boostId,
+      sourceInterfaceId: "elec-boost-12v-pwr-out",
+      targetPartId: downBoostFuseId,
+      targetInterfaceId: "fuse-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addBoostConn({
+      sourcePartId: downBoostFuseId,
+      sourceInterfaceId: "fuse-out",
+      targetPartId: mBoostL,
+      targetInterfaceId: "motor-drive-input",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    wireCommonGround([boostId], batBoostId);
+
+    const boostSt = useRobotStore.getState();
+    const boostCompiled = compileSimulationConfig({
+      parts: boostSt.parts,
+      connections: boostSt.connections,
+      drivetrain: boostSt.drivetrain,
+      foundation: boostSt.foundation,
+      electricalConnections: boostSt.electricalConnections,
+    }).config!;
+    const boostDummy = createInitialRunnerState(boostCompiled).simulationState;
+    const boostDiag = calculateBatteryOperatingPoint(
+      boostCompiled,
+      boostDummy,
+      { leftThrottle: 1, rightThrottle: 0 },
+      { openCircuitVoltageV: 8.4, internalResistanceOhm: 0.01 }
+    );
+    expect(boostDiag.trippedFuseIds).toContain(upBoostFuseId);
+    expect(boostDiag.trippedFuseIds).not.toContain(downBoostFuseId);
+
+    // 4. Motor-Driver BEC target fault propagation when upstream ESC feed fails compatibility
+    const { batId: batBecId } = resetAndBuildBaseAssembly("heavy-duty-lipo"); // 14.8V / 16.8V max
+    const escId = useRobotStore.getState().installElectricalCatalogueItem("elec-esc-brushed-30a")!;
+    useRobotStore.getState().updatePartElectricalProperties(escId, {
+      interfaces: [
+        {
+          interfaceId: "esc-bat-in",
+          name: "ESC Input",
+          role: "power-input",
+          voltageSpec: { minV: 5.0, maxV: 12.6 }, // fails against 4S 16.8V battery!
+          pinIds: ["pin-esc-in"],
+          provenance: { method: "user-supplied" },
+        },
+        {
+          interfaceId: "esc-motor-out",
+          name: "ESC Motor Output",
+          role: "power-output",
+          pinIds: ["pin-esc-out"],
+          provenance: { method: "user-supplied" },
+        },
+        {
+          interfaceId: "esc-bec-out",
+          name: "ESC 5V BEC",
+          role: "power-output",
+          voltageSpec: { nominalV: 5.0, minV: 4.8, maxV: 5.2 },
+          currentSpec: { maxContinuousA: 2.0 },
+          pinIds: ["pin-esc-bec"],
+          provenance: { method: "user-supplied" },
+        },
+      ],
+    });
+    const becSonarId = useRobotStore.getState().installElectricalCatalogueItem("elec-hcsr04-ultrasonic")!;
+    const addBecConn = useRobotStore.getState().addElectricalConnection;
+    addBecConn({
+      sourcePartId: batBecId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: escId,
+      targetInterfaceId: "esc-bat-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addBecConn({
+      sourcePartId: escId,
+      sourceInterfaceId: "esc-bec-out",
+      targetPartId: becSonarId,
+      targetInterfaceId: "elec-hcsr04-ultrasonic-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    const becSt = useRobotStore.getState();
+    const becReport = validateElectricalAssembly({
+      parts: becSt.parts,
+      electricalConnections: becSt.electricalConnections,
+    });
+    expect(becReport.powerAnalysis?.consumerStates[becSonarId]?.hasPathFault).toBe(true);
+    const becCompiled = compileSimulationConfig({
+      parts: becSt.parts,
+      connections: becSt.connections,
+      drivetrain: becSt.drivetrain,
+      foundation: becSt.foundation,
+      electricalConnections: becSt.electricalConnections,
+    }).config!;
+    const compiledBecReg = becCompiled.electrical?.regulators.find((r) => r.partId === escId);
+    expect(compiledBecReg?.hasCompileFault).toBe(true);
+  });
 });

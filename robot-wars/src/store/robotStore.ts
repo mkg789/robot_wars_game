@@ -3,7 +3,6 @@ import { create } from "zustand";
 import {
   releaseMeshAsset,
   retainMeshAsset,
-  syncActiveAssetRefs,
 } from "../features/robot-builder/logic/meshAssetRegistry";
 import {
   suggestDrivetrainMapping,
@@ -12,13 +11,18 @@ import {
 import {
   registerDecodedProjectAssets,
 } from "../features/persistence/logic/projectSerialization";
-import { createStarterPresets } from "../features/programming/logic/programPersistence";
+import {
+  createStarterPresets,
+  replaceSavedVisualPrograms,
+} from "../features/programming/logic/programPersistence";
 import { SIMULATION_ARENA_PRESETS } from "../features/simulation/logic/simulationWorld";
 import {
   captureAssemblySnapshot,
   collectStoreMeshAssetIds,
   createEmptyDrivetrain,
   restoreAssemblySnapshot,
+  sanitizeAssemblyGraph,
+  syncAssemblyTransforms,
 } from "./assemblyStoreHelpers";
 import {
   MAX_ASSEMBLY_HISTORY,
@@ -79,6 +83,11 @@ export const useRobotStore = create<RobotStore>((rawSet, get) => {
       const patch = partialOrUpdater(state);
       if (patch === state) return state;
 
+      // Explicit history resets or replacements must never capture the discarded build into historyPast.
+      if ("historyPast" in patch || "historyFuture" in patch) {
+        return patch;
+      }
+
       const modifiesAssembly =
         "parts" in patch ||
         "connections" in patch ||
@@ -105,11 +114,6 @@ export const useRobotStore = create<RobotStore>((rawSet, get) => {
     });
   };
 
-  const resetActiveAssets = () => {
-    syncActiveAssetRefs([]);
-    storeTrackedMeshAssets.clear();
-  };
-
   return {
     projectName: "Untitled Robot",
     projectCreatedAtIso: new Date().toISOString(),
@@ -132,7 +136,39 @@ export const useRobotStore = create<RobotStore>((rawSet, get) => {
     loadProjectState: (loaded) => {
       if (!loaded.success || !loaded.project) return false;
       const project = loaded.project;
-      registerDecodedProjectAssets(loaded.decodedAssets);
+      const sanitizedBuild = sanitizeAssemblyGraph({
+        parts: structuredClone(project.build.parts),
+        connections: structuredClone(project.build.connections),
+        electricalConnections: structuredClone(project.electrical.connections),
+        foundation: project.build.foundation
+          ? structuredClone(project.build.foundation)
+          : null,
+        foundationId: project.build.foundationId,
+        drivetrain: structuredClone(project.build.drivetrain),
+        hiddenPartIds: [...project.build.hiddenPartIds],
+        selectedId: project.build.selectedId,
+        selectedWheelMotorId: null,
+        selectedElectricalConnectionId: null,
+        selectedElectricalPinId: null,
+        stage: project.build.stage,
+      });
+      const syncedParts = syncAssemblyTransforms(
+        sanitizedBuild.parts,
+        sanitizedBuild.connections
+      );
+      const referencedAssetIds = collectStoreMeshAssetIds({
+        parts: syncedParts,
+        foundation: sanitizedBuild.foundation,
+      });
+      registerDecodedProjectAssets(
+        loaded.decodedAssets.filter((asset) => referencedAssetIds.has(asset.assetId))
+      );
+      if (
+        project.programming.savedPrograms !== undefined ||
+        loaded.migratedFromVersion === undefined
+      ) {
+        replaceSavedVisualPrograms(project.programming.savedPrograms ?? []);
+      }
       trackedRawSet((state) => ({
         projectName: project.metadata.name,
         projectCreatedAtIso: project.metadata.createdAtIso,
@@ -141,17 +177,15 @@ export const useRobotStore = create<RobotStore>((rawSet, get) => {
         projectRevision: state.projectRevision + 1,
         lastProjectLoadWarnings: [...loaded.warnings],
         lastReplacementWarning: null,
-        stage: project.build.stage,
-        foundationId: project.build.foundationId,
-        foundation: project.build.foundation
-          ? structuredClone(project.build.foundation)
-          : null,
-        parts: structuredClone(project.build.parts),
-        connections: structuredClone(project.build.connections),
-        electricalConnections: structuredClone(project.electrical.connections),
-        drivetrain: structuredClone(project.build.drivetrain),
-        hiddenPartIds: [...project.build.hiddenPartIds],
-        selectedId: project.build.selectedId,
+        stage: sanitizedBuild.stage ?? project.build.stage,
+        foundationId: sanitizedBuild.foundationId,
+        foundation: sanitizedBuild.foundation,
+        parts: syncedParts,
+        connections: sanitizedBuild.connections,
+        electricalConnections: sanitizedBuild.electricalConnections,
+        drivetrain: sanitizedBuild.drivetrain,
+        hiddenPartIds: sanitizedBuild.hiddenPartIds,
+        selectedId: sanitizedBuild.selectedId,
         transformMode: "select",
         selectedMotorCatalogueId: null,
         selectedMountZoneId: null,
@@ -307,7 +341,7 @@ export const useRobotStore = create<RobotStore>((rawSet, get) => {
       }),
 
     ...createDrivetrainSlice(set),
-    ...createFoundationSlice(set, get, resetActiveAssets),
+    ...createFoundationSlice(set, get, trackedRawSet),
     ...createPartsSlice(set, get, trackedRawSet),
     ...createElectricalSlice(set, get),
   };

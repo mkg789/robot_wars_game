@@ -233,6 +233,7 @@ export default function ElectricalCataloguePanel({
                 <div
                   role="button"
                   tabIndex={0}
+                  aria-expanded={isExpanded}
                   onClick={() =>
                     setExpandedCatalogueId((prev) =>
                       prev === item.id ? "" : item.id

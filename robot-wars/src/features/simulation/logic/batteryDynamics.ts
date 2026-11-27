@@ -318,6 +318,13 @@ function resolveRegulatorStepVoltage(
   if (reg.hasCompileFault) {
     return { isPowered: false, outputVoltageV: 0, faultReason: `${reg.name} electrical configuration fault` };
   }
+  if (reg.inputMaxV !== undefined && terminalVoltageV > reg.inputMaxV + 0.05) {
+    return {
+      isPowered: false,
+      outputVoltageV: 0,
+      faultReason: `${reg.name} input overvoltage (${terminalVoltageV.toFixed(1)}V > ${reg.inputMaxV.toFixed(1)}V max)`,
+    };
+  }
   if (reg.powerRole === "boost" && terminalVoltageV > reg.outputNominalV + 0.1) {
     return {
       isPowered: false,
@@ -423,6 +430,8 @@ export function calculateBatteryOperatingPoint(
 
   // Connected Electrical Profile Path: evaluates switches, fuses, regulators/BECs, drivers & auxiliary loads
   if (profile && profile.mode === "electrical-connected") {
+    const regByPartId = new Map(profile.regulators.map((r) => [r.partId, r]));
+
     const evaluateAtTerminalVoltage = (vTerm: number) => {
       const regStates = new Map<string, ReturnType<typeof resolveRegulatorStepVoltage>>();
       for (const reg of profile.regulators) {
@@ -434,31 +443,47 @@ export function calculateBatteryOperatingPoint(
 
       const activeFaults: string[] = [];
       let totalAuxiliaryBatteryA = 0;
-      const activeAuxByPart = new Map<string, number>();
+      const activeAuxOutByPart = new Map<string, number>();
+      const activeAuxBatteryByPart = new Map<string, number>();
+
+      interface ActiveAuxEval {
+        readonly partId: string;
+        readonly regulatorPartId?: string;
+        readonly outCurrentA: number;
+        readonly efficiencyRatio: number;
+      }
+      const activeAuxList: ActiveAuxEval[] = [];
 
       for (const aux of profile.auxiliaryLoads) {
         const swOpen = aux.seriesSwitchIds.some((id) => switchStates[id] === false);
         const fuseTripped = aux.seriesFuseIds.some((id) => initialTrippedFuseSet.has(id));
         if (swOpen || fuseTripped) continue;
 
-        let auxBatteryCurrentA = aux.nominalCurrentA;
+        let efficiencyRatio = 1;
         if (aux.supplyKind === "regulated-rail" && aux.regulatorPartId) {
           const rState = regStates.get(aux.regulatorPartId);
-          const regSpec = profile.regulators.find((r) => r.partId === aux.regulatorPartId);
-          if (!rState || !rState.isPowered || !regSpec) continue;
+          const regSpec = regByPartId.get(aux.regulatorPartId);
+          if (!rState || !rState.isPowered || !regSpec) {
+            if (rState?.faultReason) activeFaults.push(rState.faultReason);
+            continue;
+          }
+          if (rState.faultReason) activeFaults.push(rState.faultReason);
           if (
             regSpec.powerRole !== "linear" &&
             regSpec.efficiency !== undefined &&
             regSpec.efficiency > 0 &&
             vTerm > 0.25
           ) {
-            auxBatteryCurrentA =
-              (rState.outputVoltageV * aux.nominalCurrentA) /
-              (vTerm * regSpec.efficiency);
+            efficiencyRatio = rState.outputVoltageV / (vTerm * regSpec.efficiency);
           }
         }
-        totalAuxiliaryBatteryA += auxBatteryCurrentA;
-        activeAuxByPart.set(aux.partId, auxBatteryCurrentA);
+        activeAuxList.push({
+          partId: aux.partId,
+          regulatorPartId:
+            aux.supplyKind === "regulated-rail" ? aux.regulatorPartId : undefined,
+          outCurrentA: aux.nominalCurrentA,
+          efficiencyRatio,
+        });
       }
 
       // Add regulator quiescent draw when enabled
@@ -476,31 +501,35 @@ export function calculateBatteryOperatingPoint(
         readonly operatingVoltageV: number;
         readonly demandedCurrentA: number;
         readonly clampedMotorCurrentA: number;
+        readonly regulatorEfficiencyRatio: number;
         readonly batterySideCurrentA: number;
         readonly torqueScaleFactor: number;
         readonly isCurrentLimited: boolean;
         readonly faultReason?: string;
+        readonly supplyKind: "unregulated-battery" | "regulated-rail" | "unpowered";
+        readonly regulatorPartId?: string;
         readonly seriesFuseIds: readonly string[];
       }
 
-      const draftMotors: DraftMotorEval[] = [];
-      let totalMotorBatteryA = 0;
+      const rawDraftMotors: DraftMotorEval[] = [];
 
       for (const motor of config.motors) {
         const mPath = profile.motorPaths.find((mp) => mp.motorId === motor.motorId);
         if (!mPath || !mPath.hasElectricalPath) {
           const reason = mPath?.faultReason ?? `Motor "${motor.name}" is unwired.`;
           activeFaults.push(reason);
-          draftMotors.push({
+          rawDraftMotors.push({
             motorId: motor.motorId,
             isPowered: false,
             operatingVoltageV: 0,
             demandedCurrentA: 0,
             clampedMotorCurrentA: 0,
+            regulatorEfficiencyRatio: 1,
             batterySideCurrentA: 0,
             torqueScaleFactor: 0,
             isCurrentLimited: false,
             faultReason: reason,
+            supplyKind: "unpowered",
             seriesFuseIds: [],
           });
           continue;
@@ -511,16 +540,19 @@ export function calculateBatteryOperatingPoint(
           const swName = profile.switches.find((s) => s.partId === openSw)?.name ?? openSw;
           const reason = `Switch "${swName}" open`;
           activeFaults.push(reason);
-          draftMotors.push({
+          rawDraftMotors.push({
             motorId: motor.motorId,
             isPowered: false,
             operatingVoltageV: 0,
             demandedCurrentA: 0,
             clampedMotorCurrentA: 0,
+            regulatorEfficiencyRatio: 1,
             batterySideCurrentA: 0,
             torqueScaleFactor: 0,
             isCurrentLimited: false,
             faultReason: reason,
+            supplyKind: mPath.supplyKind,
+            regulatorPartId: mPath.regulatorPartId,
             seriesFuseIds: mPath.seriesFuseIds,
           });
           continue;
@@ -534,16 +566,19 @@ export function calculateBatteryOperatingPoint(
             profile.fuses.find((f) => f.partId === trippedFuse)?.name ?? trippedFuse;
           const reason = `Fuse "${fuseName}" tripped`;
           activeFaults.push(reason);
-          draftMotors.push({
+          rawDraftMotors.push({
             motorId: motor.motorId,
             isPowered: false,
             operatingVoltageV: 0,
             demandedCurrentA: 0,
             clampedMotorCurrentA: 0,
+            regulatorEfficiencyRatio: 1,
             batterySideCurrentA: 0,
             torqueScaleFactor: 0,
             isCurrentLimited: false,
             faultReason: reason,
+            supplyKind: mPath.supplyKind,
+            regulatorPartId: mPath.regulatorPartId,
             seriesFuseIds: mPath.seriesFuseIds,
           });
           continue;
@@ -552,16 +587,19 @@ export function calculateBatteryOperatingPoint(
         if (mPath.hasCompileFault || !mPath.canEnergize) {
           const reason = mPath.faultReason ?? `Motor "${motor.name}" electrical path fault`;
           activeFaults.push(reason);
-          draftMotors.push({
+          rawDraftMotors.push({
             motorId: motor.motorId,
             isPowered: false,
             operatingVoltageV: 0,
             demandedCurrentA: 0,
             clampedMotorCurrentA: 0,
+            regulatorEfficiencyRatio: 1,
             batterySideCurrentA: 0,
             torqueScaleFactor: 0,
             isCurrentLimited: false,
             faultReason: reason,
+            supplyKind: mPath.supplyKind,
+            regulatorPartId: mPath.regulatorPartId,
             seriesFuseIds: mPath.seriesFuseIds,
           });
           continue;
@@ -571,22 +609,23 @@ export function calculateBatteryOperatingPoint(
         let regulatorEfficiencyRatio = 1;
         if (mPath.supplyKind === "regulated-rail" && mPath.regulatorPartId) {
           const rState = regStates.get(mPath.regulatorPartId);
-          const regSpec = profile.regulators.find(
-            (r) => r.partId === mPath.regulatorPartId
-          );
+          const regSpec = regByPartId.get(mPath.regulatorPartId);
           if (!rState || !rState.isPowered) {
             const reason = rState?.faultReason ?? `Regulator off for motor "${motor.name}"`;
             activeFaults.push(reason);
-            draftMotors.push({
+            rawDraftMotors.push({
               motorId: motor.motorId,
               isPowered: false,
               operatingVoltageV: 0,
               demandedCurrentA: 0,
               clampedMotorCurrentA: 0,
+              regulatorEfficiencyRatio: 1,
               batterySideCurrentA: 0,
               torqueScaleFactor: 0,
               isCurrentLimited: false,
               faultReason: reason,
+              supplyKind: mPath.supplyKind,
+              regulatorPartId: mPath.regulatorPartId,
               seriesFuseIds: mPath.seriesFuseIds,
             });
             continue;
@@ -630,21 +669,93 @@ export function calculateBatteryOperatingPoint(
           isCurrentLimited = true;
         }
 
-        const batterySideCurrentA = clampedMotorCurrentA * regulatorEfficiencyRatio;
-        totalMotorBatteryA += batterySideCurrentA;
-
-        draftMotors.push({
+        rawDraftMotors.push({
           motorId: motor.motorId,
           isPowered: true,
           operatingVoltageV: supplyVoltageV,
           demandedCurrentA,
           clampedMotorCurrentA,
-          batterySideCurrentA,
+          regulatorEfficiencyRatio,
+          batterySideCurrentA: clampedMotorCurrentA * regulatorEfficiencyRatio,
           torqueScaleFactor,
           isCurrentLimited,
+          supplyKind: mPath.supplyKind,
+          regulatorPartId: mPath.regulatorPartId,
           seriesFuseIds: mPath.seriesFuseIds,
         });
       }
+
+      // Enforce regulator/BEC continuous output current limits in the regulated load domain
+      const regAuxScaleMap = new Map<string, number>();
+      const regMotorScaleMap = new Map<string, number>();
+      for (const reg of profile.regulators) {
+        if (reg.maxOutputCurrentA === undefined || reg.maxOutputCurrentA <= 0) continue;
+        const rState = regStates.get(reg.partId);
+        if (!rState?.isPowered) continue;
+
+        let regAuxOutA = 0;
+        for (const a of activeAuxList) {
+          if (a.regulatorPartId === reg.partId) regAuxOutA += a.outCurrentA;
+        }
+        let regMotorOutA = 0;
+        for (const dm of rawDraftMotors) {
+          if (dm.isPowered && dm.regulatorPartId === reg.partId) {
+            regMotorOutA += dm.clampedMotorCurrentA;
+          }
+        }
+        const totalRegOutA = regAuxOutA + regMotorOutA;
+        if (totalRegOutA > reg.maxOutputCurrentA + 1e-6) {
+          activeFaults.push(
+            `${reg.name} output current limited (${totalRegOutA.toFixed(1)}A > ${reg.maxOutputCurrentA.toFixed(1)}A max)`
+          );
+          if (regAuxOutA >= reg.maxOutputCurrentA) {
+            regAuxScaleMap.set(reg.partId, reg.maxOutputCurrentA / regAuxOutA);
+            regMotorScaleMap.set(reg.partId, 0);
+          } else {
+            regAuxScaleMap.set(reg.partId, 1.0);
+            if (regMotorOutA > 0) {
+              regMotorScaleMap.set(
+                reg.partId,
+                (reg.maxOutputCurrentA - regAuxOutA) / regMotorOutA
+              );
+            }
+          }
+        }
+      }
+
+      for (const aux of activeAuxList) {
+        const regScale = aux.regulatorPartId
+          ? (regAuxScaleMap.get(aux.regulatorPartId) ?? 1.0)
+          : 1.0;
+        const clampedOutA = aux.outCurrentA * regScale;
+        const batterySideA = clampedOutA * aux.efficiencyRatio;
+        activeAuxOutByPart.set(aux.partId, clampedOutA);
+        activeAuxBatteryByPart.set(aux.partId, batterySideA);
+        totalAuxiliaryBatteryA += batterySideA;
+      }
+
+      let totalMotorBatteryA = 0;
+      const draftMotors: DraftMotorEval[] = rawDraftMotors.map((dm) => {
+        if (!dm.isPowered) return dm;
+        const regScale = dm.regulatorPartId
+          ? (regMotorScaleMap.get(dm.regulatorPartId) ?? 1.0)
+          : 1.0;
+        if (regScale >= 1.0 - 1e-9) {
+          totalMotorBatteryA += dm.batterySideCurrentA;
+          return dm;
+        }
+        const clampedMotorCurrentA = dm.clampedMotorCurrentA * regScale;
+        const batterySideCurrentA =
+          clampedMotorCurrentA * dm.regulatorEfficiencyRatio;
+        totalMotorBatteryA += batterySideCurrentA;
+        return {
+          ...dm,
+          clampedMotorCurrentA,
+          batterySideCurrentA,
+          torqueScaleFactor: dm.torqueScaleFactor * regScale,
+          isCurrentLimited: true,
+        };
+      });
 
       // Enforce explicit battery continuous discharge rating if defined in specification
       let isBatteryDischargeLimited = false;
@@ -701,7 +812,9 @@ export function calculateBatteryOperatingPoint(
         finalMotorStates,
         draftMotors,
         batteryScale,
-        activeAuxByPart,
+        regStates,
+        activeAuxOutByPart,
+        activeAuxBatteryByPart,
         activeFaults: Array.from(new Set(activeFaults)),
       };
     };
@@ -760,19 +873,48 @@ export function calculateBatteryOperatingPoint(
       };
     }
 
-    // Check deterministic overcurrent fuse tripping across active fuses
+    // Check deterministic overcurrent fuse tripping across active fuses in each fuse's local electrical domain
     const nextTrippedFuseSet = new Set(initialTrippedFuseSet);
     for (const fuse of profile.fuses) {
       if (nextTrippedFuseSet.has(fuse.partId)) continue;
       let branchCurrentA = 0;
       for (const dm of evalResult.draftMotors) {
         if (dm.isPowered && dm.seriesFuseIds.includes(fuse.partId)) {
-          branchCurrentA += dm.batterySideCurrentA * evalResult.batteryScale;
+          const regSpec = dm.regulatorPartId
+            ? regByPartId.get(dm.regulatorPartId)
+            : undefined;
+          const isDownstreamOfRegulator = Boolean(
+            dm.supplyKind === "regulated-rail" &&
+              regSpec &&
+              !regSpec.seriesFuseIds.includes(fuse.partId)
+          );
+          branchCurrentA += isDownstreamOfRegulator
+            ? dm.clampedMotorCurrentA * evalResult.batteryScale
+            : dm.batterySideCurrentA * evalResult.batteryScale;
         }
       }
       for (const aux of profile.auxiliaryLoads) {
         if (aux.seriesFuseIds.includes(fuse.partId)) {
-          branchCurrentA += evalResult.activeAuxByPart.get(aux.partId) ?? 0;
+          const regSpec = aux.regulatorPartId
+            ? regByPartId.get(aux.regulatorPartId)
+            : undefined;
+          const isDownstreamOfRegulator = Boolean(
+            aux.supplyKind === "regulated-rail" &&
+              regSpec &&
+              !regSpec.seriesFuseIds.includes(fuse.partId)
+          );
+          branchCurrentA += isDownstreamOfRegulator
+            ? (evalResult.activeAuxOutByPart.get(aux.partId) ?? 0)
+            : (evalResult.activeAuxBatteryByPart.get(aux.partId) ?? 0);
+        }
+      }
+      for (const reg of profile.regulators) {
+        if (
+          reg.quiescentCurrentA > 0 &&
+          reg.seriesFuseIds.includes(fuse.partId) &&
+          evalResult.regStates.get(reg.partId)?.isPowered
+        ) {
+          branchCurrentA += reg.quiescentCurrentA;
         }
       }
       if (branchCurrentA > fuse.ratedCurrentA + 1e-6) {

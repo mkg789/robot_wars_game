@@ -119,6 +119,50 @@ describe("Phase 2.4C.4.3: Store Canonicalization & Synchronization", () => {
       expect(result.wheelWidth).toBe(0.15);
       expect(result.geometry).toBe(newGeometry);
     });
+
+    it("F4: maps syncGeometryFromSize and syncSizeFromGeometry consistently by axis for structural X/Y/Z cylinders", () => {
+      const baseProps = {
+        id: "cyl-part",
+        name: "Roller Shaft",
+        type: "Structural Block" as const,
+        position: [0, 0, 0] as [number, number, number],
+        rotation: [0, 0, 0] as [number, number, number],
+        size: [0.5, 0.1, 0.1] as [number, number, number],
+        color: "#64748b",
+        mass: 0.4,
+      };
+
+      // X-axis structural cylinder: [axialWidth, diameter, diameter]
+      const cylX: RobotPart = {
+        ...baseProps,
+        geometry: { shape: "cylinder", diameter: 0.1, axialWidth: 0.5, axis: "x" },
+      };
+      const syncedX = syncGeometryFromSize(cylX, [0.8, 0.25, 0.25]);
+      expect(syncedX.geometry).toEqual({
+        shape: "cylinder",
+        diameter: 0.25,
+        axialWidth: 0.8,
+        axis: "x",
+      });
+      expect(syncedX.size).toEqual([0.8, 0.25, 0.25]);
+      expect(syncSizeFromGeometry(cylX, syncedX.geometry!).size).toEqual([0.8, 0.25, 0.25]);
+
+      // Z-axis structural cylinder: [diameter, diameter, axialWidth]
+      const cylZ: RobotPart = {
+        ...baseProps,
+        size: [0.1, 0.1, 0.5],
+        geometry: { shape: "cylinder", diameter: 0.1, axialWidth: 0.5, axis: "z" },
+      };
+      const syncedZ = syncGeometryFromSize(cylZ, [0.3, 0.3, 0.9]);
+      expect(syncedZ.geometry).toEqual({
+        shape: "cylinder",
+        diameter: 0.3,
+        axialWidth: 0.9,
+        axis: "z",
+      });
+      expect(syncedZ.size).toEqual([0.3, 0.3, 0.9]);
+      expect(syncSizeFromGeometry(cylZ, syncedZ.geometry!).size).toEqual([0.3, 0.3, 0.9]);
+    });
   });
 
   describe("Store Operations & Synchronization", () => {

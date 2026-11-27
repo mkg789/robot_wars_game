@@ -150,8 +150,15 @@ export function WorkshopHeader({
                 ? "warning"
                 : "valid"
           }`}
+          aria-label={`Assembly health: ${
+            validationReport.errors.length > 0
+              ? `${validationReport.errors.length} errors`
+              : validationReport.warnings.length > 0
+                ? `${validationReport.warnings.length} warnings`
+                : "valid"
+          }. Open diagnostics`}
           onClick={onOpenValidation}
-          title="Inspect placement and assembly diagnostics"
+          title="Inspect placement, assembly, and electrical diagnostics"
         >
           {validationReport.errors.length > 0
             ? `✕ ${validationReport.errors.length} Errors`
@@ -162,6 +169,7 @@ export function WorkshopHeader({
         <button
           type="button"
           className={`top-button ${workspaceMode === "workshop" ? "active-mode" : ""}`}
+          aria-pressed={workspaceMode === "workshop"}
           onClick={() => onSetWorkspaceMode("workshop")}
           title="Switch to 3D Mechanical Workshop"
         >
@@ -170,6 +178,7 @@ export function WorkshopHeader({
         <button
           type="button"
           className={`top-button ${workspaceMode === "electrical" ? "active-mode" : ""}`}
+          aria-pressed={workspaceMode === "electrical"}
           onClick={() => onSetWorkspaceMode("electrical")}
           title="Open Electrical Catalogue & Wiring Workspace"
         >

@@ -35,6 +35,7 @@ import type {
   FoundationSliceKeys,
   RobotStore,
   StoreGet,
+  StoreRawSet,
   StoreSet,
 } from "../robotStore.types";
 import {
@@ -48,7 +49,7 @@ import {
 export function createFoundationSlice(
   set: StoreSet,
   get: StoreGet,
-  onResetActiveAssets: () => void
+  trackedRawSet: StoreRawSet
 ): Pick<RobotStore, FoundationSliceKeys> {
   void get;
   return {
@@ -65,12 +66,12 @@ export function createFoundationSlice(
         mode: "procedural",
       };
 
-      set({
+      trackedRawSet((state) => ({
         projectName: "Untitled Robot",
         projectCreatedAtIso: new Date().toISOString(),
         selectedArenaId: SIMULATION_ARENA_PRESETS[0].id,
         visualProgram: createStarterPresets()[0],
-        projectRevision: get().projectRevision + 1,
+        projectRevision: state.projectRevision + 1,
         lastProjectLoadWarnings: [],
         lastReplacementWarning: null,
         foundation,
@@ -97,8 +98,7 @@ export function createFoundationSlice(
         historyPast: [],
         historyFuture: [],
         activeTransformPreview: null,
-      });
-      onResetActiveAssets();
+      }));
     },
 
     selectFoundationModel: (modelId) => {
@@ -445,7 +445,23 @@ export function createFoundationSlice(
 
         if (parentPart) {
           const pIfaces = resolvePartMountingInterfaces(parentPart, state.foundation);
-          const cIfaces = resolvePartMountingInterfaces(draft, state.foundation);
+          // Compute flush surface attachment using post-orientation world bounds so Z-up -> Y-up
+          // imported STLs seat cleanly on parent interfaces instead of floating/sinking by (H - W)/2.
+          const orientedDraft: RobotPart = {
+            ...draft,
+            size: [
+              Math.max(0.02, worldExtents[0]),
+              Math.max(0.02, worldExtents[1]),
+              Math.max(0.02, worldExtents[2]),
+            ],
+            geometry: {
+              shape: "box",
+              length: Math.max(0.02, worldExtents[0]),
+              height: Math.max(0.02, worldExtents[1]),
+              width: Math.max(0.02, worldExtents[2]),
+            },
+          };
+          const cIfaces = resolvePartMountingInterfaces(orientedDraft, state.foundation);
           const parentIface =
             pIfaces.find((i) => i.id === params.parentInterfaceId) ?? pIfaces[0];
           const childIface = cIfaces[0];
@@ -453,7 +469,7 @@ export function createFoundationSlice(
             const attached = computeAttachedChildTransform(
               parentPart,
               parentIface,
-              draft,
+              orientedDraft,
               childIface
             );
             pos = [
@@ -584,18 +600,58 @@ export function createFoundationSlice(
 
         const requestedMode =
           patch.collision?.mode ?? target.collisionConfig?.mode;
+        const prevMode = target.collisionConfig?.mode;
+        const sameMode = !patch.collision?.mode || patch.collision.mode === prevMode;
+        const suppliedCustomBoxes = Boolean(
+          patch.collision?.boxes &&
+            patch.collision.boxes !== target.collisionConfig?.boxes &&
+            sameMode
+        );
+
+        let singleBoxOverrides =
+          requestedMode === "single-box" && suppliedCustomBoxes
+            ? patch.collision?.boxes
+            : undefined;
+        if (
+          requestedMode === "single-box" &&
+          !suppliedCustomBoxes &&
+          prevMode === "single-box" &&
+          target.collisionConfig?.boxes.length === 1 &&
+          !target.collisionConfig.boxes[0].id.startsWith("proxy-primary") &&
+          !target.collisionConfig.boxes[0].id.startsWith("proxy-quad-")
+        ) {
+          const sx = nextLocalSize[0] / Math.max(1e-5, target.size[0]);
+          const sy = nextLocalSize[1] / Math.max(1e-5, target.size[1]);
+          const sz = nextLocalSize[2] / Math.max(1e-5, target.size[2]);
+          const prevBox = target.collisionConfig.boxes[0];
+          singleBoxOverrides = [
+            {
+              ...prevBox,
+              center: [
+                prevBox.center[0] * sx,
+                prevBox.center[1] * sy,
+                prevBox.center[2] * sz,
+              ],
+              size: [
+                Math.max(0.01, prevBox.size[0] * sx),
+                Math.max(0.01, prevBox.size[1] * sy),
+                Math.max(0.01, prevBox.size[2] * sz),
+              ],
+            },
+          ];
+        }
+
         const nextCollision = requestedMode
           ? buildCustomCollisionConfig({
               mode: requestedMode,
               extents: nextLocalSize,
               assetId: target.meshAssetId,
               customBoxes:
-                requestedMode === "single-box" ||
-                (patch.collision?.boxes &&
-                  patch.collision.mode === target.collisionConfig?.mode &&
-                  patch.collision.boxes !== target.collisionConfig?.boxes)
-                  ? patch.collision?.boxes
-                  : undefined,
+                requestedMode === "single-box"
+                  ? singleBoxOverrides
+                  : suppliedCustomBoxes
+                    ? patch.collision?.boxes
+                    : undefined,
             })
           : undefined;
 
@@ -604,17 +660,47 @@ export function createFoundationSlice(
             ? nextEngineering.massKg
             : target.massKg ?? target.mass;
 
-        const nextRotation: [number, number, number] = nextTransform
-          ? [...nextTransform.orientationRotation]
-          : [...(target.rotation ?? [0, 0, 0])];
+        const hasExplicitOrientation =
+          patch.transform?.orientationRotation !== undefined;
+        const nextRotation: [number, number, number] = hasExplicitOrientation
+          ? [...nextTransform!.orientationRotation]
+          : [...(target.rotation ?? nextTransform?.orientationRotation ?? [0, 0, 0])];
+        const syncedTransform = nextTransform
+          ? {
+              ...nextTransform,
+              orientationRotation: [...nextRotation] as [number, number, number],
+            }
+          : undefined;
+
+        const prevOffset = target.meshTransform?.positionOffset ?? [0, 0, 0];
+        const nextOffset = syncedTransform?.positionOffset ?? prevOffset;
+        const offsetDelta: [number, number, number] = [
+          nextOffset[0] - prevOffset[0],
+          nextOffset[1] - prevOffset[1],
+          nextOffset[2] - prevOffset[2],
+        ];
+        const nextPosition: [number, number, number] =
+          partId === "foundation-chassis" &&
+          state.foundation?.mode === "imported"
+            ? [
+                nextOffset[0],
+                nextWorldExtents[1] * 0.5 + nextOffset[1],
+                nextOffset[2],
+              ]
+            : [
+                target.position[0] + offsetDelta[0],
+                target.position[1] + offsetDelta[1],
+                target.position[2] + offsetDelta[2],
+              ];
 
         const updatedPart: RobotPart = {
           ...target,
+          position: nextPosition,
           size: nextLocalSize,
           rotation: nextRotation,
           mass: resolvedMass,
           massKg: resolvedMass,
-          meshTransform: nextTransform,
+          meshTransform: syncedTransform,
           importedEngineering: nextEngineering,
           collisionConfig: nextCollision,
           customInertiaKgM2: nextEngineering?.inertiaKgM2
@@ -656,7 +742,8 @@ export function createFoundationSlice(
                 width: nextWorldExtents[2],
                 imported: {
                   ...state.foundation.imported,
-                  transform: nextTransform ?? state.foundation.imported.transform,
+                  transform:
+                    syncedTransform ?? state.foundation.imported.transform,
                   engineering:
                     nextEngineering ?? state.foundation.imported.engineering,
                   collision: nextCollision ?? state.foundation.imported.collision,
@@ -673,7 +760,7 @@ export function createFoundationSlice(
           foundation: nextFoundation,
         });
 
-        // Keep parent-relative rotation synced if this structural STL itself is mounted to a parent
+        // Keep parent-relative rotation and positionOffset delta synced if this structural STL is mounted to a parent
         nextConnections = nextConnections.map((conn) => {
           if ((conn.childId ?? conn.targetId) !== partId || conn.type === "Motor-Wheel") {
             return conn;
@@ -682,8 +769,15 @@ export function createFoundationSlice(
             (p) => p.id === (conn.parentId ?? conn.sourceId)
           );
           if (!parentPart) return conn;
+          const prevRelPos = conn.relativePosition ?? [0, 0, 0];
+          const updatedRelPos: [number, number, number] = [
+            prevRelPos[0] + offsetDelta[0],
+            prevRelPos[1] + offsetDelta[1],
+            prevRelPos[2] + offsetDelta[2],
+          ];
           return {
             ...conn,
+            relativePosition: updatedRelPos,
             relativeRotation: computeRelativeEulerRotation(
               parentPart.rotation ?? [0, 0, 0],
               nextRotation

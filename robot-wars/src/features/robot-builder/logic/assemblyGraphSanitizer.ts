@@ -53,6 +53,20 @@ export interface SanitizedAssemblyGraphResult {
   readonly stage?: BuildStage;
 }
 
+function sanitizeTuple3(
+  value: unknown,
+  fallback: readonly [number, number, number] = [0, 0, 0]
+): [number, number, number] {
+  if (
+    Array.isArray(value) &&
+    value.length === 3 &&
+    value.every((n) => typeof n === "number" && Number.isFinite(n))
+  ) {
+    return [value[0], value[1], value[2]];
+  }
+  return [fallback[0], fallback[1], fallback[2]];
+}
+
 /**
  * Normalizes and enforces referential integrity across mechanical parts, connections,
  * drivetrain assignments, electrical wiring, foundation links, and active UI selections.
@@ -60,17 +74,26 @@ export interface SanitizedAssemblyGraphResult {
 export function sanitizeAssemblyGraph(
   input: AssemblyGraphStateInput
 ): SanitizedAssemblyGraphResult {
-  const partIds = new Set(input.parts.map((p) => p.id));
-  const partsById = new Map(input.parts.map((p) => [p.id, p]));
+  const uniqueParts: RobotPart[] = [];
+  const partsById = new Map<string, RobotPart>();
+  for (const part of input.parts) {
+    if (!part?.id || partsById.has(part.id)) continue;
+    partsById.set(part.id, part);
+    uniqueParts.push(part);
+  }
+  const partIds = new Set(partsById.keys());
 
-  // 1. Clean mechanical connections: existing endpoints, no self-loops, unique parent per child, acyclic
+  // 1. Clean mechanical connections: existing endpoints, no self-loops, root cannot have a parent,
+  //    unique parent per child, acyclic.
   const cleanConnections: RobotConnection[] = [];
   const childConnectionMap = new Map<string, RobotConnection>();
 
   for (const conn of input.connections) {
+    if (!conn || typeof conn !== "object") continue;
     const parentId = conn.parentId ?? conn.sourceId;
     const childId = conn.childId ?? conn.targetId;
     if (!parentId || !childId || parentId === childId) continue;
+    if (childId === "foundation-chassis") continue;
     if (!partIds.has(parentId) || !partIds.has(childId)) continue;
     if (childConnectionMap.has(childId)) continue;
     if (hasAttachmentCycle(cleanConnections, parentId, childId)) continue;
@@ -81,13 +104,15 @@ export function sanitizeAssemblyGraph(
       targetId: childId,
       parentId,
       childId,
+      relativePosition: sanitizeTuple3(conn.relativePosition, [0, 0, 0]),
+      relativeRotation: sanitizeTuple3(conn.relativeRotation, [0, 0, 0]),
     };
     cleanConnections.push(normalized);
     childConnectionMap.set(childId, normalized);
   }
 
   // 2. Synchronize part.parentAttachmentId with surviving parent-child connections
-  const cleanParts: RobotPart[] = input.parts.map((part) => {
+  const cleanParts: RobotPart[] = uniqueParts.map((part) => {
     const incoming = childConnectionMap.get(part.id);
     const expectedAttachmentId = incoming?.id;
     if (part.parentAttachmentId === expectedAttachmentId) {
@@ -99,12 +124,13 @@ export function sanitizeAssemblyGraph(
     };
   });
 
-  // 3. Synchronize foundation state when foundation root or generated plates were removed
+  // 3. Synchronize foundation state & plate/cover flags with surviving parts
   const hasFoundationRoot = partIds.has("foundation-chassis");
   let nextFoundation = input.foundation;
-  let nextFoundationId = hasFoundationRoot
-    ? (input.foundationId ?? "foundation-chassis")
-    : null;
+  let nextFoundationId =
+    hasFoundationRoot && nextFoundation
+      ? (input.foundationId ?? "foundation-chassis")
+      : null;
   let nextStage = input.stage;
 
   if (!hasFoundationRoot) {
@@ -115,13 +141,13 @@ export function sanitizeAssemblyGraph(
     const hasTopPlate = partIds.has("foundation-top-plate");
     const hasFrontCover = partIds.has("foundation-front-cover");
     if (
-      (nextFoundation.includeTopPlate && !hasTopPlate) ||
-      (nextFoundation.includeFrontCover && !hasFrontCover)
+      nextFoundation.includeTopPlate !== hasTopPlate ||
+      nextFoundation.includeFrontCover !== hasFrontCover
     ) {
       nextFoundation = {
         ...nextFoundation,
-        includeTopPlate: nextFoundation.includeTopPlate && hasTopPlate,
-        includeFrontCover: nextFoundation.includeFrontCover && hasFrontCover,
+        includeTopPlate: hasTopPlate,
+        includeFrontCover: hasFrontCover,
       };
     }
   }
@@ -386,6 +412,36 @@ export function syncImportedPartFromSize(
     });
   }
 
+  let singleCustomBoxes:
+    | NonNullable<RobotPart["collisionConfig"]>["boxes"]
+    | undefined;
+  if (
+    part.collisionConfig?.mode === "single-box" &&
+    part.collisionConfig.boxes.length === 1 &&
+    !part.collisionConfig.boxes[0].id.startsWith("proxy-primary") &&
+    !part.collisionConfig.boxes[0].id.startsWith("proxy-quad-")
+  ) {
+    const sx = nextLocalSize[0] / Math.max(1e-5, prevExtents[0]);
+    const sy = nextLocalSize[1] / Math.max(1e-5, prevExtents[1]);
+    const sz = nextLocalSize[2] / Math.max(1e-5, prevExtents[2]);
+    const prevBox = part.collisionConfig.boxes[0];
+    singleCustomBoxes = [
+      {
+        ...prevBox,
+        center: [
+          prevBox.center[0] * sx,
+          prevBox.center[1] * sy,
+          prevBox.center[2] * sz,
+        ],
+        size: [
+          Math.max(0.01, prevBox.size[0] * sx),
+          Math.max(0.01, prevBox.size[1] * sy),
+          Math.max(0.01, prevBox.size[2] * sz),
+        ],
+      },
+    ];
+  }
+
   const nextCollision = part.collisionConfig
     ? buildCustomCollisionConfig({
         mode: part.collisionConfig.mode,
@@ -393,7 +449,7 @@ export function syncImportedPartFromSize(
         assetId: part.meshAssetId,
         customBoxes:
           part.collisionConfig.mode === "single-box"
-            ? part.collisionConfig.boxes
+            ? singleCustomBoxes
             : undefined,
       })
     : undefined;
@@ -437,50 +493,80 @@ export function buildReplacementElectricalFields(
 
 /**
  * Propagates parent-to-child mechanical/motor-wheel world transforms along an acyclic attachment graph.
+ * Defensively ignores self-loops/duplicate parents and breaks remaining cycles so no connected
+ * subgraph is silently skipped or causes infinite recursion.
  */
 export function syncAssemblyTransforms(
   parts: RobotPart[],
   connections: RobotConnection[]
 ): RobotPart[] {
-  const synchronized = new Map(parts.map((part) => [part.id, { ...part }]));
+  const synchronized = new Map<string, RobotPart>();
+  const orderedIds: string[] = [];
+  for (const part of parts) {
+    if (!part?.id || synchronized.has(part.id)) continue;
+    synchronized.set(part.id, {
+      ...part,
+      position: sanitizeTuple3(part.position, [0, 0, 0]),
+      rotation: sanitizeTuple3(part.rotation, [0, 0, 0]),
+    });
+    orderedIds.push(part.id);
+  }
+
   const childrenByParent = new Map<string, RobotConnection[]>();
+  const claimedChildren = new Set<string>();
 
   for (const connection of connections) {
+    if (!connection || typeof connection !== "object") continue;
     const parentId = connection.parentId ?? connection.sourceId;
     const childId = connection.childId ?? connection.targetId;
+    if (!parentId || !childId || parentId === childId) continue;
+    if (childId === "foundation-chassis") continue;
     if (!synchronized.has(parentId) || !synchronized.has(childId)) continue;
+    if (claimedChildren.has(childId)) continue;
+
+    claimedChildren.add(childId);
     childrenByParent.set(parentId, [
       ...(childrenByParent.get(parentId) ?? []),
-      { ...connection, parentId, childId },
+      { ...connection, sourceId: parentId, targetId: childId, parentId, childId },
     ]);
   }
 
   const visited = new Set<string>();
+  const activeStack = new Set<string>();
   const applyChildren = (parentId: string) => {
-    if (visited.has(parentId)) return;
+    if (visited.has(parentId) || activeStack.has(parentId)) return;
     visited.add(parentId);
+    activeStack.add(parentId);
 
     const parent = synchronized.get(parentId);
-    if (!parent) return;
+    if (!parent) {
+      activeStack.delete(parentId);
+      return;
+    }
 
     for (const connection of childrenByParent.get(parentId) ?? []) {
+      if (visited.has(connection.childId) || activeStack.has(connection.childId)) {
+        continue;
+      }
       const child = synchronized.get(connection.childId);
       if (!child) continue;
 
-      const parentRot = parent.rotation ?? [0, 0, 0];
-      const storedRelative =
-        connection.relativePosition ??
-        (parent.type === "Motor" ? getMotorShaftMountOffset(parent) : [0, 0, 0]);
+      const parentRot = sanitizeTuple3(parent.rotation, [0, 0, 0]);
+      const parentPos = sanitizeTuple3(parent.position, [0, 0, 0]);
+      const storedRelative = sanitizeTuple3(
+        connection.relativePosition,
+        parent.type === "Motor" ? getMotorShaftMountOffset(parent) : [0, 0, 0]
+      );
       const worldOffset = new Vector3(...storedRelative).applyEuler(
         new Euler(parentRot[0], parentRot[1], parentRot[2], "XYZ")
       );
 
       const position: [number, number, number] = [
-        parent.position[0] + worldOffset.x,
-        parent.position[1] + worldOffset.y,
-        parent.position[2] + worldOffset.z,
+        parentPos[0] + worldOffset.x,
+        parentPos[1] + worldOffset.y,
+        parentPos[2] + worldOffset.z,
       ];
-      const relativeRotation = connection.relativeRotation ?? [0, 0, 0];
+      const relativeRotation = sanitizeTuple3(connection.relativeRotation, [0, 0, 0]);
       const rotation = composeEulerRotations(parentRot, relativeRotation);
 
       synchronized.set(connection.childId, {
@@ -491,14 +577,21 @@ export function syncAssemblyTransforms(
       });
       applyChildren(connection.childId);
     }
+
+    activeStack.delete(parentId);
   };
 
-  for (const part of synchronized.values()) {
-    const isChild = connections.some(
-      (connection) =>
-        (connection.childId ?? connection.targetId) === part.id
-    );
-    if (!isChild) applyChildren(part.id);
+  for (const partId of orderedIds) {
+    if (!claimedChildren.has(partId)) {
+      applyChildren(partId);
+    }
+  }
+
+  // Ensure pure cyclic subgraphs (if passed prior to sanitization) are still traversed deterministically.
+  for (const partId of orderedIds) {
+    if (!visited.has(partId)) {
+      applyChildren(partId);
+    }
   }
 
   return parts.map((part) => synchronized.get(part.id) ?? part);

@@ -1,4 +1,5 @@
 import type { RobotControlApi, RobotControlRoutine } from "../types/control.types";
+import type { SimulationWorld } from "../../simulation/logic/simulationWorld";
 import type { SensorDescriptor } from "../types/sensor.types";
 import type {
   ProgramInstruction,
@@ -358,6 +359,105 @@ interface ExecutionFrame {
 
 const MAX_TRACE_HISTORY = 40;
 
+const compiledVisualProgramSignatures = new WeakMap<RobotControlRoutine, string>();
+
+/**
+ * Produces a canonical structural signature for a VisualRobotProgram's executable content
+ * (`id` and `instructions`), ignoring display-only metadata like `name` or `updatedAtIso`.
+ */
+export function getVisualProgramSignature(program: VisualRobotProgram): string {
+  return JSON.stringify({
+    id: program.id,
+    instructions: program.instructions,
+  });
+}
+
+export function isCompiledVisualProgramRoutine(
+  routine: RobotControlRoutine | null | undefined
+): boolean {
+  return Boolean(routine && compiledVisualProgramSignatures.has(routine));
+}
+
+export function doesRoutineMatchVisualProgram(
+  routine: RobotControlRoutine | null | undefined,
+  program: VisualRobotProgram
+): boolean {
+  if (!routine) return false;
+  const sig = compiledVisualProgramSignatures.get(routine);
+  return sig !== undefined && sig === getVisualProgramSignature(program);
+}
+
+/** Runs `program` from the beginning after compiling a fresh routine into `world`. */
+export function runVisualProgramRoutine(
+  world: SimulationWorld,
+  program: VisualRobotProgram,
+  onTrace?: (trace: VisualProgramExecutionTrace) => void
+): boolean {
+  const routine = compileVisualProgramToRoutine(program, onTrace);
+  world.setProgramRoutine(routine);
+  return world.startProgram();
+}
+
+/**
+ * Steps the active compiled routine once. Reuses existing VM state if `world` already holds
+ * a non-idle routine matching `program` (e.g. after switching views and returning).
+ */
+export function stepOrResumeVisualProgram(
+  world: SimulationWorld,
+  program: VisualRobotProgram,
+  onTrace?: (trace: VisualProgramExecutionTrace) => void
+) {
+  const activeRoutine = world.getActiveRoutine();
+  const status = world.getControlState().programStatus;
+  if (!doesRoutineMatchVisualProgram(activeRoutine, program) || status === "idle") {
+    const routine = compileVisualProgramToRoutine(program, onTrace);
+    world.setProgramRoutine(routine);
+  }
+  return world.stepProgram();
+}
+
+/** Stops the active program on `world` while preserving its execution trace snapshot. */
+export function stopVisualProgramRoutine(
+  world: SimulationWorld,
+  onTrace?: (trace: VisualProgramExecutionTrace) => void
+): void {
+  world.stopProgram();
+  const updatedTrace = world.getControlState().executionTrace;
+  if (updatedTrace) {
+    onTrace?.(updatedTrace);
+  }
+}
+
+/** Resets `world` simulation state and clears visual execution trace cleanly. */
+export function resetVisualProgramSession(
+  world: SimulationWorld,
+  onTrace?: (trace: VisualProgramExecutionTrace) => void
+): void {
+  world.reset();
+  onTrace?.(EMPTY_VISUAL_TRACE);
+}
+
+/**
+ * Invalidates the active compiled visual routine on `world` whenever its executable source
+ * (`id` / `instructions`) no longer matches `program`.
+ */
+export function invalidateStaleVisualProgramRoutine(
+  world: SimulationWorld,
+  program: VisualRobotProgram,
+  onTrace?: (trace: VisualProgramExecutionTrace) => void
+): boolean {
+  const activeRoutine = world.getActiveRoutine();
+  if (
+    isCompiledVisualProgramRoutine(activeRoutine) &&
+    !doesRoutineMatchVisualProgram(activeRoutine, program)
+  ) {
+    world.setProgramRoutine(null);
+    onTrace?.(EMPTY_VISUAL_TRACE);
+    return true;
+  }
+  return false;
+}
+
 function formatInstructionTitle(instr: ProgramInstruction): string {
   switch (instr.kind) {
     case "drive":
@@ -554,6 +654,34 @@ export function compileVisualProgramToRoutine(
     activeTimerRemaining = 0;
   };
 
+  const advanceCompletedFrames = (): "ready" | "rewound" | "done" => {
+    while (stack.length > 0) {
+      const top = stack[stack.length - 1];
+      if (top.index < top.list.length) {
+        return "ready";
+      }
+      if (top.repeatOwnerId && top.remainingRepeats && top.remainingRepeats > 1) {
+        top.remainingRepeats -= 1;
+        top.index = 0;
+        const resetIds = new Set(collectNestedIds(top.list));
+        completedIds = completedIds.filter((id) => !resetIds.has(id));
+        skippedIds = skippedIds.filter((id) => !resetIds.has(id));
+        const total = top.totalRepeats ?? top.remainingRepeats;
+        const curIter = total - top.remainingRepeats + 1;
+        repeatProgressById[top.repeatOwnerId] = {
+          currentIteration: curIter,
+          totalIterations: total,
+        };
+        return "rewound";
+      }
+      if (top.repeatOwnerId) {
+        markCompleted(top.repeatOwnerId);
+      }
+      stack.pop();
+    }
+    return "done";
+  };
+
   const MAX_INSTANT_STEPS_PER_TICK = 2000;
 
   const stepInstructionPointer = (
@@ -563,30 +691,15 @@ export function compileVisualProgramToRoutine(
     let guardSteps = 0;
     while (stack.length > 0 && guardSteps < MAX_INSTANT_STEPS_PER_TICK) {
       guardSteps += 1;
-      const top = stack[stack.length - 1];
-
-      if (top.index >= top.list.length) {
-        if (top.repeatOwnerId && top.remainingRepeats && top.remainingRepeats > 1) {
-          top.remainingRepeats -= 1;
-          top.index = 0;
-          const resetIds = new Set(collectNestedIds(top.list));
-          completedIds = completedIds.filter((id) => !resetIds.has(id));
-          skippedIds = skippedIds.filter((id) => !resetIds.has(id));
-          const total = top.totalRepeats ?? top.remainingRepeats;
-          const curIter = total - top.remainingRepeats + 1;
-          repeatProgressById[top.repeatOwnerId] = {
-            currentIteration: curIter,
-            totalIterations: total,
-          };
-          continue;
-        }
-        if (top.repeatOwnerId) {
-          markCompleted(top.repeatOwnerId);
-        }
-        stack.pop();
+      const frameStatus = advanceCompletedFrames();
+      if (frameStatus === "done") {
+        return "done";
+      }
+      if (frameStatus === "rewound") {
         continue;
       }
 
+      const top = stack[stack.length - 1];
       const instr = top.list[top.index];
       switch (instr.kind) {
         case "drive": {
@@ -844,7 +957,7 @@ export function compileVisualProgramToRoutine(
     return "done";
   };
 
-  return {
+  const routine: RobotControlRoutine = {
     id: program.id,
     name: program.name,
     description: `Visual routine (${program.instructions.length} top-level step${program.instructions.length === 1 ? "" : "s"})`,
@@ -872,14 +985,28 @@ export function compileVisualProgramToRoutine(
 
       if (activeTimedId !== null) {
         if (ctx.isSingleStep) {
+          const finishedInstr = activeTimedInstr;
           finishActiveTimedBlock(api);
-        } else {
-          activeTimerRemaining -= ctx.dtSeconds;
-          if (activeTimerRemaining > 1e-6) {
-            return;
+          const frameState = advanceCompletedFrames();
+          if (frameState === "done") {
+            api.completeProgram();
+            emitTrace(api, null, "Routine completed");
+          } else {
+            emitTrace(
+              api,
+              null,
+              finishedInstr
+                ? `Completed ${formatInstructionTitle(finishedInstr)}`
+                : "Completed timed instruction"
+            );
           }
-          finishActiveTimedBlock(api);
+          return;
         }
+        activeTimerRemaining -= ctx.dtSeconds;
+        if (activeTimerRemaining > 1e-6) {
+          return;
+        }
+        finishActiveTimedBlock(api);
       }
 
       const outcome = stepInstructionPointer(api, Boolean(ctx.isSingleStep));
@@ -889,8 +1016,19 @@ export function compileVisualProgramToRoutine(
       }
     },
     onStop: (api) => {
-      resetVm();
-      emitTrace(api, null, "Program stopped");
+      stack = [];
+      activeTimerRemaining = 0;
+      activeTimedId = null;
+      activeTimedInstr = null;
+      activeTimedMotors = null;
+      currentLeft = 0;
+      currentRight = 0;
+      emitTrace(api, null, "Stopped by user");
     },
   };
+  compiledVisualProgramSignatures.set(
+    routine,
+    getVisualProgramSignature(program)
+  );
+  return routine;
 }

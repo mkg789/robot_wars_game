@@ -2,7 +2,8 @@ import { Euler, Quaternion, Vector3 } from "three";
 import { beforeEach, describe, expect, it } from "vitest";
 import { useRobotStore } from "../../../store/robotStore";
 import { computeAssemblyFootprintDimensions } from "../../simulation/logic/simulationAssembly";
-import { computeObbOverlapDepth3D } from "./assemblyValidation";
+import { computeObbOverlapDepth3D, validateRobotAssembly } from "./assemblyValidation";
+import { sanitizeAssemblyGraph, syncAssemblyTransforms } from "./assemblyGraphSanitizer";
 import { buildCustomCollisionConfig, resolveImportedEngineeringProperties } from "./customCollision";
 import { getMeshAssetRecord, registerParsedStlAsset, releaseMeshAsset } from "./meshAssetRegistry";
 import {
@@ -287,5 +288,275 @@ describe("Stage B: Geometry & Assembly Integrity (CF-3, HP-2, CF-2)", () => {
     expect(useRobotStore.getState().undo()).toBe(true);
     expect(useRobotStore.getState().parts.some((p) => p.id === "foundation-chassis")).toBe(true);
     expect(useRobotStore.getState().stage).toBe("battery");
+  });
+
+  it("F4: keeps updatePartTransform, Z-up flush mounting, positionOffset, and single-box collision proxies synchronized", () => {
+    const store = useRobotStore.getState();
+    store.setFoundationOptions({ includeTopPlate: false });
+    useRobotStore.getState().confirmFoundation();
+
+    // Create a CAD Z-up plate: 200mm (X) x 400mm (Y) x 40mm (Z) -> rotated -90 deg X becomes 0.20 (X) x 0.04 (Y) x 0.40 (Z)!
+    const plateBuf = buildBinaryStlBuffer(makeBoxTriangles(200, 400, 40));
+    const parsedPlate = parseStlArrayBuffer(plateBuf, "cad-zup-plate.stl");
+    const rec = registerParsedStlAsset(parsedPlate);
+    const zUpToYUp: [number, number, number] = [-Math.PI / 2, 0, 0];
+
+    const initialTransform = {
+      unit: "mm" as const,
+      unitConfirmed: true,
+      scaleMode: "uniform" as const,
+      uniformScale: 1,
+      nonUniformScale: [1, 1, 1] as const,
+      orientationRotation: zUpToYUp,
+      positionOffset: [0, 0, 0] as const,
+    };
+    const eng = resolveImportedEngineeringProperties({
+      inspection: parsedPlate.inspection,
+      transform: initialTransform,
+      materialId: "aluminum-6061",
+      massMode: "estimated-density",
+      centerOfMassMode: "calculated",
+      inertiaMode: "calculated",
+    });
+    const col = buildCustomCollisionConfig({
+      mode: "multi-box",
+      extents: [0.2, 0.4, 0.04],
+      assetId: rec.assetId,
+    });
+
+    const stlId = store.importStructuralStl({
+      assetId: rec.assetId,
+      fileName: "cad-zup-plate.stl",
+      inspection: parsedPlate.inspection,
+      transform: initialTransform,
+      engineering: eng,
+      collision: col,
+      parentId: "foundation-chassis",
+      parentInterfaceId: "foundation-top-center",
+    })!;
+    releaseMeshAsset(rec.assetId);
+
+    const chassis = useRobotStore.getState().parts.find((p) => p.id === "foundation-chassis")!;
+    const chassisTopY = chassis.position[1] + chassis.size[1] * 0.5;
+    const mountedPlate = useRobotStore.getState().parts.find((p) => p.id === stlId)!;
+
+    // 1. Z-Up -> Y-Up mounted STL rests strictly flush on chassis top (world height = 0.04 -> center at +0.02, NOT unrotated +0.20!)
+    expect(mountedPlate.position[1] - chassisTopY).toBeCloseTo(0.02, 4);
+
+    // 2. updatePartTransform synchronizes meshTransform.orientationRotation, and updateImportedPartConfiguration preserves it
+    const rotatedPose: [number, number, number] = [0, 0.75, 0];
+    useRobotStore.getState().updatePartTransform(stlId, mountedPlate.position, rotatedPose);
+    expect(
+      useRobotStore.getState().parts.find((p) => p.id === stlId)!.meshTransform!.orientationRotation
+    ).toEqual(rotatedPose);
+
+    // Switch collision mode from "multi-box" -> "single-box" EVEN WITH stale boxes passed from UI
+    const currentPlate = useRobotStore.getState().parts.find((p) => p.id === stlId)!;
+    useRobotStore.getState().updateImportedPartConfiguration(stlId, {
+      engineering: { materialId: "steel-mild", massMode: "estimated-density" },
+      collision: {
+        ...currentPlate.collisionConfig!,
+        mode: "single-box",
+      },
+    });
+    const afterSwitch = useRobotStore.getState().parts.find((p) => p.id === stlId)!;
+    expect(afterSwitch.rotation![0]).toBeCloseTo(rotatedPose[0], 5);
+    expect(afterSwitch.rotation![1]).toBeCloseTo(rotatedPose[1], 5);
+    expect(afterSwitch.rotation![2]).toBeCloseTo(rotatedPose[2], 5);
+    expect(afterSwitch.meshTransform!.orientationRotation[0]).toBeCloseTo(rotatedPose[0], 5);
+    expect(afterSwitch.meshTransform!.orientationRotation[1]).toBeCloseTo(rotatedPose[1], 5);
+    expect(afterSwitch.meshTransform!.orientationRotation[2]).toBeCloseTo(rotatedPose[2], 5);
+    expect(afterSwitch.collisionConfig!.mode).toBe("single-box");
+    expect(afterSwitch.collisionConfig!.boxes).toHaveLength(1);
+    expect(afterSwitch.collisionConfig!.boxes[0].id).toBe("proxy-primary-box");
+    expect(afterSwitch.collisionConfig!.boxes[0].size[0]).toBeCloseTo(0.2, 4);
+    expect(afterSwitch.collisionConfig!.boxes[0].size[1]).toBeCloseTo(0.4, 4);
+
+    // 3. updatePartSize and transform.positionOffset updates synchronize single-box collision proxy and position cleanly
+    useRobotStore.getState().updatePartSize(stlId, [0.4, 0.8, 0.08]);
+    const afterResize = useRobotStore.getState().parts.find((p) => p.id === stlId)!;
+    expect(afterResize.collisionConfig!.boxes[0].size[0]).toBeCloseTo(0.4, 4);
+    expect(afterResize.collisionConfig!.boxes[0].size[1]).toBeCloseTo(0.8, 4);
+    expect(afterResize.collisionConfig!.boxes[0].size[2]).toBeCloseTo(0.08, 4);
+
+    const posBeforeOffset = [...afterResize.position] as [number, number, number];
+    useRobotStore.getState().updateImportedPartConfiguration(stlId, {
+      transform: { positionOffset: [0.15, 0.05, -0.1] },
+    });
+    const afterOffset = useRobotStore.getState().parts.find((p) => p.id === stlId)!;
+    expect(afterOffset.position[0]).toBeCloseTo(posBeforeOffset[0] + 0.15, 4);
+    expect(afterOffset.position[1]).toBeCloseTo(posBeforeOffset[1] + 0.05, 4);
+    expect(afterOffset.position[2]).toBeCloseTo(posBeforeOffset[2] - 0.1, 4);
+  });
+
+  it("F5: reports multi-node cycles, graph integrity violations, and handles malformed graphs without breaking transform sync", () => {
+    const store = useRobotStore.getState();
+    store.confirmFoundation();
+    const state = useRobotStore.getState();
+    const baseChassis = state.parts.find((p) => p.id === "foundation-chassis")!;
+    const foundation = { ...state.foundation!, confirmed: true };
+
+    const makePart = (id: string, name: string, pos: [number, number, number]) => ({
+      id,
+      name,
+      type: "Structural Block" as const,
+      position: pos,
+      rotation: [0, 0, 0] as [number, number, number],
+      size: [0.2, 0.2, 0.2] as [number, number, number],
+      color: "#94a3b8",
+      mass: 0.5,
+      massKg: 0.5,
+      geometry: { shape: "box" as const, length: 0.2, height: 0.2, width: 0.2 },
+    });
+
+    // 1. Three-node cycle A -> B -> C -> A plus downstream branch C -> D
+    const partA = { ...makePart("cyc-a", "Cycle Beam A", [0.4, 0.4, 0]), parentAttachmentId: "c-ca" };
+    const partB = { ...makePart("cyc-b", "Cycle Beam B", [0.4, 0.6, 0]), parentAttachmentId: "c-ab" };
+    const partC = { ...makePart("cyc-c", "Cycle Beam C", [0.4, 0.8, 0]), parentAttachmentId: "c-bc" };
+    const partD = { ...makePart("leaf-d", "Branch Leaf D", [0.4, 1.0, 0]), parentAttachmentId: "c-cd" };
+
+    const cycleConnections = [
+      {
+        id: "c-ab",
+        sourceId: "cyc-a",
+        targetId: "cyc-b",
+        parentId: "cyc-a",
+        childId: "cyc-b",
+        parentMountPointId: "mount-top",
+        childMountPointId: "mount-bottom",
+        relativePosition: [0, 0.2, 0] as [number, number, number],
+        relativeRotation: [0, 0, 0] as [number, number, number],
+        type: "Mechanical" as const,
+      },
+      {
+        id: "c-bc",
+        sourceId: "cyc-b",
+        targetId: "cyc-c",
+        parentId: "cyc-b",
+        childId: "cyc-c",
+        parentMountPointId: "mount-top",
+        childMountPointId: "mount-bottom",
+        relativePosition: [0, 0.2, 0] as [number, number, number],
+        relativeRotation: [0, 0, 0] as [number, number, number],
+        type: "Mechanical" as const,
+      },
+      {
+        id: "c-ca",
+        sourceId: "cyc-c",
+        targetId: "cyc-a",
+        parentId: "cyc-c",
+        childId: "cyc-a",
+        parentMountPointId: "mount-top",
+        childMountPointId: "mount-bottom",
+        relativePosition: [0, -0.4, 0] as [number, number, number],
+        relativeRotation: [0, 0, 0] as [number, number, number],
+        type: "Mechanical" as const,
+      },
+      {
+        id: "c-cd",
+        sourceId: "cyc-c",
+        targetId: "leaf-d",
+        parentId: "cyc-c",
+        childId: "leaf-d",
+        parentMountPointId: "mount-top",
+        childMountPointId: "mount-bottom",
+        relativePosition: [0, 0.2, 0] as [number, number, number],
+        relativeRotation: [0, 0, 0] as [number, number, number],
+        type: "Mechanical" as const,
+      },
+    ];
+
+    const cycleReport = validateRobotAssembly({
+      parts: [baseChassis, partA, partB, partC, partD],
+      connections: cycleConnections,
+      foundation: { ...foundation, includeTopPlate: false, includeFrontCover: false },
+    });
+    const cycleDiags = cycleReport.errors.filter((d) => d.code === "circular-attachment");
+    expect(cycleDiags).toHaveLength(1);
+    expect(cycleDiags[0].message).toContain("Cycle Beam A");
+    expect(cycleDiags[0].message).toContain("Cycle Beam B");
+    expect(cycleDiags[0].message).toContain("Cycle Beam C");
+    expect(cycleReport.diagnosticsByPartId["cyc-a"]?.some((d) => d.code === "circular-attachment")).toBe(true);
+    expect(cycleReport.diagnosticsByPartId["cyc-b"]?.some((d) => d.code === "circular-attachment")).toBe(true);
+    expect(cycleReport.diagnosticsByPartId["cyc-c"]?.some((d) => d.code === "circular-attachment")).toBe(true);
+    expect(cycleReport.diagnosticsByPartId["leaf-d"]?.some((d) => d.code === "circular-attachment")).toBe(false);
+
+    // 2. syncAssemblyTransforms breaks cycles defensively and never silently skips cyclic subgraphs
+    const syncedCycle = syncAssemblyTransforms([baseChassis, partA, partB, partC, partD], cycleConnections);
+    const syncedD = syncedCycle.find((p) => p.id === "leaf-d")!;
+    expect(syncedD.position[1]).toBeCloseTo(1.0, 4);
+
+    // 3. Graph integrity checks: multi-parent, mismatched parentAttachmentId, root parenting, foundation flag mismatch
+    const parent1 = makePart("p1", "Parent One", [0, 0.4, 0]);
+    const parent2 = makePart("p2", "Parent Two", [0.3, 0.4, 0]);
+    const multiChild = { ...makePart("mc", "Multi Child", [0, 0.6, 0]), parentAttachmentId: "other-conn-id" };
+    const integrityReport = validateRobotAssembly({
+      parts: [{ ...baseChassis, parentAttachmentId: "illegal-root-att" }, parent1, parent2, multiChild],
+      connections: [
+        {
+          id: "c-p1-mc",
+          sourceId: "p1",
+          targetId: "mc",
+          parentId: "p1",
+          childId: "mc",
+          parentMountPointId: "mount-top",
+          childMountPointId: "mount-bottom",
+          relativePosition: [0, 0.2, 0],
+          relativeRotation: [0, 0, 0],
+          type: "Mechanical",
+        },
+        {
+          id: "c-p2-mc",
+          sourceId: "p2",
+          targetId: "mc",
+          parentId: "p2",
+          childId: "mc",
+          parentMountPointId: "mount-top",
+          childMountPointId: "mount-bottom",
+          relativePosition: [0, 0.2, 0],
+          relativeRotation: [0, 0, 0],
+          type: "Mechanical",
+        },
+      ],
+      foundation: { ...foundation, includeTopPlate: true, includeFrontCover: false },
+    });
+    expect(integrityReport.errors.some((d) => d.id === "foundation-top-plate-flag-mismatch")).toBe(true);
+    expect(integrityReport.errors.some((d) => d.id === "root-foundation-parented")).toBe(true);
+    expect(integrityReport.errors.some((d) => d.id === "duplicate-parent-mc")).toBe(true);
+    expect(integrityReport.errors.some((d) => d.id === "missing-parent-mc")).toBe(true);
+
+    // 4. sanitizeAssemblyGraph enforces root non-parenting, clears cycle & multi-parent, and aligns foundation flags
+    const sanitized = sanitizeAssemblyGraph({
+      parts: [{ ...baseChassis, parentAttachmentId: "illegal-root-att" }, partA, partB, partC, partD],
+      connections: [
+        ...cycleConnections,
+        {
+          id: "illegal-root-att",
+          sourceId: "cyc-a",
+          targetId: "foundation-chassis",
+          parentId: "cyc-a",
+          childId: "foundation-chassis",
+          parentMountPointId: "mount-top",
+          childMountPointId: "mount-bottom",
+          relativePosition: [0, 0, 0],
+          relativeRotation: [0, 0, 0],
+          type: "Mechanical",
+        },
+      ],
+      electricalConnections: [],
+      foundation: { ...foundation, includeTopPlate: true, includeFrontCover: false },
+      foundationId: "foundation-chassis",
+      drivetrain: state.drivetrain,
+      hiddenPartIds: [],
+      selectedId: "cyc-a",
+      selectedWheelMotorId: null,
+      selectedElectricalConnectionId: null,
+      selectedElectricalPinId: null,
+    });
+    expect(sanitized.parts.find((p) => p.id === "foundation-chassis")!.parentAttachmentId).toBeUndefined();
+    expect(sanitized.connections.some((c) => c.id === "c-ca")).toBe(false);
+    expect(sanitized.connections.some((c) => c.id === "illegal-root-att")).toBe(false);
+    expect(sanitized.parts.find((p) => p.id === "cyc-a")!.parentAttachmentId).toBeUndefined();
+    expect(sanitized.foundation!.includeTopPlate).toBe(false);
   });
 });

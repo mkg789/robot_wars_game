@@ -40,8 +40,10 @@ import {
   sanitizeAssemblyGraph,
   syncAssemblyTransforms,
 } from "../features/robot-builder/logic/assemblyGraphSanitizer";
+import { toBoundingBoxExtents } from "../features/robot-builder/logic/geometryAdapters";
 export {
   collectSnapshotMeshAssetIds,
+  sanitizeAssemblyGraph,
   syncAssemblyTransforms,
 } from "../features/robot-builder/logic/assemblyGraphSanitizer";
 import type {
@@ -327,17 +329,62 @@ export function syncGeometryFromSize(
   if (isCylinder) {
     const axis =
       part.geometry?.shape === "cylinder" ? part.geometry.axis : "x";
+    const prevGeom =
+      part.geometry?.shape === "cylinder" ? part.geometry : undefined;
+    const pickRadialDiameter = (a: number, b: number) => {
+      if (
+        prevGeom &&
+        Math.abs(a - prevGeom.diameter) < 1e-6 &&
+        Math.abs(b - prevGeom.diameter) >= 1e-6
+      ) {
+        return b;
+      }
+      return a;
+    };
+
+    // Preserve canonical Wheel storage convention ([diameter, width, diameter]),
+    // while mapping general structural cylinders by axis to match toBoundingBoxExtents.
+    if (part.type === "Wheel" || part.wheelDiameter !== undefined) {
+      const diameter = pickRadialDiameter(size[0], size[2]);
+      const axialWidth = size[1];
+      return {
+        size: [diameter, axialWidth, diameter],
+        wheelDiameter: diameter,
+        wheelWidth: axialWidth,
+        geometry: {
+          shape: "cylinder",
+          diameter,
+          axialWidth,
+          axis,
+        },
+        ...(syncedEngineeringSpec ? { engineeringSpec: syncedEngineeringSpec } : {}),
+      };
+    }
+
+    let diameter: number;
+    let axialWidth: number;
+    if (axis === "x") {
+      axialWidth = size[0];
+      diameter = pickRadialDiameter(size[1], size[2]);
+    } else if (axis === "z") {
+      axialWidth = size[2];
+      diameter = pickRadialDiameter(size[0], size[1]);
+    } else {
+      axialWidth = size[1];
+      diameter = pickRadialDiameter(size[0], size[2]);
+    }
+
+    const geometry: ComponentGeometry = {
+      shape: "cylinder",
+      diameter,
+      axialWidth,
+      axis,
+    };
+
+    const syncedExtents = toBoundingBoxExtents(geometry);
     return {
-      size,
-      ...(part.type === "Wheel" || part.wheelDiameter !== undefined
-        ? { wheelDiameter: size[0], wheelWidth: size[1] }
-        : {}),
-      geometry: {
-        shape: "cylinder",
-        diameter: size[0],
-        axialWidth: size[1],
-        axis,
-      },
+      size: [syncedExtents[0], syncedExtents[1], syncedExtents[2]],
+      geometry,
       ...(syncedEngineeringSpec ? { engineeringSpec: syncedEngineeringSpec } : {}),
     };
   }
@@ -360,17 +407,23 @@ export function syncSizeFromGeometry(
 ): Pick<RobotPart, "size" | "geometry"> &
   Partial<Pick<RobotPart, "wheelDiameter" | "wheelWidth" | "engineeringSpec">> {
   if (geometry.shape === "cylinder") {
-    const size: [number, number, number] = [
-      geometry.diameter,
-      geometry.axialWidth,
-      geometry.diameter,
-    ];
+    if (part.type === "Wheel" || part.wheelDiameter !== undefined) {
+      const size: [number, number, number] = [
+        geometry.diameter,
+        geometry.axialWidth,
+        geometry.diameter,
+      ];
+      return {
+        geometry,
+        size,
+        wheelDiameter: geometry.diameter,
+        wheelWidth: geometry.axialWidth,
+      };
+    }
+    const syncedExtents = toBoundingBoxExtents(geometry);
     return {
       geometry,
-      size,
-      ...(part.type === "Wheel" || part.wheelDiameter !== undefined
-        ? { wheelDiameter: geometry.diameter, wheelWidth: geometry.axialWidth }
-        : {}),
+      size: [syncedExtents[0], syncedExtents[1], syncedExtents[2]],
     };
   }
 
@@ -605,7 +658,7 @@ export function preserveMountedComponents(
       part.type !== "Battery" &&
       part.type !== "Controller"
   );
-  const rebuiltParts = [
+  return [
     ...patchedFoundationParts,
     ...positionedMotors,
     ...structuralMotors,
@@ -614,32 +667,6 @@ export function preserveMountedComponents(
     ...(positionedController ? [positionedController] : []),
     ...existingCustomStructural,
   ];
-  const existingBatteryIds = new Set(existingBatteries.map((part) => part.id));
-  const existingControllerIds = new Set(
-    existingControllers.map((part) => part.id)
-  );
-  const connectionsWithoutRemovedComponents = connections.filter(
-    (connection) => {
-      const touchesBatteryOrController =
-        existingBatteryIds.has(connection.parentId) ||
-        existingBatteryIds.has(connection.childId) ||
-        existingControllerIds.has(connection.parentId) ||
-        existingControllerIds.has(connection.childId);
-      return (
-        !touchesBatteryOrController ||
-        (positionedBattery !== null &&
-          connection.id === battery?.connection?.id) ||
-        (positionedController !== null &&
-          connection.id === controller?.connection?.id)
-      );
-    }
-  );
-  const rebuiltConnections = remapFoundationConnections(
-    connectionsWithoutRemovedComponents,
-    rebuiltParts,
-    foundation
-  );
-  return syncAssemblyTransforms(rebuiltParts, rebuiltConnections);
 }
 
 export function remapFoundationConnections(
@@ -769,9 +796,8 @@ export function finalizeFoundationRebuild(
     preservedParts,
     foundation
   );
-  const syncedParts = syncAssemblyTransforms(preservedParts, remappedConnections);
-  return sanitizeAssemblyGraph({
-    parts: syncedParts,
+  const sanitized = sanitizeAssemblyGraph({
+    parts: preservedParts,
     connections: remappedConnections,
     electricalConnections: state.electricalConnections,
     foundation,
@@ -783,6 +809,10 @@ export function finalizeFoundationRebuild(
     selectedElectricalConnectionId: state.selectedElectricalConnectionId,
     selectedElectricalPinId: state.selectedElectricalPinId,
   });
+  return {
+    ...sanitized,
+    parts: syncAssemblyTransforms(sanitized.parts, sanitized.connections),
+  };
 }
 
 export function createStructuralPartFromDefinition(
@@ -855,13 +885,13 @@ export function tupleNearlyEqual(
 }
 
 /**
- * Restore an assembly history snapshot into sanitized store fields.
+ * Restore an assembly history snapshot into sanitized, transform-synchronized store fields.
  */
 export function restoreAssemblySnapshot(
   state: RobotStore,
   snapshot: AssemblyHistorySnapshot
 ) {
-  return sanitizeAssemblyGraph({
+  const sanitized = sanitizeAssemblyGraph({
     parts: structuredClone(snapshot.parts),
     connections: structuredClone(snapshot.connections),
     electricalConnections: structuredClone(snapshot.electricalConnections ?? []),
@@ -875,6 +905,10 @@ export function restoreAssemblySnapshot(
     selectedElectricalPinId: state.selectedElectricalPinId,
     stage: snapshot.stage ?? state.stage,
   });
+  return {
+    ...sanitized,
+    parts: syncAssemblyTransforms(sanitized.parts, sanitized.connections),
+  };
 }
 
 /**

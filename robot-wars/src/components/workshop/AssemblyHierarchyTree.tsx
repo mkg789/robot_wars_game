@@ -40,9 +40,16 @@ export function AssemblyHierarchyTree({
   onToggleVisibility,
   onDeletePart,
 }: AssemblyHierarchyTreeProps) {
-  const renderHierarchy = (partId: string, depth = 0): ReactNode => {
+  const renderHierarchy = (
+    partId: string,
+    depth = 0,
+    ancestors: ReadonlySet<string> = new Set()
+  ): ReactNode => {
+    if (ancestors.has(partId)) return null;
     const part = parts.find((item) => item.id === partId);
     if (!part) return null;
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(partId);
     const children = childrenByParent.get(part.id) ?? [];
     const hasChildren = children.length > 0;
     const expanded = hasChildren && !collapsedPartIds.has(part.id);
@@ -161,7 +168,7 @@ export function AssemblyHierarchyTree({
           )}
         </div>
         {expanded &&
-          children.map((child) => renderHierarchy(child.id, depth + 1))}
+          children.map((child) => renderHierarchy(child.id, depth + 1, nextAncestors))}
       </div>
     );
   };

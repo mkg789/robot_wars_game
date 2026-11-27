@@ -425,4 +425,191 @@ describe("Phase 5.3: Power Distribution & Voltage Regulation", () => {
       "dropout"
     );
   });
+
+  it("F3: normalizes reversed (input -> output) power wires consistently across compatibility, validation, and power propagation", () => {
+    const store = useRobotStore.getState();
+    const batId = store.installElectricalCatalogueItem("elec-lipo-3s")!; // 9.0-12.6V
+    const swId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-power-switch")!;
+    const buckId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-buck-5v")!; // 7-35V -> 5.0V
+    const servoId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-servo-actuator")!; // 4.8-6.0V, 0.35A
+    const sonarId = useRobotStore
+      .getState()
+      .installElectricalCatalogueItem("elec-hcsr04-ultrasonic")!; // 4.5-5.5V
+
+    const addConn = useRobotStore.getState().addElectricalConnection;
+    // Wire valid Servo chain strictly in REVERSED endpoint order: Servo -> Buck -> Switch -> Battery
+    addConn({
+      sourcePartId: servoId,
+      sourceInterfaceId: "servo-pwr-in",
+      targetPartId: buckId,
+      targetInterfaceId: "elec-buck-5v-pwr-out",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: buckId,
+      sourceInterfaceId: "elec-buck-5v-pwr-in",
+      targetPartId: swId,
+      targetInterfaceId: "sw-out",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: swId,
+      sourceInterfaceId: "sw-in",
+      targetPartId: batId,
+      targetInterfaceId: "bat-power-out",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: batId,
+      sourceInterfaceId: "bat-gnd",
+      targetPartId: buckId,
+      targetInterfaceId: "elec-buck-5v-gnd",
+      connectionType: "ground",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: buckId,
+      sourceInterfaceId: "elec-buck-5v-gnd",
+      targetPartId: servoId,
+      targetInterfaceId: "servo-gnd",
+      connectionType: "ground",
+      provenance: { method: "user-supplied" },
+    });
+
+    const okState = useRobotStore.getState();
+    const okReport = validateElectricalAssembly({
+      parts: okState.parts,
+      electricalConnections: okState.electricalConnections,
+    });
+    expect(okReport.isValid).toBe(true);
+    expect(okReport.powerAnalysis?.consumerStates[servoId]?.energized).toBe(true);
+    expect(okReport.powerAnalysis?.consumerStates[servoId]?.deliveredVoltageV?.nominalV).toBe(5);
+    const batRail = okReport.powerAnalysis?.rails.find((r) => r.sourcePartId === batId);
+    expect(batRail?.totalKnownLoadA).toBeGreaterThan(0.1);
+
+    // Separate reversed incompatible wire: 5V Sonar input -> 12.6V Battery output must report OVERVOLTAGE on Sonar (not Battery!)
+    const badWireId = useRobotStore.getState().addElectricalConnection({
+      sourcePartId: sonarId,
+      sourceInterfaceId: "elec-hcsr04-ultrasonic-pwr-in",
+      targetPartId: batId,
+      targetInterfaceId: "bat-power-out",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    })!;
+
+    const mixedState = useRobotStore.getState();
+    const mixedReport = validateElectricalAssembly({
+      parts: mixedState.parts,
+      electricalConnections: mixedState.electricalConnections,
+    });
+    expect(mixedReport.isValid).toBe(false);
+    expect(mixedReport.connectionResults[badWireId].reason).toContain("Overvoltage hazard");
+    const incompatDiag = mixedReport.diagnostics.find((d) => d.connectionId === badWireId)!;
+    expect(incompatDiag.partId).toBe(sonarId);
+    expect(incompatDiag.relatedPartId).toBe(batId);
+    // Fault on Sonar branch does NOT poison healthy Switch -> Buck -> Servo branch off the same Battery
+    expect(mixedReport.powerAnalysis?.consumerStates[sonarId]?.hasPathFault).toBe(true);
+    expect(mixedReport.powerAnalysis?.consumerStates[servoId]?.hasPathFault).toBe(false);
+    expect(mixedReport.powerAnalysis?.consumerStates[servoId]?.energized).toBe(true);
+  });
+
+  it("F3: detects regulator Vin_max overvoltage via pass-throughs and propagates regulator input faults without killing healthy siblings", () => {
+    const store = useRobotStore.getState();
+    const bat6sId = store.installElectricalCatalogueItem("elec-lipo-3s")!;
+    // Configure battery as high-voltage 24V source (> 15V regulator inputMaxV)
+    useRobotStore.getState().updatePartElectricalProperties(bat6sId, {
+      interfaces: [
+        {
+          interfaceId: "bat-power-out",
+          name: "24V Out",
+          role: "power-output",
+          voltageSpec: { nominalV: 22.2, minV: 19.0, maxV: 25.2 },
+          currentSpec: { maxContinuousA: 40 },
+          pinIds: ["pin-bat-pos"],
+          provenance: { method: "user-supplied" },
+        },
+        {
+          interfaceId: "bat-gnd",
+          name: "GND",
+          role: "ground",
+          pinIds: ["pin-bat-neg"],
+          provenance: { method: "user-supplied" },
+        },
+      ],
+    });
+    const pdbId = useRobotStore.getState().installElectricalCatalogueItem("elec-pdb-xt60")!;
+    const reg7805Id = useRobotStore.getState().installElectricalCatalogueItem("elec-reg-7805")!; // 7-35V default -> clamp to maxV 15V
+    useRobotStore.getState().updatePartElectricalProperties(reg7805Id, {
+      driverOrRegulatorSpec: {
+        powerRole: "linear",
+        inputVoltageRangeV: { minV: 7, maxV: 15 },
+        outputVoltageRangeV: { minV: 4.8, maxV: 5.2 },
+        continuousCurrentPerChannelA: 1.0,
+        dropoutVoltageV: 2.0,
+      },
+    });
+    const badRegSonarId = useRobotStore.getState().installElectricalCatalogueItem("elec-hcsr04-ultrasonic")!;
+    // Buck 5V supports 7-35V input cleanly, so it stays healthy at 25.2V while 7805 (max 15V) faults!
+    const healthyBuckId = useRobotStore.getState().installElectricalCatalogueItem("elec-buck-5v")!;
+
+    const addConn = useRobotStore.getState().addElectricalConnection;
+    addConn({
+      sourcePartId: bat6sId,
+      sourceInterfaceId: "bat-power-out",
+      targetPartId: pdbId,
+      targetInterfaceId: "pdb-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: pdbId,
+      sourceInterfaceId: "pdb-bus-out",
+      targetPartId: reg7805Id,
+      targetInterfaceId: "elec-reg-7805-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: reg7805Id,
+      sourceInterfaceId: "elec-reg-7805-pwr-out",
+      targetPartId: badRegSonarId,
+      targetInterfaceId: "elec-hcsr04-ultrasonic-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+    addConn({
+      sourcePartId: pdbId,
+      sourceInterfaceId: "pdb-bus-out",
+      targetPartId: healthyBuckId,
+      targetInterfaceId: "elec-buck-5v-pwr-in",
+      connectionType: "power",
+      provenance: { method: "user-supplied" },
+    });
+
+    const st = useRobotStore.getState();
+    const report = validateElectricalAssembly({
+      parts: st.parts,
+      electricalConnections: st.electricalConnections,
+    });
+    expect(
+      report.diagnostics.some(
+        (d) =>
+          d.severity === "error" &&
+          d.code === "regulator-input-out-of-range" &&
+          d.partId === reg7805Id
+      )
+    ).toBe(true);
+    expect(report.powerAnalysis?.consumerStates[badRegSonarId]?.hasPathFault).toBe(true);
+    expect(report.powerAnalysis?.consumerStates[healthyBuckId]?.hasPathFault).toBe(false);
+    expect(report.powerAnalysis?.consumerStates[healthyBuckId]?.energized).toBe(true);
+  });
 });
