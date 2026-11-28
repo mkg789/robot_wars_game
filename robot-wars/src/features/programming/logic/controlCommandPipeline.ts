@@ -2,8 +2,15 @@ import { validateElectricalAssembly } from "../../electrical/logic/electricalVal
 import type { ElectricalConnection } from "../../electrical/types/electrical.types";
 import type { RobotPart } from "../../robot-builder/types/robot.types";
 import type { DrivetrainInput, SimulationRobotConfig } from "../../simulation/types/simulation.types";
+import {
+  computeDifferentialDriveTargetsFromNormalizedVelocity,
+  computeDifferentialDriveTargetsFromTwist,
+  createDifferentialDriveModel,
+} from "./differentialDriveControl";
 import type {
   CommandNormalizationResult,
+  DifferentialDriveModel,
+  DifferentialDriveResolution,
   MotorHardwareBinding,
   NormalizedDriveTarget,
   RobotActuatorCommand,
@@ -217,17 +224,28 @@ export function applyCommandToDriveTarget(params: {
   readonly command: RobotActuatorCommand;
   readonly binding: MotorHardwareBinding;
   readonly timestampSeconds: number;
+  readonly differentialModel?: DifferentialDriveModel;
+  readonly robotConfig?: SimulationRobotConfig | null;
 }): {
   readonly nextTarget: NormalizedDriveTarget;
   readonly drivetrainInput: DrivetrainInput;
   readonly result: CommandNormalizationResult;
+  readonly differentialResolution?: DifferentialDriveResolution;
 } {
-  const { current, command, binding, timestampSeconds } = params;
+  const {
+    current,
+    command,
+    binding,
+    timestampSeconds,
+    differentialModel,
+    robotConfig,
+  } = params;
   const warnings: string[] = [];
   let leftPower = current.leftPower;
   let rightPower = current.rightPower;
   let clamped = false;
   let accepted = true;
+  let differentialResolution: DifferentialDriveResolution | undefined;
 
   switch (command.kind) {
     case "stop-robot": {
@@ -281,6 +299,46 @@ export function applyCommandToDriveTarget(params: {
       }
       break;
     }
+    case "set-twist-velocity": {
+      const model =
+        differentialModel ??
+        createDifferentialDriveModel({ robotConfig, binding });
+      const res = computeDifferentialDriveTargetsFromTwist({
+        model,
+        command: {
+          linearVelocityMps: command.linearVelocityMps,
+          angularVelocityRadPerSec: command.angularVelocityRadPerSec,
+        },
+        robotConfig,
+      });
+      differentialResolution = res;
+      leftPower = binding.hasLeftMotors ? res.leftThrottle : 0;
+      rightPower = binding.hasRightMotors ? res.rightThrottle : 0;
+      clamped = res.saturated;
+      accepted = res.accepted;
+      warnings.push(...res.warnings);
+      break;
+    }
+    case "set-normalized-velocity": {
+      const model =
+        differentialModel ??
+        createDifferentialDriveModel({ robotConfig, binding });
+      const res = computeDifferentialDriveTargetsFromNormalizedVelocity({
+        model,
+        command: {
+          linear: command.linear,
+          angular: command.angular,
+        },
+        robotConfig,
+      });
+      differentialResolution = res;
+      leftPower = binding.hasLeftMotors ? res.leftThrottle : 0;
+      rightPower = binding.hasRightMotors ? res.rightThrottle : 0;
+      clamped = res.saturated || res.clampedNormalizedInput;
+      accepted = res.accepted;
+      warnings.push(...res.warnings);
+      break;
+    }
     case "extensible-actuator": {
       // Reserved channel hook cleanly acknowledged without interfering with differential drive
       accepted = true;
@@ -320,5 +378,6 @@ export function applyCommandToDriveTarget(params: {
       clamped,
       warnings,
     },
+    ...(differentialResolution && { differentialResolution }),
   };
 }

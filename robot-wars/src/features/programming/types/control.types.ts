@@ -1,4 +1,5 @@
 import type { SimulationTelemetrySnapshot } from "../../simulation/types/simulationTelemetry.types";
+import type { DrivetrainType } from "../../robot-builder/types/robot.types";
 import type {
   EncoderData,
   ImuData,
@@ -23,6 +24,141 @@ export type RobotProgramStatus =
 
 export type MotorChannelTarget = "left" | "right" | "both";
 
+export interface DifferentialDriveGeometryOverride {
+  readonly trackWidthM?: number;
+  readonly wheelRadiusM?: number;
+  readonly leftWheelRadiusM?: number;
+  readonly rightWheelRadiusM?: number;
+}
+
+export interface DifferentialDriveTwistCommand {
+  /** Requested forward linear velocity in canonical meters/second (+X forward). */
+  readonly linearVelocityMps: number;
+  /** Requested yaw angular velocity in radians/second (+Y CCW, turning left). */
+  readonly angularVelocityRadPerSec: number;
+}
+
+export interface NormalizedVelocityCommand {
+  /** Normalized forward/reverse velocity request in [-1, 1]. */
+  readonly linear: number;
+  /** Normalized left(+)/right(-) turn rate request in [-1, 1]. */
+  readonly angular: number;
+}
+
+export interface DifferentialDriveSideModel {
+  readonly side: "left" | "right";
+  readonly wheelCount: number;
+  readonly wheelIds: readonly string[];
+  readonly motorIds: readonly string[];
+  /** Aggregated rolling wheel radius in meters for this side. */
+  readonly effectiveWheelRadiusM: number;
+  /** Achievable maximum synchronous wheel angular velocity in rad/s under motor/electrical limits. */
+  readonly maxWheelAngularVelocityRadPerSec: number;
+  /** Achievable maximum ground linear speed in m/s at this side's baseline. */
+  readonly maxLinearVelocityMps: number;
+  /** Sum of effective motor stall torques on this side (N·m). */
+  readonly totalStallTorqueNm: number;
+  readonly poweredMotorCount: number;
+  readonly isDrivable: boolean;
+}
+
+export interface DifferentialDriveModel {
+  readonly isValid: boolean;
+  readonly drivetrainType: DrivetrainType | "unsupported";
+  readonly trackWidthM: number;
+  readonly left: DifferentialDriveSideModel;
+  readonly right: DifferentialDriveSideModel;
+  /** Maximum symmetric straight-line speed magnitude in m/s. */
+  readonly maxLinearVelocityMps: number;
+  /** Maximum in-place yaw rate magnitude in rad/s. */
+  readonly maxAngularVelocityRadPerSec: number;
+  readonly warnings: readonly string[];
+  readonly errors: readonly string[];
+}
+
+export interface DifferentialWheelTarget {
+  readonly wheelId: string;
+  readonly motorId: string;
+  readonly side: "left" | "right";
+  readonly slotIndex: number;
+  readonly radiusM: number;
+  readonly targetAngularVelocityRadPerSec: number;
+  readonly targetLinearVelocityMps: number;
+}
+
+export interface DifferentialDriveResolution {
+  readonly accepted: boolean;
+  readonly modelValid: boolean;
+  readonly requestedLinearVelocityMps: number;
+  readonly requestedAngularVelocityRadPerSec: number;
+  readonly achievedLinearVelocityMps: number;
+  readonly achievedAngularVelocityRadPerSec: number;
+  readonly leftWheelAngularVelocityRadPerSec: number;
+  readonly rightWheelAngularVelocityRadPerSec: number;
+  readonly leftWheelLinearVelocityMps: number;
+  readonly rightWheelLinearVelocityMps: number;
+  readonly leftThrottle: number;
+  readonly rightThrottle: number;
+  readonly wheelTargets: readonly DifferentialWheelTarget[];
+  readonly saturated: boolean;
+  readonly saturationScale: number;
+  readonly clampedNormalizedInput: boolean;
+  readonly warnings: readonly string[];
+}
+
+export type OdometryStatus =
+  | "ready"
+  | "uninitialized"
+  | "unavailable-encoders"
+  | "unavailable-unpowered"
+  | "unavailable-electrical-fault"
+  | "invalid-geometry";
+
+export interface OdometryPose {
+  readonly xMeters: number;
+  readonly zMeters: number;
+  readonly headingRadians: number;
+  readonly headingDegrees: number;
+}
+
+export interface OdometryStepDelta {
+  readonly leftRadians: number;
+  readonly rightRadians: number;
+  readonly leftMeters: number;
+  readonly rightMeters: number;
+  readonly linearMeters: number;
+  readonly angularRadians: number;
+  readonly dtSeconds: number;
+}
+
+export interface OdometryVelocityEstimate {
+  readonly linearVelocityMps: number;
+  readonly angularVelocityRadPerSec: number;
+}
+
+export interface OdometryEncoderChannelSnapshot {
+  readonly encoderCount: number;
+  readonly readyCount: number;
+  readonly cumulativeRadians: number;
+}
+
+export interface DifferentialDriveOdometryState {
+  readonly isValid: boolean;
+  readonly status: OdometryStatus;
+  readonly pose: OdometryPose;
+  readonly velocity: OdometryVelocityEstimate;
+  readonly leftDistanceMeters: number;
+  readonly rightDistanceMeters: number;
+  readonly traveledDistanceMeters: number;
+  readonly leftChannel: OdometryEncoderChannelSnapshot;
+  readonly rightChannel: OdometryEncoderChannelSnapshot;
+  readonly lastStep: OdometryStepDelta;
+  readonly updateCount: number;
+  readonly timestampSeconds: number;
+  readonly warnings: readonly string[];
+  readonly error?: string;
+}
+
 export type RobotActuatorCommand =
   | {
       readonly kind: "set-motor-power";
@@ -33,6 +169,16 @@ export type RobotActuatorCommand =
       readonly kind: "set-differential-drive";
       readonly leftPower: number;
       readonly rightPower: number;
+    }
+  | {
+      readonly kind: "set-twist-velocity";
+      readonly linearVelocityMps: number;
+      readonly angularVelocityRadPerSec: number;
+    }
+  | {
+      readonly kind: "set-normalized-velocity";
+      readonly linear: number;
+      readonly angular: number;
     }
   | {
       readonly kind: "stop-motors";
@@ -105,6 +251,8 @@ export interface RobotProgramStepContext {
   };
   /** Typed simulated sensor snapshot from actual installed robot sensors. */
   readonly sensors?: RobotSensorsSnapshot;
+  /** Encoder-derived differential-drive odometry estimate (independent from ground-truth pose). */
+  readonly odometry?: DifferentialDriveOdometryState;
   /** True when invoked from single-step debugger control. */
   readonly isSingleStep?: boolean;
 }
@@ -120,6 +268,15 @@ export interface RobotControlApi {
     leftPower: number,
     rightPower: number
   ) => CommandNormalizationResult;
+  getDifferentialDriveModel: () => DifferentialDriveModel;
+  setTwistVelocity: (
+    linearVelocityMps: number,
+    angularVelocityRadPerSec: number
+  ) => DifferentialDriveResolution;
+  setNormalizedVelocity: (
+    linear: number,
+    angular: number
+  ) => DifferentialDriveResolution;
   stopMotors: (target?: MotorChannelTarget) => CommandNormalizationResult;
   stopRobot: () => CommandNormalizationResult;
   dispatchCommand: (command: RobotActuatorCommand) => CommandNormalizationResult;
@@ -134,6 +291,10 @@ export interface RobotControlApi {
     sideOrSensorId?: "left" | "right" | "average" | string
   ) => SensorReadResult<EncoderData>;
   readSensorsSnapshot: () => RobotSensorsSnapshot | null;
+  getOdometryState: () => DifferentialDriveOdometryState;
+  resetOdometry: (
+    initialPose?: Partial<Pick<OdometryPose, "xMeters" | "zMeters" | "headingRadians">>
+  ) => DifferentialDriveOdometryState;
 }
 
 export interface RobotControlRoutine {
@@ -164,7 +325,8 @@ export function buildProgramStepContext(
   telemetry: SimulationTelemetrySnapshot,
   dtSeconds: number,
   sensors?: RobotSensorsSnapshot,
-  isSingleStep = false
+  isSingleStep = false,
+  odometry?: DifferentialDriveOdometryState
 ): RobotProgramStepContext {
   return {
     timeSeconds: telemetry.timeSeconds,
@@ -192,6 +354,7 @@ export function buildProgramStepContext(
       collidedBarrierIds: telemetry.collision.collidedBarrierIds,
     },
     sensors,
+    ...(odometry && { odometry }),
     isSingleStep,
   };
 }

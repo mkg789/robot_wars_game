@@ -3,6 +3,7 @@ import type { RobotPart } from "../../robot-builder/types/robot.types";
 import type { ArenaConfig } from "../../simulation/types/arena.types";
 import type {
   DrivetrainInput,
+  RuntimeElectricalState,
   SimulationRobotConfig,
   SimulationState,
 } from "../../simulation/types/simulation.types";
@@ -12,6 +13,8 @@ import {
   NEUTRAL_NORMALIZED_TARGET,
   resolveRobotHardwareBinding,
 } from "./controlCommandPipeline";
+import { createDifferentialDriveModel } from "./differentialDriveControl";
+import { DifferentialDriveOdometryTracker } from "./differentialDriveOdometry";
 import { resolveRobotSensors } from "./sensorResolver";
 import {
   buildRobotSensorsSnapshot,
@@ -24,9 +27,14 @@ import {
 import {
   buildProgramStepContext,
   type CommandNormalizationResult,
+  type DifferentialDriveGeometryOverride,
+  type DifferentialDriveModel,
+  type DifferentialDriveOdometryState,
+  type DifferentialDriveResolution,
   type MotorChannelTarget,
   type MotorHardwareBinding,
   type NormalizedDriveTarget,
+  type OdometryPose,
   type RobotActuatorCommand,
   type RobotControlApi,
   type RobotControlRoutine,
@@ -54,6 +62,12 @@ import type { VisualProgramExecutionTrace } from "../types/programWorkspace.type
 export class RobotControlController implements RobotControlApi {
   private robotConfig: SimulationRobotConfig;
   private binding: MotorHardwareBinding;
+  private differentialModel: DifferentialDriveModel;
+  private runtimeElectricalState?: RuntimeElectricalState;
+  private batteryTerminalVoltageV?: number;
+  private geometryOverride?: DifferentialDriveGeometryOverride;
+  private lastDifferentialResolution: DifferentialDriveResolution | null = null;
+  private odometryTracker: DifferentialDriveOdometryTracker;
   private sensorDescriptors: readonly SensorDescriptor[] = [];
   private arena: ArenaConfig | null = null;
   private simState: SimulationState | null = null;
@@ -80,15 +94,39 @@ export class RobotControlController implements RobotControlApi {
     readonly electricalConnections?: readonly ElectricalConnection[];
     readonly arena?: ArenaConfig;
     readonly simState?: SimulationState;
+    readonly runtimeElectricalState?: RuntimeElectricalState;
+    readonly geometryOverride?: DifferentialDriveGeometryOverride;
   }) {
     this.robotConfig = params.robotConfig;
     this.binding = resolveRobotHardwareBinding(params);
+    this.runtimeElectricalState = params.runtimeElectricalState;
+    this.batteryTerminalVoltageV = params.simState?.batteryTerminalVoltageV;
+    this.geometryOverride = params.geometryOverride;
+    this.differentialModel = this.buildDifferentialModel();
     this.sensorDescriptors = resolveRobotSensors({
       parts: params.parts ?? [],
       electricalConnections: params.electricalConnections,
     });
     this.arena = params.arena ?? null;
     this.simState = params.simState ?? null;
+    this.odometryTracker = new DifferentialDriveOdometryTracker({
+      model: this.differentialModel,
+      initialMeasurement: {
+        descriptors: this.sensorDescriptors,
+        accumulator: this.encoderAccumulator,
+      },
+      timestampSeconds: params.simState?.timeSeconds ?? 0,
+    });
+  }
+
+  private buildDifferentialModel(): DifferentialDriveModel {
+    return createDifferentialDriveModel({
+      robotConfig: this.robotConfig,
+      runtimeElectricalState: this.runtimeElectricalState,
+      binding: this.binding,
+      geometryOverride: this.geometryOverride,
+      batteryTerminalVoltageV: this.batteryTerminalVoltageV,
+    });
   }
 
   updateHardwareContext(params: {
@@ -97,15 +135,32 @@ export class RobotControlController implements RobotControlApi {
     readonly electricalConnections?: readonly ElectricalConnection[];
     readonly trippedFuseIds?: readonly string[];
     readonly isBatteryCutoff?: boolean;
+    readonly runtimeElectricalState?: RuntimeElectricalState;
+    readonly batteryTerminalVoltageV?: number;
   }): void {
     this.robotConfig = params.robotConfig;
     this.binding = resolveRobotHardwareBinding(params);
+    if (params.runtimeElectricalState !== undefined) {
+      this.runtimeElectricalState = params.runtimeElectricalState;
+    }
+    if (params.batteryTerminalVoltageV !== undefined) {
+      this.batteryTerminalVoltageV = params.batteryTerminalVoltageV;
+    }
+    this.differentialModel = this.buildDifferentialModel();
     this.sensorDescriptors = resolveRobotSensors({
       parts: params.parts ?? [],
       electricalConnections: params.electricalConnections,
       trippedFuseIds: params.trippedFuseIds,
       isBatteryCutoff: params.isBatteryCutoff,
     });
+    this.odometryTracker.update(
+      this.differentialModel,
+      {
+        descriptors: this.sensorDescriptors,
+        accumulator: this.encoderAccumulator,
+      },
+      this.simState?.timeSeconds ?? this.latestTimeSeconds
+    );
     if (!this.binding.canDrive) {
       this.target = NEUTRAL_NORMALIZED_TARGET;
       this.pausedTarget = null;
@@ -120,6 +175,50 @@ export class RobotControlController implements RobotControlApi {
     this.arena = params.arena;
     this.simState = params.simState;
     this.encoderAccumulator = params.encoderAccumulator;
+    this.batteryTerminalVoltageV = params.simState.batteryTerminalVoltageV;
+    this.differentialModel = this.buildDifferentialModel();
+    this.odometryTracker.update(
+      this.differentialModel,
+      {
+        descriptors: this.sensorDescriptors,
+        accumulator: this.encoderAccumulator,
+      },
+      params.simState.timeSeconds
+    );
+  }
+
+  getOdometryState(): DifferentialDriveOdometryState {
+    return this.odometryTracker.getState();
+  }
+
+  resetOdometry(
+    initialPose?: Partial<Pick<OdometryPose, "xMeters" | "zMeters" | "headingRadians">>
+  ): DifferentialDriveOdometryState {
+    return this.odometryTracker.reset({
+      initialPose,
+      model: this.differentialModel,
+      initialMeasurement: {
+        descriptors: this.sensorDescriptors,
+        accumulator: this.encoderAccumulator,
+      },
+      timestampSeconds: this.simState?.timeSeconds ?? this.latestTimeSeconds,
+    });
+  }
+
+  setDifferentialGeometryOverride(
+    override?: DifferentialDriveGeometryOverride
+  ): DifferentialDriveModel {
+    this.geometryOverride = override;
+    this.differentialModel = this.buildDifferentialModel();
+    return this.differentialModel;
+  }
+
+  getDifferentialDriveModel(): DifferentialDriveModel {
+    return this.differentialModel;
+  }
+
+  getLastDifferentialDriveResolution(): DifferentialDriveResolution | null {
+    return this.lastDifferentialResolution;
   }
 
   getInstalledSensors(): readonly SensorDescriptor[] {
@@ -409,7 +508,8 @@ export class RobotControlController implements RobotControlApi {
         telemetry,
         dtSeconds,
         this.readSensorsSnapshot() ?? undefined,
-        true
+        true,
+        this.odometryTracker.getState()
       );
       this.routine.onTick(ctx, this);
     } catch (error) {
@@ -480,6 +580,20 @@ export class RobotControlController implements RobotControlApi {
     this.commandLogCount = 0;
     this.programStatus = "idle";
     this.executionTrace = null;
+    this.lastDifferentialResolution = null;
+    this.odometryTracker.reset({
+      model: this.differentialModel,
+      initialMeasurement: {
+        descriptors: this.sensorDescriptors,
+        accumulator: {
+          leftRadians: 0,
+          rightRadians: 0,
+          leftDistanceMeters: 0,
+          rightDistanceMeters: 0,
+        },
+      },
+      timestampSeconds: 0,
+    });
   }
 
   dispatchCommand(command: RobotActuatorCommand): CommandNormalizationResult {
@@ -488,11 +602,38 @@ export class RobotControlController implements RobotControlApi {
       command,
       binding: this.binding,
       timestampSeconds: this.latestTimeSeconds,
+      differentialModel: this.differentialModel,
+      robotConfig: this.robotConfig,
     });
     this.target = applied.nextTarget;
     this.lastWarnings = applied.result.warnings;
     this.commandLogCount += 1;
+    this.lastDifferentialResolution = applied.differentialResolution ?? null;
     return applied.result;
+  }
+
+  setTwistVelocity(
+    linearVelocityMps: number,
+    angularVelocityRadPerSec: number
+  ): DifferentialDriveResolution {
+    this.dispatchCommand({
+      kind: "set-twist-velocity",
+      linearVelocityMps,
+      angularVelocityRadPerSec,
+    });
+    return this.lastDifferentialResolution!;
+  }
+
+  setNormalizedVelocity(
+    linear: number,
+    angular: number
+  ): DifferentialDriveResolution {
+    this.dispatchCommand({
+      kind: "set-normalized-velocity",
+      linear,
+      angular,
+    });
+    return this.lastDifferentialResolution!;
   }
 
   setMotorPower(
@@ -565,7 +706,9 @@ export class RobotControlController implements RobotControlApi {
           const ctx = buildProgramStepContext(
             telemetry,
             dtSeconds,
-            this.readSensorsSnapshot() ?? undefined
+            this.readSensorsSnapshot() ?? undefined,
+            false,
+            this.odometryTracker.getState()
           );
           this.routine.onTick(ctx, this);
         } catch (error) {

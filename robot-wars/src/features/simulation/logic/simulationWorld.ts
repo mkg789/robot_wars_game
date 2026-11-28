@@ -17,7 +17,11 @@ import type { ElectricalConnection } from "../../electrical/types/electrical.typ
 import { RobotControlController } from "../../programming/logic/robotControlController";
 import type {
   CommandNormalizationResult,
+  DifferentialDriveModel,
+  DifferentialDriveOdometryState,
+  DifferentialDriveResolution,
   MotorChannelTarget,
+  OdometryPose,
   RobotControlApi,
   RobotControlRoutine,
   RobotProgramControllerState,
@@ -473,6 +477,8 @@ export class SimulationWorld {
       electricalConnections: this.electricalConnections,
       trippedFuseIds: elecState?.trippedFuseIds,
       isBatteryCutoff: this.runnerState.isCutoff,
+      runtimeElectricalState: elecState,
+      batteryTerminalVoltageV: this.runnerState.simulationState.batteryTerminalVoltageV,
     });
   }
 
@@ -835,6 +841,92 @@ export class SimulationWorld {
     return result;
   }
 
+  getDifferentialDriveModel(): DifferentialDriveModel {
+    return this.controlController.getDifferentialDriveModel();
+  }
+
+  getOdometryState(): DifferentialDriveOdometryState {
+    return this.controlController.getOdometryState();
+  }
+
+  resetOdometry(
+    initialPose?: Partial<Pick<OdometryPose, "xMeters" | "zMeters" | "headingRadians">>
+  ): DifferentialDriveOdometryState {
+    const state = this.controlController.resetOdometry(initialPose);
+    this.notify();
+    return state;
+  }
+
+  private createErrorVelocityResolution(
+    requestedLinearVelocityMps: number,
+    requestedAngularVelocityRadPerSec: number
+  ): DifferentialDriveResolution {
+    return {
+      accepted: false,
+      modelValid: false,
+      requestedLinearVelocityMps,
+      requestedAngularVelocityRadPerSec,
+      achievedLinearVelocityMps: 0,
+      achievedAngularVelocityRadPerSec: 0,
+      leftWheelAngularVelocityRadPerSec: 0,
+      rightWheelAngularVelocityRadPerSec: 0,
+      leftWheelLinearVelocityMps: 0,
+      rightWheelLinearVelocityMps: 0,
+      leftThrottle: 0,
+      rightThrottle: 0,
+      wheelTargets: [],
+      saturated: false,
+      saturationScale: 0,
+      clampedNormalizedInput: false,
+      warnings: ["Simulation is in error state; reset before issuing velocity commands."],
+    };
+  }
+
+  private applyVelocityResolution<T extends DifferentialDriveResolution>(
+    execute: () => T
+  ): T {
+    this.pausedByWorld = false;
+    const progStatus = this.controlController.getState().programStatus;
+    if (progStatus === "running" || progStatus === "paused") {
+      this.controlController.stopProgram();
+    }
+    if (this.controlController.getControlSource() === "manual") {
+      this.controlController.setControlSource("program");
+    }
+    this.activeControls = NEUTRAL_DRIVE_CONTROLS;
+    const result = execute();
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+    return result;
+  }
+
+  setTwistVelocity(
+    linearVelocityMps: number,
+    angularVelocityRadPerSec: number
+  ): DifferentialDriveResolution {
+    if (this.lifecycleStatus === "error") {
+      return this.createErrorVelocityResolution(0, 0);
+    }
+    return this.applyVelocityResolution(() =>
+      this.controlController.setTwistVelocity(
+        linearVelocityMps,
+        angularVelocityRadPerSec
+      )
+    );
+  }
+
+  setNormalizedVelocity(
+    linear: number,
+    angular: number
+  ): DifferentialDriveResolution {
+    if (this.lifecycleStatus === "error") {
+      return this.createErrorVelocityResolution(0, 0);
+    }
+    return this.applyVelocityResolution(() =>
+      this.controlController.setNormalizedVelocity(linear, angular)
+    );
+  }
+
   stopMotors(target: MotorChannelTarget = "both"): CommandNormalizationResult {
     const result = this.controlController.stopMotors(target);
     this.activeInput = this.controlController.getDrivetrainInput();
@@ -981,6 +1073,10 @@ export class SimulationWorld {
     prevTripped: readonly string[] | undefined,
     prevCutoff: boolean
   ): void {
+    if (this.didElectricalStatusChange(prevTripped, prevCutoff)) {
+      this.syncRuntimeElectricalContext();
+    }
+
     if (steps.length > 0) {
       for (const step of steps) {
         const stepDt = step.diagnostics.timestepSeconds;
@@ -998,6 +1094,11 @@ export class SimulationWorld {
             this.encoderAccumulator.rightDistanceMeters +
             step.state.rightWheelLinearSurfaceSpeedMps * stepDt,
         };
+        this.controlController.updateSensorContext({
+          arena: this.arena,
+          simState: step.state,
+          encoderAccumulator: this.encoderAccumulator,
+        });
       }
 
       const lastStep = steps[steps.length - 1];
@@ -1012,10 +1113,7 @@ export class SimulationWorld {
       this.latestCollision = buildCollisionSnapshot(
         collidingStep?.collisionResponse ?? lastStep.collisionResponse
       );
-    }
-
-    if (this.didElectricalStatusChange(prevTripped, prevCutoff)) {
-      this.syncRuntimeElectricalContext();
+      return;
     }
 
     this.controlController.updateSensorContext({
