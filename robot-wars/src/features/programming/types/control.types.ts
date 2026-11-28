@@ -6,6 +6,7 @@ import type {
   IrProximityData,
   LineSensorData,
   RobotSensorsSnapshot,
+  SensorAvailabilityStatus,
   SensorDescriptor,
   SensorReadResult,
   UltrasonicDistanceData,
@@ -159,6 +160,271 @@ export interface DifferentialDriveOdometryState {
   readonly error?: string;
 }
 
+export interface PidLimits {
+  readonly min: number;
+  readonly max: number;
+}
+
+export type PidDerivativeMode = "measurement" | "error";
+
+export interface PidConfig {
+  readonly kp: number;
+  readonly ki: number;
+  readonly kd: number;
+  /** Optional saturation bounds `[min, max]` applied to final PID output. */
+  readonly outputLimits?: PidLimits;
+  /** Optional bounds `[min, max]` applied to the accumulated integral output contribution. */
+  readonly integralLimits?: PidLimits;
+  /** Optional first-order low-pass filter time constant τ_d in seconds (τ_d >= 0; 0 disables filtering). */
+  readonly derivativeFilterTimeConstantSeconds?: number;
+  /** Optional fixed smoothing factor α in (0, 1] used when derivativeFilterTimeConstantSeconds is omitted. */
+  readonly derivativeFilterAlpha?: number;
+  /** Derivative formulation for setpoint/measurement updates (defaults to `"measurement"`). */
+  readonly derivativeMode?: PidDerivativeMode;
+}
+
+export interface PidTermBreakdown {
+  readonly proportional: number;
+  readonly integral: number;
+  readonly derivative: number;
+  readonly rawDerivative: number;
+  readonly unsaturatedOutput: number;
+}
+
+export interface PidState {
+  readonly isConfigValid: boolean;
+  readonly hasPreviousSample: boolean;
+  readonly previousSetpoint: number;
+  readonly previousMeasurement: number | null;
+  readonly previousError: number;
+  readonly integralTerm: number;
+  readonly filteredDerivativeTerm: number;
+  readonly lastOutput: number;
+  readonly lastTerms: PidTermBreakdown;
+  readonly lastDtSeconds: number;
+  readonly saturated: boolean;
+  readonly antiWindupActive: boolean;
+  readonly updateCount: number;
+  readonly warnings: readonly string[];
+  readonly errors: readonly string[];
+}
+
+export type ClosedLoopMotionKind =
+  | "velocity-hold"
+  | "drive-distance"
+  | "turn-to-heading"
+  | "relative-turn";
+
+export type ClosedLoopMotionStatus =
+  | "idle"
+  | "running"
+  | "completed"
+  | "timed-out"
+  | "cancelled"
+  | "failed";
+
+export interface ClosedLoopMotionOptions {
+  readonly maxLinearSpeedMps?: number;
+  readonly maxAngularSpeedRadPerSec?: number;
+  readonly distanceToleranceMeters?: number;
+  readonly headingToleranceRadians?: number;
+  readonly linearVelocityToleranceMps?: number;
+  readonly angularVelocityToleranceRadPerSec?: number;
+  readonly settleStepCount?: number;
+  readonly timeoutSeconds?: number;
+  readonly holdHeading?: boolean;
+  readonly linearVelocityPid?: Partial<PidConfig>;
+  readonly angularVelocityPid?: Partial<PidConfig>;
+  readonly distancePid?: Partial<PidConfig>;
+  readonly headingPid?: Partial<PidConfig>;
+}
+
+export interface ClosedLoopMotionProgress {
+  readonly distanceTraveledMeters: number;
+  readonly remainingDistanceMeters: number;
+  readonly headingDeltaRadians: number;
+  readonly headingErrorRadians: number;
+  readonly linearVelocityErrorMps: number;
+  readonly angularVelocityErrorRadPerSec: number;
+  readonly settleCounter: number;
+}
+
+export interface ClosedLoopMotionPidBundle {
+  readonly linearVelocity: PidState;
+  readonly angularVelocity: PidState;
+  readonly distance: PidState;
+  readonly heading: PidState;
+}
+
+export interface ClosedLoopMotionState {
+  readonly kind: ClosedLoopMotionKind | null;
+  readonly status: ClosedLoopMotionStatus;
+  readonly isActive: boolean;
+  readonly elapsedSeconds: number;
+  readonly stepCount: number;
+  readonly targetLinearVelocityMps: number;
+  readonly targetAngularVelocityRadPerSec: number;
+  readonly targetDistanceMeters: number;
+  readonly targetHeadingRadians: number;
+  readonly targetDeltaHeadingRadians: number;
+  readonly progress: ClosedLoopMotionProgress;
+  readonly commandedTwist: DifferentialDriveTwistCommand;
+  readonly lastResolution: DifferentialDriveResolution | null;
+  readonly pidStates: ClosedLoopMotionPidBundle;
+  readonly failureReason?: string;
+  readonly warnings: readonly string[];
+}
+
+export type NavigationStatus =
+  | "idle"
+  | "navigating"
+  | "paused"
+  | "completed"
+  | "cancelled"
+  | "failed";
+
+export interface NavigationWaypoint {
+  readonly xMeters: number;
+  readonly zMeters: number;
+  readonly label?: string;
+}
+
+export type ObstacleAvoidanceStatus =
+  | "idle"
+  | "clear"
+  | "slowing"
+  | "stopped"
+  | "avoiding"
+  | "blocked"
+  | "cancelled";
+
+export type ObstacleAvoidanceManeuverPhase =
+  | "none"
+  | "stop-confirm"
+  | "turn"
+  | "advance"
+  | "verify-clear";
+
+export type AvoidanceDirection = "left" | "right";
+
+export interface DistanceSensorObservation {
+  readonly sensorId: string;
+  readonly sensorName: string;
+  readonly sensorKind: "ultrasonic" | "tof-distance";
+  readonly localMountOffset: {
+    readonly x: number;
+    readonly y: number;
+    readonly z: number;
+  };
+  readonly mountYawOffsetRadians: number;
+  readonly reading: SensorReadResult<UltrasonicDistanceData>;
+}
+
+export interface ObstacleAvoidanceOptions {
+  readonly enabled?: boolean;
+  readonly requireValidSensor?: boolean;
+  readonly detectionDistanceMeters?: number;
+  readonly slowdownDistanceMeters?: number;
+  readonly safetyDistanceMeters?: number;
+  readonly clearHysteresisMeters?: number;
+  readonly minSlowdownSpeedScale?: number;
+  readonly avoidTurnSpeedRadPerSec?: number;
+  readonly avoidAdvanceSpeedMps?: number;
+  readonly minAvoidTurnRadians?: number;
+  readonly maxAvoidTurnRadians?: number;
+  readonly avoidAdvanceDistanceMeters?: number;
+  readonly stopConfirmSeconds?: number;
+  readonly verifyClearSeconds?: number;
+  readonly cooldownSeconds?: number;
+  readonly maxAvoidanceAttempts?: number;
+  readonly maxManeuverSeconds?: number;
+  readonly defaultDirection?: AvoidanceDirection;
+  readonly directionHysteresisMeters?: number;
+}
+
+export interface ObstacleAvoidanceState {
+  readonly enabled: boolean;
+  readonly status: ObstacleAvoidanceStatus;
+  readonly maneuverPhase: ObstacleAvoidanceManeuverPhase;
+  readonly isActive: boolean;
+  readonly chosenDirection: AvoidanceDirection | null;
+  readonly nearestObstacleDistanceMeters: number | null;
+  readonly forwardObstacleDistanceMeters: number | null;
+  readonly leftClearanceMeters: number | null;
+  readonly rightClearanceMeters: number | null;
+  readonly detectedSensorId: string | null;
+  readonly sensorStatus: SensorAvailabilityStatus;
+  readonly activeSpeedScale: number;
+  readonly commandedLinearVelocityMps: number;
+  readonly commandedAngularVelocityRadPerSec: number;
+  readonly maneuverTurnProgressRadians: number;
+  readonly maneuverAdvanceProgressMeters: number;
+  readonly attemptCount: number;
+  readonly cooldownRemainingSeconds: number;
+  readonly maneuverElapsedSeconds: number;
+  readonly stepCount: number;
+  readonly failureReason?: string;
+  readonly warnings: readonly string[];
+}
+
+export interface WaypointNavigationOptions {
+  readonly acceptanceRadiusMeters?: number;
+  readonly headingToleranceRadians?: number;
+  readonly turnInPlaceThresholdRadians?: number;
+  readonly maxLinearSpeedMps?: number;
+  readonly maxAngularSpeedRadPerSec?: number;
+  readonly headingGain?: number;
+  readonly approachGain?: number;
+  readonly timeoutSeconds?: number;
+  readonly linearVelocityPid?: Partial<PidConfig>;
+  readonly angularVelocityPid?: Partial<PidConfig>;
+  readonly obstacleAvoidance?: ObstacleAvoidanceOptions;
+}
+
+export interface WaypointNavigationState {
+  readonly status: NavigationStatus;
+  readonly isActive: boolean;
+  readonly waypoints: readonly NavigationWaypoint[];
+  readonly currentWaypointIndex: number;
+  readonly totalWaypoints: number;
+  readonly completedWaypoints: number;
+  readonly currentTarget: NavigationWaypoint | null;
+  readonly estimatedDistanceMeters: number;
+  readonly estimatedHeadingRadians: number;
+  readonly desiredHeadingRadians: number;
+  readonly headingErrorRadians: number;
+  readonly targetLinearVelocityMps: number;
+  readonly targetAngularVelocityRadPerSec: number;
+  readonly acceptanceRadiusMeters: number;
+  readonly elapsedSeconds: number;
+  readonly stepCount: number;
+  readonly failureReason?: string;
+  readonly warnings: readonly string[];
+}
+
+export type PidUpdateInput =
+  | {
+      readonly setpoint: number;
+      readonly measurement: number;
+      readonly dtSeconds: number;
+    }
+  | {
+      readonly error: number;
+      readonly dtSeconds: number;
+      readonly measurement?: number;
+    };
+
+export interface PidStepResult {
+  readonly accepted: boolean;
+  readonly output: number;
+  readonly error: number;
+  readonly saturated: boolean;
+  readonly antiWindupActive: boolean;
+  readonly terms: PidTermBreakdown;
+  readonly state: PidState;
+  readonly warnings: readonly string[];
+}
+
 export type RobotActuatorCommand =
   | {
       readonly kind: "set-motor-power";
@@ -253,6 +519,12 @@ export interface RobotProgramStepContext {
   readonly sensors?: RobotSensorsSnapshot;
   /** Encoder-derived differential-drive odometry estimate (independent from ground-truth pose). */
   readonly odometry?: DifferentialDriveOdometryState;
+  /** Active or last closed-loop motion primitive state. */
+  readonly motion?: ClosedLoopMotionState;
+  /** Active or last waypoint navigation state. */
+  readonly navigation?: WaypointNavigationState;
+  /** Active or last sensor-driven obstacle avoidance state. */
+  readonly avoidance?: ObstacleAvoidanceState;
   /** True when invoked from single-step debugger control. */
   readonly isSingleStep?: boolean;
 }
@@ -295,6 +567,43 @@ export interface RobotControlApi {
   resetOdometry: (
     initialPose?: Partial<Pick<OdometryPose, "xMeters" | "zMeters" | "headingRadians">>
   ) => DifferentialDriveOdometryState;
+  trackVelocity: (
+    linearVelocityMps: number,
+    angularVelocityRadPerSec: number,
+    options?: ClosedLoopMotionOptions
+  ) => ClosedLoopMotionState;
+  driveDistance: (
+    distanceMeters: number,
+    options?: ClosedLoopMotionOptions
+  ) => ClosedLoopMotionState;
+  turnToHeading: (
+    targetHeadingRadians: number,
+    options?: ClosedLoopMotionOptions
+  ) => ClosedLoopMotionState;
+  turnByAngle: (
+    deltaHeadingRadians: number,
+    options?: ClosedLoopMotionOptions
+  ) => ClosedLoopMotionState;
+  cancelMotion: (reason?: string) => ClosedLoopMotionState;
+  getMotionState: () => ClosedLoopMotionState;
+  navigateToWaypoint: (
+    waypoint: NavigationWaypoint,
+    options?: WaypointNavigationOptions
+  ) => WaypointNavigationState;
+  navigateWaypoints: (
+    waypoints: readonly NavigationWaypoint[],
+    options?: WaypointNavigationOptions
+  ) => WaypointNavigationState;
+  pauseNavigation: () => WaypointNavigationState;
+  resumeNavigation: () => WaypointNavigationState;
+  cancelNavigation: (reason?: string) => WaypointNavigationState;
+  resetNavigation: () => WaypointNavigationState;
+  getNavigationState: () => WaypointNavigationState;
+  configureObstacleAvoidance: (
+    options?: ObstacleAvoidanceOptions
+  ) => ObstacleAvoidanceState;
+  getObstacleAvoidanceState: () => ObstacleAvoidanceState;
+  resetObstacleAvoidance: () => ObstacleAvoidanceState;
 }
 
 export interface RobotControlRoutine {
@@ -319,6 +628,9 @@ export interface RobotProgramControllerState {
   readonly commandLogCount: number;
   readonly lastError: string | null;
   readonly executionTrace: VisualProgramExecutionTrace | null;
+  readonly motion?: ClosedLoopMotionState;
+  readonly navigation?: WaypointNavigationState;
+  readonly avoidance?: ObstacleAvoidanceState;
 }
 
 export function buildProgramStepContext(
@@ -326,7 +638,10 @@ export function buildProgramStepContext(
   dtSeconds: number,
   sensors?: RobotSensorsSnapshot,
   isSingleStep = false,
-  odometry?: DifferentialDriveOdometryState
+  odometry?: DifferentialDriveOdometryState,
+  motion?: ClosedLoopMotionState,
+  navigation?: WaypointNavigationState,
+  avoidance?: ObstacleAvoidanceState
 ): RobotProgramStepContext {
   return {
     timeSeconds: telemetry.timeSeconds,
@@ -355,6 +670,9 @@ export function buildProgramStepContext(
     },
     sensors,
     ...(odometry && { odometry }),
+    ...(motion && { motion }),
+    ...(navigation && { navigation }),
+    ...(avoidance && { avoidance }),
     isSingleStep,
   };
 }

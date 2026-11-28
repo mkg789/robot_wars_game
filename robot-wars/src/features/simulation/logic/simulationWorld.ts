@@ -16,15 +16,22 @@
 import type { ElectricalConnection } from "../../electrical/types/electrical.types";
 import { RobotControlController } from "../../programming/logic/robotControlController";
 import type {
+  ClosedLoopMotionOptions,
+  ClosedLoopMotionState,
   CommandNormalizationResult,
   DifferentialDriveModel,
   DifferentialDriveOdometryState,
   DifferentialDriveResolution,
   MotorChannelTarget,
+  NavigationWaypoint,
+  ObstacleAvoidanceOptions,
+  ObstacleAvoidanceState,
   OdometryPose,
   RobotControlApi,
   RobotControlRoutine,
   RobotProgramControllerState,
+  WaypointNavigationOptions,
+  WaypointNavigationState,
 } from "../../programming/types/control.types";
 import type {
   EncoderAccumulatorState,
@@ -857,6 +864,182 @@ export class SimulationWorld {
     return state;
   }
 
+  getMotionState(): ClosedLoopMotionState {
+    return this.controlController.getMotionState();
+  }
+
+  private runImperativeMotionCommand(
+    start: () => ClosedLoopMotionState
+  ): ClosedLoopMotionState {
+    if (this.lifecycleStatus === "error") {
+      const current = this.controlController.getMotionState();
+      return {
+        ...current,
+        status: "failed",
+        isActive: false,
+        failureReason: "Simulation is in error state; reset before issuing motion commands.",
+        warnings: ["Simulation is in error state; reset before issuing motion commands."],
+      };
+    }
+    this.pausedByWorld = false;
+    const progStatus = this.controlController.getState().programStatus;
+    if (progStatus === "running" || progStatus === "paused") {
+      this.controlController.stopProgram();
+    }
+    this.activeControls = NEUTRAL_DRIVE_CONTROLS;
+    const result = start();
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+    return result;
+  }
+
+  trackVelocity(
+    linearVelocityMps: number,
+    angularVelocityRadPerSec: number,
+    options?: ClosedLoopMotionOptions
+  ): ClosedLoopMotionState {
+    return this.runImperativeMotionCommand(() =>
+      this.controlController.trackVelocity(
+        linearVelocityMps,
+        angularVelocityRadPerSec,
+        options
+      )
+    );
+  }
+
+  driveDistance(
+    distanceMeters: number,
+    options?: ClosedLoopMotionOptions
+  ): ClosedLoopMotionState {
+    return this.runImperativeMotionCommand(() =>
+      this.controlController.driveDistance(distanceMeters, options)
+    );
+  }
+
+  turnToHeading(
+    targetHeadingRadians: number,
+    options?: ClosedLoopMotionOptions
+  ): ClosedLoopMotionState {
+    return this.runImperativeMotionCommand(() =>
+      this.controlController.turnToHeading(targetHeadingRadians, options)
+    );
+  }
+
+  turnByAngle(
+    deltaHeadingRadians: number,
+    options?: ClosedLoopMotionOptions
+  ): ClosedLoopMotionState {
+    return this.runImperativeMotionCommand(() =>
+      this.controlController.turnByAngle(deltaHeadingRadians, options)
+    );
+  }
+
+  cancelMotion(reason?: string): ClosedLoopMotionState {
+    const result = this.controlController.cancelMotion(reason);
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+    return result;
+  }
+
+  getNavigationState(): WaypointNavigationState {
+    return this.controlController.getNavigationState();
+  }
+
+  private runImperativeNavigationCommand(
+    start: () => WaypointNavigationState
+  ): WaypointNavigationState {
+    if (this.lifecycleStatus === "error") {
+      const current = this.controlController.getNavigationState();
+      return {
+        ...current,
+        status: "failed",
+        isActive: false,
+        failureReason:
+          "Simulation is in error state; reset before issuing navigation commands.",
+        warnings: [
+          "Simulation is in error state; reset before issuing navigation commands.",
+        ],
+      };
+    }
+    this.pausedByWorld = false;
+    const progStatus = this.controlController.getState().programStatus;
+    if (progStatus === "running" || progStatus === "paused") {
+      this.controlController.stopProgram();
+    }
+    this.activeControls = NEUTRAL_DRIVE_CONTROLS;
+    const result = start();
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+    return result;
+  }
+
+  navigateToWaypoint(
+    waypoint: NavigationWaypoint,
+    options?: WaypointNavigationOptions
+  ): WaypointNavigationState {
+    return this.runImperativeNavigationCommand(() =>
+      this.controlController.navigateToWaypoint(waypoint, options)
+    );
+  }
+
+  navigateWaypoints(
+    waypoints: readonly NavigationWaypoint[],
+    options?: WaypointNavigationOptions
+  ): WaypointNavigationState {
+    return this.runImperativeNavigationCommand(() =>
+      this.controlController.navigateWaypoints(waypoints, options)
+    );
+  }
+
+  pauseNavigation(): WaypointNavigationState {
+    const result = this.controlController.pauseNavigation();
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+    return result;
+  }
+
+  resumeNavigation(): WaypointNavigationState {
+    if (this.lifecycleStatus === "error") {
+      return this.controlController.getNavigationState();
+    }
+    const result = this.controlController.resumeNavigation();
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+    return result;
+  }
+
+  cancelNavigation(reason?: string): WaypointNavigationState {
+    const result = this.controlController.cancelNavigation(reason);
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+    return result;
+  }
+
+  resetNavigation(): WaypointNavigationState {
+    const result = this.controlController.resetNavigation();
+    this.activeInput = this.controlController.getDrivetrainInput();
+    this.notify();
+    return result;
+  }
+
+  configureObstacleAvoidance(
+    options?: ObstacleAvoidanceOptions
+  ): ObstacleAvoidanceState {
+    const result = this.controlController.configureObstacleAvoidance(options);
+    this.notify();
+    return result;
+  }
+
+  getObstacleAvoidanceState(): ObstacleAvoidanceState {
+    return this.controlController.getObstacleAvoidanceState();
+  }
+
+  resetObstacleAvoidance(): ObstacleAvoidanceState {
+    const result = this.controlController.resetObstacleAvoidance();
+    this.notify();
+    return result;
+  }
+
   private createErrorVelocityResolution(
     requestedLinearVelocityMps: number,
     requestedAngularVelocityRadPerSec: number
@@ -1162,7 +1345,10 @@ export class SimulationWorld {
     try {
       const ctrlState = this.controlController.getState();
       const isProgramActivelyRunning =
-        ctrlState.controlSource !== "manual" && ctrlState.programStatus === "running";
+        ctrlState.controlSource !== "manual" &&
+        (ctrlState.programStatus === "running" ||
+          this.controlController.hasActiveMotion() ||
+          this.controlController.hasActiveNavigation());
 
       if (!isProgramActivelyRunning) {
         this.activeInput = this.controlController.beforePhysicsStep(

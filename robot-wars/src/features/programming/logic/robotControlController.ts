@@ -13,11 +13,15 @@ import {
   NEUTRAL_NORMALIZED_TARGET,
   resolveRobotHardwareBinding,
 } from "./controlCommandPipeline";
+import { ClosedLoopMotionController } from "./closedLoopMotionController";
 import { createDifferentialDriveModel } from "./differentialDriveControl";
 import { DifferentialDriveOdometryTracker } from "./differentialDriveOdometry";
+import { ReactiveObstacleAvoidanceController } from "./reactiveObstacleAvoidanceController";
+import { WaypointNavigationController } from "./waypointNavigationController";
 import { resolveRobotSensors } from "./sensorResolver";
 import {
   buildRobotSensorsSnapshot,
+  readAllDistanceSensors,
   simulateDistanceSensor,
   simulateEncoderSensor,
   simulateImuSensor,
@@ -26,14 +30,20 @@ import {
 } from "./sensorSimulation";
 import {
   buildProgramStepContext,
+  type ClosedLoopMotionOptions,
+  type ClosedLoopMotionState,
   type CommandNormalizationResult,
   type DifferentialDriveGeometryOverride,
   type DifferentialDriveModel,
   type DifferentialDriveOdometryState,
   type DifferentialDriveResolution,
+  type DistanceSensorObservation,
   type MotorChannelTarget,
   type MotorHardwareBinding,
+  type NavigationWaypoint,
   type NormalizedDriveTarget,
+  type ObstacleAvoidanceOptions,
+  type ObstacleAvoidanceState,
   type OdometryPose,
   type RobotActuatorCommand,
   type RobotControlApi,
@@ -41,6 +51,8 @@ import {
   type RobotControlSource,
   type RobotProgramControllerState,
   type RobotProgramStatus,
+  type WaypointNavigationOptions,
+  type WaypointNavigationState,
 } from "../types/control.types";
 import type {
   EncoderAccumulatorState,
@@ -68,6 +80,10 @@ export class RobotControlController implements RobotControlApi {
   private geometryOverride?: DifferentialDriveGeometryOverride;
   private lastDifferentialResolution: DifferentialDriveResolution | null = null;
   private odometryTracker: DifferentialDriveOdometryTracker;
+  private motionController = new ClosedLoopMotionController();
+  private navigationController = new WaypointNavigationController();
+  private avoidanceController = new ReactiveObstacleAvoidanceController();
+  private pausedNavigationByProgram = false;
   private sensorDescriptors: readonly SensorDescriptor[] = [];
   private arena: ArenaConfig | null = null;
   private simState: SimulationState | null = null;
@@ -161,6 +177,58 @@ export class RobotControlController implements RobotControlApi {
       },
       this.simState?.timeSeconds ?? this.latestTimeSeconds
     );
+    if (this.navigationController.isActive()) {
+      const odo = this.odometryTracker.getState();
+      if (this.avoidanceController.getState().enabled && this.arena && this.simState) {
+        const avStep = this.avoidanceController.step({
+          dtSeconds: 1 / 120,
+          observations: this.readDistanceObservations(),
+          odometry: odo,
+          headingErrorRadians: this.navigationController.getState().headingErrorRadians,
+        });
+        if (avStep.state.status === "blocked") {
+          this.navigationController.fail(
+            avStep.state.failureReason ??
+              "Obstacle avoidance blocked due to invalid/unavailable sensors.",
+            this.motionController
+          );
+          this.target = NEUTRAL_NORMALIZED_TARGET;
+          this.pausedTarget = null;
+        }
+      }
+      if (
+        this.navigationController.isActive() &&
+        (!this.binding.canDrive || !this.differentialModel.isValid || !odo.isValid)
+      ) {
+        this.avoidanceController.cancel(
+          this.binding.faultReason ??
+            "Electrical or odometry fault interrupted obstacle avoidance."
+        );
+        this.navigationController.step({
+          dtSeconds: 1 / 120,
+          odometry: odo,
+          model: this.differentialModel,
+          binding: this.binding,
+          motionController: this.motionController,
+        });
+        this.target = NEUTRAL_NORMALIZED_TARGET;
+        this.pausedTarget = null;
+      }
+    }
+    if (this.motionController.isActive()) {
+      const odo = this.odometryTracker.getState();
+      if (!this.binding.canDrive || !this.differentialModel.isValid || !odo.isValid) {
+        this.motionController.step({
+          dtSeconds: 1 / 120,
+          odometry: odo,
+          model: this.differentialModel,
+          binding: this.binding,
+          robotConfig: this.robotConfig,
+        });
+        this.target = NEUTRAL_NORMALIZED_TARGET;
+        this.pausedTarget = null;
+      }
+    }
     if (!this.binding.canDrive) {
       this.target = NEUTRAL_NORMALIZED_TARGET;
       this.pausedTarget = null;
@@ -354,6 +422,13 @@ export class RobotControlController implements RobotControlApi {
 
   setControlSource(source: RobotControlSource): void {
     if (source === "manual") {
+      this.pausedNavigationByProgram = false;
+      this.avoidanceController.cancel("Cancelled by manual control takeover.");
+      this.navigationController.cancel(
+        "Cancelled by manual control takeover.",
+        this.motionController
+      );
+      this.cancelMotion("Cancelled by manual control takeover.");
       if (this.programStatus === "running" || this.programStatus === "paused") {
         this.stopProgram();
       } else {
@@ -402,6 +477,7 @@ export class RobotControlController implements RobotControlApi {
     this.programStatus = "running";
     this.target = NEUTRAL_NORMALIZED_TARGET;
     this.pausedTarget = null;
+    this.pausedNavigationByProgram = false;
     this.lastError = null;
     this.executionTrace = null;
     try {
@@ -419,7 +495,16 @@ export class RobotControlController implements RobotControlApi {
     }
     this.pausedTarget = this.target;
     this.programStatus = "paused";
-    this.stopRobot();
+    if (this.navigationController.isActive()) {
+      this.pausedNavigationByProgram = true;
+      this.avoidanceController.pause();
+      this.navigationController.pause(this.motionController);
+    }
+    this.target = {
+      ...NEUTRAL_NORMALIZED_TARGET,
+      lastCommandAtSeconds: this.latestTimeSeconds,
+      activeCommandKind: "stop-robot",
+    };
     if (this.executionTrace) {
       this.executionTrace = {
         ...this.executionTrace,
@@ -446,6 +531,15 @@ export class RobotControlController implements RobotControlApi {
     if (this.pausedTarget) {
       this.target = this.pausedTarget;
       this.pausedTarget = null;
+    }
+    if (this.pausedNavigationByProgram) {
+      this.pausedNavigationByProgram = false;
+      this.navigationController.resume({
+        model: this.differentialModel,
+        odometry: this.odometryTracker.getState(),
+        binding: this.binding,
+        motionController: this.motionController,
+      });
     }
     this.lastError = null;
     try {
@@ -509,7 +603,10 @@ export class RobotControlController implements RobotControlApi {
         dtSeconds,
         this.readSensorsSnapshot() ?? undefined,
         true,
-        this.odometryTracker.getState()
+        this.odometryTracker.getState(),
+        this.motionController.getState(),
+        this.navigationController.getState(),
+        this.avoidanceController.getState()
       );
       this.routine.onTick(ctx, this);
     } catch (error) {
@@ -544,6 +641,10 @@ export class RobotControlController implements RobotControlApi {
       this.programStatus === "running" || this.programStatus === "paused";
     const wasFault = this.programStatus === "fault";
     this.pausedTarget = null;
+    this.pausedNavigationByProgram = false;
+    this.avoidanceController.cancel("Cancelled on program stop.");
+    this.navigationController.cancel("Cancelled on program stop.", this.motionController);
+    this.motionController.cancel("Cancelled on program stop.");
     if (wasActive && this.routine?.onStop) {
       try {
         this.routine.onStop(this);
@@ -566,12 +667,20 @@ export class RobotControlController implements RobotControlApi {
 
   completeProgram(): void {
     this.pausedTarget = null;
+    this.pausedNavigationByProgram = false;
+    this.avoidanceController.cancel("Cancelled on program completion.");
+    this.navigationController.cancel(
+      "Cancelled on program completion.",
+      this.motionController
+    );
+    this.motionController.cancel("Cancelled on program completion.");
     this.stopRobot();
     this.programStatus = "completed";
   }
 
   reset(): void {
     this.pausedTarget = null;
+    this.pausedNavigationByProgram = false;
     this.controlSource = "manual";
     this.target = NEUTRAL_NORMALIZED_TARGET;
     this.latestTimeSeconds = 0;
@@ -581,6 +690,9 @@ export class RobotControlController implements RobotControlApi {
     this.programStatus = "idle";
     this.executionTrace = null;
     this.lastDifferentialResolution = null;
+    this.avoidanceController.reset();
+    this.navigationController.reset(this.motionController);
+    this.motionController.reset();
     this.odometryTracker.reset({
       model: this.differentialModel,
       initialMeasurement: {
@@ -596,7 +708,267 @@ export class RobotControlController implements RobotControlApi {
     });
   }
 
+  hasActiveMotion(): boolean {
+    return this.motionController.isActive();
+  }
+
+  hasActiveNavigation(): boolean {
+    return this.navigationController.isActive();
+  }
+
+  private readDistanceObservations(): readonly DistanceSensorObservation[] {
+    if (!this.arena || !this.simState) {
+      return [];
+    }
+    return readAllDistanceSensors({
+      descriptors: this.sensorDescriptors,
+      simState: this.simState,
+      arena: this.arena,
+    });
+  }
+
+  configureObstacleAvoidance(
+    options?: ObstacleAvoidanceOptions
+  ): ObstacleAvoidanceState {
+    return this.avoidanceController.configure(options);
+  }
+
+  getObstacleAvoidanceState(): ObstacleAvoidanceState {
+    return this.avoidanceController.getState();
+  }
+
+  resetObstacleAvoidance(): ObstacleAvoidanceState {
+    return this.avoidanceController.reset();
+  }
+
+  getMotionState(): ClosedLoopMotionState {
+    return this.motionController.getState();
+  }
+
+  getNavigationState(): WaypointNavigationState {
+    return this.navigationController.getState();
+  }
+
+  navigateToWaypoint(
+    waypoint: NavigationWaypoint,
+    options?: WaypointNavigationOptions
+  ): WaypointNavigationState {
+    return this.navigateWaypoints([waypoint], options);
+  }
+
+  navigateWaypoints(
+    waypoints: readonly NavigationWaypoint[],
+    options?: WaypointNavigationOptions
+  ): WaypointNavigationState {
+    this.pausedNavigationByProgram = false;
+    if (this.controlSource === "manual") {
+      this.controlSource = "program";
+    }
+    const avInit = this.avoidanceController.beginNavigationSession({
+      observations: this.readDistanceObservations(),
+      navigationOptions: options?.obstacleAvoidance,
+    });
+    const next = this.navigationController.startNavigation({
+      waypoints,
+      model: this.differentialModel,
+      odometry: this.odometryTracker.getState(),
+      binding: this.binding,
+      motionController: this.motionController,
+      options,
+    });
+    if (avInit.enabled && avInit.status === "blocked" && next.isActive) {
+      const blockedNav = this.navigationController.fail(
+        avInit.failureReason ??
+          "Obstacle avoidance blocked due to missing or unavailable distance sensors.",
+        this.motionController
+      );
+      this.target = NEUTRAL_NORMALIZED_TARGET;
+      this.lastWarnings = blockedNav.warnings;
+      return blockedNav;
+    }
+    if (!next.isActive) {
+      if (next.status === "completed") {
+        this.avoidanceController.completeNavigation();
+      }
+      this.target = NEUTRAL_NORMALIZED_TARGET;
+    }
+    this.lastWarnings = next.warnings;
+    return next;
+  }
+
+  pauseNavigation(): WaypointNavigationState {
+    this.pausedNavigationByProgram = false;
+    this.avoidanceController.pause();
+    const paused = this.navigationController.pause(this.motionController);
+    this.target = {
+      ...NEUTRAL_NORMALIZED_TARGET,
+      lastCommandAtSeconds: this.latestTimeSeconds,
+      activeCommandKind: "stop-robot",
+    };
+    return paused;
+  }
+
+  resumeNavigation(): WaypointNavigationState {
+    this.pausedNavigationByProgram = false;
+    if (this.controlSource === "manual") {
+      this.controlSource = "program";
+    }
+    const resumed = this.navigationController.resume({
+      model: this.differentialModel,
+      odometry: this.odometryTracker.getState(),
+      binding: this.binding,
+      motionController: this.motionController,
+    });
+    if (!resumed.isActive) {
+      this.target = NEUTRAL_NORMALIZED_TARGET;
+    }
+    return resumed;
+  }
+
+  cancelNavigation(reason = "Navigation cancelled."): WaypointNavigationState {
+    this.pausedNavigationByProgram = false;
+    this.avoidanceController.cancel(reason);
+    const cancelled = this.navigationController.cancel(
+      reason,
+      this.motionController
+    );
+    this.target = {
+      ...NEUTRAL_NORMALIZED_TARGET,
+      lastCommandAtSeconds: this.latestTimeSeconds,
+      activeCommandKind: "stop-robot",
+    };
+    return cancelled;
+  }
+
+  resetNavigation(): WaypointNavigationState {
+    this.pausedNavigationByProgram = false;
+    this.avoidanceController.reset();
+    const resetState = this.navigationController.reset(this.motionController);
+    this.target = NEUTRAL_NORMALIZED_TARGET;
+    return resetState;
+  }
+
+  trackVelocity(
+    linearVelocityMps: number,
+    angularVelocityRadPerSec: number,
+    options?: ClosedLoopMotionOptions
+  ): ClosedLoopMotionState {
+    this.pausedNavigationByProgram = false;
+    this.avoidanceController.cancel(
+      "Replaced by closed-loop velocity hold command."
+    );
+    this.navigationController.cancel("Replaced by closed-loop velocity hold command.");
+    if (this.controlSource === "manual") {
+      this.controlSource = "program";
+    }
+    const next = this.motionController.startVelocityHold({
+      linearVelocityMps,
+      angularVelocityRadPerSec,
+      model: this.differentialModel,
+      odometry: this.odometryTracker.getState(),
+      binding: this.binding,
+      options,
+    });
+    if (!next.isActive) {
+      this.target = NEUTRAL_NORMALIZED_TARGET;
+    }
+    return next;
+  }
+
+  driveDistance(
+    distanceMeters: number,
+    options?: ClosedLoopMotionOptions
+  ): ClosedLoopMotionState {
+    this.pausedNavigationByProgram = false;
+    this.avoidanceController.cancel("Replaced by closed-loop driveDistance command.");
+    this.navigationController.cancel("Replaced by closed-loop driveDistance command.");
+    if (this.controlSource === "manual") {
+      this.controlSource = "program";
+    }
+    const next = this.motionController.startDriveDistance({
+      distanceMeters,
+      model: this.differentialModel,
+      odometry: this.odometryTracker.getState(),
+      binding: this.binding,
+      options,
+    });
+    if (!next.isActive) {
+      this.target = NEUTRAL_NORMALIZED_TARGET;
+    }
+    return next;
+  }
+
+  turnToHeading(
+    targetHeadingRadians: number,
+    options?: ClosedLoopMotionOptions
+  ): ClosedLoopMotionState {
+    this.pausedNavigationByProgram = false;
+    this.avoidanceController.cancel("Replaced by closed-loop turnToHeading command.");
+    this.navigationController.cancel("Replaced by closed-loop turnToHeading command.");
+    if (this.controlSource === "manual") {
+      this.controlSource = "program";
+    }
+    const next = this.motionController.startTurnToHeading({
+      targetHeadingRadians,
+      model: this.differentialModel,
+      odometry: this.odometryTracker.getState(),
+      binding: this.binding,
+      options,
+    });
+    if (!next.isActive) {
+      this.target = NEUTRAL_NORMALIZED_TARGET;
+    }
+    return next;
+  }
+
+  turnByAngle(
+    deltaHeadingRadians: number,
+    options?: ClosedLoopMotionOptions
+  ): ClosedLoopMotionState {
+    this.pausedNavigationByProgram = false;
+    this.avoidanceController.cancel("Replaced by closed-loop turnByAngle command.");
+    this.navigationController.cancel("Replaced by closed-loop turnByAngle command.");
+    if (this.controlSource === "manual") {
+      this.controlSource = "program";
+    }
+    const next = this.motionController.startRelativeTurn({
+      deltaHeadingRadians,
+      model: this.differentialModel,
+      odometry: this.odometryTracker.getState(),
+      binding: this.binding,
+      options,
+    });
+    if (!next.isActive) {
+      this.target = NEUTRAL_NORMALIZED_TARGET;
+    }
+    return next;
+  }
+
+  cancelMotion(reason = "Motion cancelled."): ClosedLoopMotionState {
+    this.pausedNavigationByProgram = false;
+    this.avoidanceController.cancel(reason);
+    this.navigationController.cancel(reason);
+    const cancelled = this.motionController.cancel(reason);
+    this.target = {
+      ...NEUTRAL_NORMALIZED_TARGET,
+      lastCommandAtSeconds: this.latestTimeSeconds,
+      activeCommandKind: "stop-robot",
+    };
+    return cancelled;
+  }
+
   dispatchCommand(command: RobotActuatorCommand): CommandNormalizationResult {
+    if (command.kind !== "extensible-actuator") {
+      this.pausedNavigationByProgram = false;
+      this.avoidanceController.cancel("Cancelled by explicit actuator command.");
+      this.navigationController.cancel(
+        "Cancelled by explicit actuator command.",
+        this.motionController
+      );
+      if (this.motionController.isActive()) {
+        this.motionController.cancel("Cancelled by explicit actuator command.");
+      }
+    }
     const applied = applyCommandToDriveTarget({
       current: this.target,
       command,
@@ -708,12 +1080,93 @@ export class RobotControlController implements RobotControlApi {
             dtSeconds,
             this.readSensorsSnapshot() ?? undefined,
             false,
-            this.odometryTracker.getState()
+            this.odometryTracker.getState(),
+            this.motionController.getState(),
+            this.navigationController.getState(),
+            this.avoidanceController.getState()
           );
           this.routine.onTick(ctx, this);
         } catch (error) {
           this.handleFault(error);
         }
+      }
+    }
+
+    if (
+      this.controlSource !== "manual" &&
+      this.programStatus !== "paused" &&
+      this.programStatus !== "stopped" &&
+      this.programStatus !== "fault" &&
+      this.navigationController.isActive()
+    ) {
+      const odoState = this.odometryTracker.getState();
+      const avoidanceStep = this.avoidanceController.step({
+        dtSeconds,
+        observations: this.readDistanceObservations(),
+        odometry: odoState,
+        headingErrorRadians: this.navigationController.getState().headingErrorRadians,
+      });
+
+      let navState: WaypointNavigationState;
+      if (avoidanceStep.state.status === "blocked") {
+        navState = this.navigationController.fail(
+          avoidanceStep.state.failureReason ??
+            "Obstacle avoidance could not find a clear path.",
+          this.motionController
+        );
+      } else {
+        navState = this.navigationController.step({
+          dtSeconds,
+          odometry: odoState,
+          model: this.differentialModel,
+          binding: this.binding,
+          motionController: this.motionController,
+          linearSpeedScale: avoidanceStep.linearSpeedScale,
+          velocityOverride: avoidanceStep.velocityOverride,
+        });
+      }
+
+      if (!navState.isActive) {
+        if (navState.status === "completed") {
+          this.avoidanceController.completeNavigation();
+        } else if (navState.status === "failed" && avoidanceStep.state.status !== "blocked") {
+          this.avoidanceController.cancel(
+            navState.failureReason ?? "Navigation failed."
+          );
+        }
+        this.lastWarnings = navState.warnings;
+        this.target = {
+          ...NEUTRAL_NORMALIZED_TARGET,
+          lastCommandAtSeconds: this.latestTimeSeconds,
+          activeCommandKind: "stop-robot",
+        };
+      }
+    }
+
+    if (
+      this.controlSource !== "manual" &&
+      this.programStatus !== "paused" &&
+      this.programStatus !== "stopped" &&
+      this.programStatus !== "fault" &&
+      this.motionController.isActive()
+    ) {
+      const motionStep = this.motionController.step({
+        dtSeconds,
+        odometry: this.odometryTracker.getState(),
+        model: this.differentialModel,
+        binding: this.binding,
+        robotConfig: this.robotConfig,
+      });
+      this.target = {
+        leftPower: this.binding.canDrive ? motionStep.leftThrottle : 0,
+        rightPower: this.binding.canDrive ? motionStep.rightThrottle : 0,
+        lastCommandAtSeconds: this.latestTimeSeconds,
+        activeCommandKind: motionStep.state.kind ?? "closed-loop-motion",
+        clampedValues: Boolean(motionStep.state.lastResolution?.saturated),
+      };
+      this.lastWarnings = motionStep.state.warnings;
+      if (motionStep.state.lastResolution) {
+        this.lastDifferentialResolution = motionStep.state.lastResolution;
       }
     }
 
@@ -762,6 +1215,9 @@ export class RobotControlController implements RobotControlApi {
       commandLogCount: this.commandLogCount,
       lastError: this.lastError,
       executionTrace: this.executionTrace,
+      motion: this.motionController.getState(),
+      navigation: this.navigationController.getState(),
+      avoidance: this.avoidanceController.getState(),
     };
   }
 
@@ -770,6 +1226,13 @@ export class RobotControlController implements RobotControlApi {
     this.lastError = message;
     this.programStatus = "fault";
     this.pausedTarget = null;
+    this.pausedNavigationByProgram = false;
+    this.avoidanceController.cancel(`Aborted due to runtime fault: ${message}`);
+    this.navigationController.cancel(
+      `Aborted due to runtime fault: ${message}`,
+      this.motionController
+    );
+    this.motionController.cancel(`Aborted due to runtime fault: ${message}`);
     this.target = NEUTRAL_NORMALIZED_TARGET;
     const prevTrace = this.executionTrace;
     const failedId = prevTrace?.activeInstructionId ?? null;

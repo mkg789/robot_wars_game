@@ -2,6 +2,7 @@ import { resolveSurfaceAtPoint } from "../../simulation/logic/arenaModel";
 import { DEFAULT_GROUND_SURFACE } from "../../simulation/logic/surfaceModel";
 import type { ArenaBarrier, ArenaConfig } from "../../simulation/types/arena.types";
 import type { SimulationRobotConfig, SimulationState } from "../../simulation/types/simulation.types";
+import type { DistanceSensorObservation } from "../types/control.types";
 import type {
   EncoderAccumulatorState,
   EncoderData,
@@ -680,4 +681,41 @@ export function buildRobotSensorsSnapshot(params: {
       sideOrSensorId: "right",
     }),
   };
+}
+
+/**
+ * Reads all installed ultrasonic and ToF distance sensors through simulateDistanceSensor,
+ * preserving mount offsets, facing yaw, electrical readiness, and individual sensor status.
+ */
+export function readAllDistanceSensors(params: {
+  readonly descriptors: readonly SensorDescriptor[];
+  readonly simState: SimulationState;
+  readonly arena: ArenaConfig;
+}): readonly DistanceSensorObservation[] {
+  const { descriptors, simState, arena } = params;
+  const observations: DistanceSensorObservation[] = [];
+
+  for (const descriptor of descriptors) {
+    if (
+      descriptor.sensorKind !== "ultrasonic" &&
+      descriptor.sensorKind !== "tof-distance"
+    ) {
+      continue;
+    }
+    observations.push({
+      sensorId: descriptor.sensorId,
+      sensorName: descriptor.name,
+      sensorKind: descriptor.sensorKind,
+      localMountOffset: descriptor.localMountOffset,
+      mountYawOffsetRadians: descriptor.mountYawOffsetRadians,
+      reading: simulateDistanceSensor({
+        descriptors,
+        simState,
+        arena,
+        sensorId: descriptor.sensorId,
+      }),
+    });
+  }
+
+  return observations;
 }
